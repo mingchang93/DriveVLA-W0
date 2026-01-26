@@ -1,4 +1,4 @@
-# DriveVLA-W0: World Models Amplify Data Scaling Law in Autonomous Driving
+# DriveVLA-W0: World Models Amplify Data Scaling Law in Autonomous Driving (ICLR 2026)
 > 📜 [[Arxiv](http://arxiv.org/abs/2510.12796)] 🤗 [[Model Weights](https://huggingface.co/liyingyan/DriveVLA-W0)]
 
 Yingyan Li*, Shuyao Shang*, Weisong Liu*, Bing Zhan*, Haochen Wang*, Yuqi Wang, Yuntao Chen, Xiaoman Wang, Yasong An, Chufeng Tang, Lu Hou, Lue Fan†, Zhaoxiang Zhang†
