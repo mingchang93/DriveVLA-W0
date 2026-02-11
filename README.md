@@ -155,6 +155,10 @@ Finally, run the script below to compute the PDMS metrics using the generated JS
 bash inference/vla/eval_navsim_metric_from_json.sh
 ```
 
+
+### Training
+For training, please refer to [Training.md](https://github.com/BraveGroup/DriveVLA-W0/blob/main/Training.md).
+
 ## ⚙️ Configuration Overview
 
 ### Configuration Files
