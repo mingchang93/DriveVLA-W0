@@ -1,0 +1,37 @@
+#
+# Additional dependencies for Ascend NPU support.
+#
+# Install alongside requirements.txt (skip flash-attn — it is CUDA-only):
+#   pip install -r requirements_ascend.txt
+#
+# ─── torch_npu ───────────────────────────────────────────────────────
+# Must match your installed torch version and CANN toolkit version.
+# Install from Ascend's official wheel source:
+#
+#   pip install torch_npu torch -i https://repo.baai.ac.cn/repository/pypi/simple
+#
+# Or download the matching wheel from:
+#   https://www.hiascend.com/software/cann/community
+#
+# Version matrix (torch_npu → torch):
+#   2.2.0  → torch==2.2.0
+#   2.1.0  → torch==2.1.0
+#   2.0.0  → torch==2.0.0
+#
+# After installing, verify:
+#   python -c "import torch, torch_npu; print(torch.npu.is_available())"
+#   → True
+#
+torch_npu
+
+# ─── CANN toolkit (system-level, not pip) ────────────────────────────
+# Download from https://www.hiascend.com/software/cann/community
+# Install per your OS:
+#   ./Ascend-cann-toolkit_8.0.RC1_linux-aarch64.run --install
+#
+# Then source the env:
+#   source /usr/local/Ascend/ascend-toolkit/set_env.sh
+
+# ─── optional but recommended for NPU training ──────────────────────
+deepspeed             # ZeRO stages work on NPU; use --zero_stage 2 if issues
+msprobe               # Ascend precision debug tool for NPU vs GPU comparison
