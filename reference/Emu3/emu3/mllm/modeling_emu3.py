@@ -31,6 +31,55 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+
+
+def chunked_cross_entropy(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    chunk_size: int = 16384,
+    ignore_index: int = -100,
+    weight: torch.Tensor = None,
+) -> torch.Tensor:
+    """Memory-efficient cross-entropy for large vocabularies.
+
+    Materializes [N, chunk_size] instead of [N, V] inside log_softmax,
+    trading a tiny amount of compute (~extra sum-exp over chunks) for
+    dramatically lower peak memory.  Useful when vocab_size is large
+    (e.g. 100k+ VQ-codebook tokens).
+
+    Args:
+        logits: [N, V] logits (float).
+        labels: [N] target indices or ignore_index.
+        chunk_size: vocab-dimension chunk size.
+        ignore_index: index to mask out.
+        weight: optional [V] class-weight vector.
+    """
+    N, V = logits.shape
+
+    # Max over vocab ─ numerical stability, reduces to [N]
+    max_val = logits.max(dim=-1, keepdim=False)[0]
+
+    # LogSumExp in chunks ─ never materialises [N, V]
+    lse = torch.zeros(N, device=logits.device, dtype=logits.dtype)
+    for i in range(0, V, chunk_size):
+        chunk = logits[:, i : i + chunk_size]
+        lse += (chunk - max_val.unsqueeze(-1)).exp().sum(dim=-1)
+    lse = lse.log() + max_val  # [N]
+
+    # Logit at the ground-truth position
+    label_logit = logits.gather(1, labels.clamp(min=0).unsqueeze(1)).squeeze(1)
+
+    # Negative log likelihood
+    nll = lse - label_logit
+
+    # Per-class weighting
+    if weight is not None:
+        w = weight[labels.clamp(min=0)]  # clamp so ignore_index doesn't OOB
+        w[labels == ignore_index] = 0
+        nll = nll * w
+
+    mask = labels != ignore_index
+    return nll[mask].mean() if mask.any() else nll.sum() * 0
 import numpy as np
 
 from transformers.activations import ACT2FN
@@ -1570,20 +1619,18 @@ class Emu3MoE(Emu3PreTrainedModel):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
-            if self.use_weight:
-                weights = torch.ones(self.config.vocab_size)
-                vision_token_range = range(self.bov_token_id,self.eov_token_id+1)
-                weights[vision_token_range] = self.vision_loss_weight
-                loss_fct = CrossEntropyLoss(weight=weights.to(logits.device))
-
-            else:
-                loss_fct = CrossEntropyLoss()
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
-            # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
-            
-            loss = loss_fct(shift_logits, shift_labels)
+
+            # Use chunked cross-entropy to avoid OOM on the full [N, V] log_softmax
+            # (vocab_size=184k ─ a dense log_softmax eats multiple GiB).
+            weight = None
+            if self.use_weight:
+                weight = torch.ones(self.config.vocab_size, device=logits.device)
+                weight[self.bov_token_id : self.eov_token_id + 1] = self.vision_loss_weight
+
+            loss = chunked_cross_entropy(shift_logits, shift_labels, weight=weight)
             if action is not None and self.action_experts:
                 loss += loss_action * self.vision_loss_weight
             # loss = loss_action
