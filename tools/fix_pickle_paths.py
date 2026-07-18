@@ -25,34 +25,30 @@ import sys
 from pathlib import Path
 
 
-def replace_prefix_in_obj(obj, old_prefix, new_prefix, dry_run=False):
-    """Recursively walk dicts/lists/strings and replace old_prefix with new_prefix."""
+def replace_prefix_in_obj(obj, old_prefix, new_prefix):
+    """Recursively walk dicts/lists/strings and replace old_prefix with new_prefix.
+    Returns the modified object and count of replacements."""
     count = 0
     if isinstance(obj, str):
         if old_prefix in obj:
-            new = obj.replace(old_prefix, new_prefix, 1)
-            if dry_run:
-                print(f"  {obj[:80]}...")
-                print(f"  → {new[:80]}...")
-            count += 1
-            return new, count
+            return obj.replace(old_prefix, new_prefix, 1), 1
         return obj, 0
     elif isinstance(obj, dict):
         for k, v in obj.items():
-            new_v, c = replace_prefix_in_obj(v, old_prefix, new_prefix, dry_run)
+            new_v, c = replace_prefix_in_obj(v, old_prefix, new_prefix)
             if c > 0:
                 obj[k] = new_v
                 count += c
         return obj, count
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
-            new_v, c = replace_prefix_in_obj(v, old_prefix, new_prefix, dry_run)
+            new_v, c = replace_prefix_in_obj(v, old_prefix, new_prefix)
             if c > 0:
                 obj[i] = new_v
                 count += c
         return obj, count
     elif isinstance(obj, tuple):
-        new_items = [replace_prefix_in_obj(v, old_prefix, new_prefix, dry_run) for v in obj]
+        new_items = [replace_prefix_in_obj(v, old_prefix, new_prefix) for v in obj]
         c = sum(x[1] for x in new_items)
         if c > 0:
             return tuple(x[0] for x in new_items), c
@@ -103,9 +99,31 @@ def main():
     print(f"Entries:    {len(data)}")
 
     if args.dry_run:
-        print(f"\n--- Dry run: sample replacements ---")
+        print("\n--- Dry run: counting matches (no modifications) ---")
+        total_fixed = 0
+        shown = 0
+        for item in data:
+            if isinstance(item, dict):
+                for key in ("image", "pre_1s_image"):
+                    paths = item.get(key, [])
+                    if isinstance(paths, list):
+                        for p in paths:
+                            if isinstance(p, str) and args.old_prefix in p:
+                                total_fixed += 1
+                                if shown < 2:
+                                    new_p = p.replace(args.old_prefix, args.new_prefix, 1)
+                                    print(f"  {p[:70]}...")
+                                    print(f"  → {new_p[:70]}...")
+                                    print()
+                                    shown += 1
+        print(f"Paths that would be fixed: {total_fixed}")
+        print("Dry run complete. Re-run without --dry-run to apply.")
+        return
 
-    total_fixed, _ = replace_prefix_in_obj(data, args.old_prefix, args.new_prefix, args.dry_run)
+    total_fixed = 0
+    for item in data:
+        _, c = replace_prefix_in_obj(item, args.old_prefix, args.new_prefix)
+        total_fixed += c
 
     print(f"\nPaths fixed: {total_fixed}")
 
