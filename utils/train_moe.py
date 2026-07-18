@@ -248,12 +248,23 @@ def load_model(model_args, model_config, training_args):
         model_config.attn_implementation = attn_impl
         model = Emu3MoE(config=model_config)
     else:
-        model = Emu3MoE.from_pretrained(
-            model_args.model_name_or_path,
-            config=model_config,
-            attn_implementation=attn_impl,
-            torch_dtype=torch.bfloat16 if training_args.bf16 else None,
-        )
+        # Suppress DeepSpeed auto-init during model loading — the Trainer
+        # will wrap the model with DeepSpeed later.  Without this, ZeRO-3's
+        # batch-size assertion fires before the Trainer can set the values.
+        _ds_env = os.environ.pop("DS_CONFIG", None)
+        _cf_env = os.environ.pop("CONFIG_FILE", None)
+        try:
+            model = Emu3MoE.from_pretrained(
+                model_args.model_name_or_path,
+                config=model_config,
+                attn_implementation=attn_impl,
+                torch_dtype=torch.bfloat16 if training_args.bf16 else None,
+            )
+        finally:
+            if _ds_env is not None:
+                os.environ["DS_CONFIG"] = _ds_env
+            if _cf_env is not None:
+                os.environ["CONFIG_FILE"] = _cf_env
 
     # Training best-practices:
     #   1. Disable KV cache — wasteful during training (no generation),
