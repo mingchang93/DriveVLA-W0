@@ -55,6 +55,7 @@ SEED=42
 DETERMINISTIC=false
 DET_FLAG=""
 LOGGING_STEPS=10
+WARMUP_STEPS=50
 ZERO_STAGE=3
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -80,6 +81,7 @@ while [[ $# -gt 0 ]]; do
     --seed)                   SEED="$2";                     shift 2 ;;
     --deterministic)          DETERMINISTIC=true;            shift ;;
     --logging_steps)          LOGGING_STEPS="$2";            shift 2 ;;
+    --warmup_steps)           WARMUP_STEPS="$2";             shift 2 ;;
     --skip_inference)         SKIP_INFERENCE=true;           shift ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
@@ -107,6 +109,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --seed                     <int>   (42)"
       echo "  --deterministic                   Strict reproducibility (NPU vs GPU debug)"
       echo "  --logging_steps            <int>   (10)"
+      echo "  --warmup_steps             <int>   (50)"
       echo "  --skip_inference                   Skip inference after training"
       exit 0
       ;;
@@ -165,6 +168,7 @@ echo "  eval_steps:              $EVAL_STEPS"
 echo "  seed:                    $SEED"
 echo "  deterministic:           $DETERMINISTIC"
 echo "  logging_steps:           $LOGGING_STEPS"
+echo "  warmup_steps:            $WARMUP_STEPS"
 echo "  skip_inference:          $SKIP_INFERENCE"
 echo ""
 
@@ -221,7 +225,7 @@ torchrun \
     --max_steps "$MAX_STEPS" \
     --dataloader_num_workers 12 \
     --lr_scheduler_type cosine_with_min_lr \
-    --warmup_steps 50 \
+    --warmup_steps "$WARMUP_STEPS" \
     --per_device_train_batch_size ${BATCH_SIZE} \
     --frames 1 \
     --action_frames 8 \
