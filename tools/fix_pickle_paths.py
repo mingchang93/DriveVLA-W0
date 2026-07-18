@@ -46,12 +46,17 @@ def main():
     with open(p, "rb") as f:
         data = pickle.load(f)
 
-    total = 0
+    fixed = 0
+    skipped = 0
     for item in data:
         _, c = _replace(item, args.old_prefix, args.new_prefix)
-        total += c
+        fixed += c
+        if c == 0:
+            skipped += 1
 
-    print(total)
+    print(f"\nEntries:     {len(data)}")
+    print(f"Fixed:       {fixed}")
+    print(f"Skipped:     {skipped}")
 
     if args.dry_run:
         return
