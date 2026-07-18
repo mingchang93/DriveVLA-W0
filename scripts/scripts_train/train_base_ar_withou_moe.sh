@@ -44,6 +44,7 @@ BATCH_SIZE=6
 EXP_NAME="train_base_ar"
 INPUT_NUM_FRAME="$DEFAULT_INPUT_NUM_FRAME"
 SKIP_INFERENCE=false
+FP="bf16"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -59,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --batch_size)             BATCH_SIZE="$2";               shift 2 ;;
     --exp_name)               EXP_NAME="$2";                 shift 2 ;;
     --input_num_frame)        INPUT_NUM_FRAME="$2";          shift 2 ;;
+    --fp)                     FP="$2";                       shift 2 ;;
     --skip_inference)         SKIP_INFERENCE=true;           shift ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
@@ -76,6 +78,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --batch_size               <int>   (6)"
       echo "  --exp_name                 <str>   (train_base_ar)"
       echo "  --input_num_frame          <int>   (1)"
+      echo "  --fp                       <str>   (bf16) — bf16, fp16, or fp32"
       echo "  --skip_inference                   Skip inference after training"
       exit 0
       ;;
@@ -108,6 +111,7 @@ echo "  test_data_path:          $TEST_DATA_PATH"
 echo "  ngpus:                   $NGPUS"
 echo "  batch_size:              $BATCH_SIZE"
 echo "  master_port:             $MASTER_PORT"
+echo "  fp:                      $FP"
 echo "  skip_inference:          $SKIP_INFERENCE"
 echo ""
 
@@ -126,6 +130,14 @@ for p in "$MODEL_NAME_OR_PATH" "$MODEL_CONFIG_PATH" "$ACTION_TOKENIZER_PATH" "$D
   fi
 done
 
+echo "=== Setting precision: $FP ==="
+case "$FP" in
+  bf16)  FP_FLAGS="--bf16 True --fp16 False" ;;
+  fp16)  FP_FLAGS="--bf16 False --fp16 True" ;;
+  fp32)  FP_FLAGS="--bf16 False --fp16 False" ;;
+  *)     echo "ERROR: --fp must be bf16, fp16, or fp32 (got '$FP')"; exit 1 ;;
+esac
+
 # ============================================================
 # Launch training
 # ============================================================
@@ -142,6 +154,8 @@ torchrun \
     --action_tokenizer_path "$ACTION_TOKENIZER_PATH" \
     --deepspeed "$DEEPSPEED_CONFIG" \
     --output_dir "${OUTPUT_DIR}/${EXP_NAME}" \
+    $FP_FLAGS \
+    --tf32 False \
     --learning_rate 8e-5 \
     --null_prompt_prob 0.15 \
     --weight_decay 0.1 \
@@ -150,8 +164,6 @@ torchrun \
     --adam_beta1 0.9 \
     --adam_beta2 0.95 \
     --adam_epsilon 1e-6 \
-    --bf16 True \
-    --tf32 True \
     --data_path "$DATA_PATH" \
     --max_steps 4000 \
     --dataloader_num_workers 12 \
