@@ -24,4 +24,7 @@
 #   source /usr/local/Ascend/ascend-toolkit/set_env.sh
 
 # ─── optional but recommended for NPU training ──────────────────────
-msprobe               # Ascend precision debug tool for NPU vs GPU comparison
+transformers[torch]==4.44.0
+tiktoken==0.6.0
+pillow
+gradio==4.44.0
