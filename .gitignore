@@ -110,3 +110,7 @@ debug_output/
 # Codegraph local index
 .codegraph/
 .vscode/
+
+# Project-level instructions (local only)
+CLAUDE.md
+AGENTS.md
