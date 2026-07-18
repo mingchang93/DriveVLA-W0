@@ -106,4 +106,7 @@ data
 debug_output/
 
 *.pyc
+
+# Codegraph local index
+.codegraph/
 .vscode/
