@@ -1,35 +1,26 @@
 #
 # Additional dependencies for Ascend NPU support.
 #
-# Install alongside requirements.txt (skip flash-attn — it is CUDA-only):
+# Usage (after `conda activate drivevla`):
 #   pip install -r requirements_ascend.txt
 #
 # ─── torch_npu ───────────────────────────────────────────────────────
-# Must match your installed torch version and CANN toolkit version.
-# Install from Ascend's official wheel source:
+# Must match the installed CANN toolkit version.
+# CANN 8.5.1 → torch 2.7.1 → torch_npu 2.7.1.post4
 #
-#   pip install torch_npu torch -i https://repo.baai.ac.cn/repository/pypi/simple
-#
-# Or download the matching wheel from:
-#   https://www.hiascend.com/software/cann/community
-#
-# Version matrix (torch_npu → torch):
-#   2.2.0  → torch==2.2.0
-#   2.1.0  → torch==2.1.0
-#   2.0.0  → torch==2.0.0
+# Install torch first, then torch_npu:
+#   pip install torch==2.7.1 torchvision==0.20.1 torchaudio==2.7.1 \
+#     --index-url https://download.pytorch.org/whl/cu128
+#   pip install torch_npu==2.7.1.post4
 #
 # After installing, verify:
 #   python -c "import torch, torch_npu; print(torch.npu.is_available())"
 #   → True
 #
-torch_npu==2.4.0.post4
 
 # ─── CANN toolkit (system-level, not pip) ────────────────────────────
-# Download from https://www.hiascend.com/software/cann/community
-# Install per your OS:
-#   ./Ascend-cann-toolkit_8.0.RC1_linux-aarch64.run --install
-#
-# Then source the env:
+# Download CANN 8.5.1 from https://www.hiascend.com/software/cann/community
+# Install per your OS, then source the env:
 #   source /usr/local/Ascend/ascend-toolkit/set_env.sh
 
 # ─── optional but recommended for NPU training ──────────────────────

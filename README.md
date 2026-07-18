@@ -139,9 +139,27 @@ pip install deepspeed          # Distributed training
 pip install scipy              # Scientific computing
 pip install tensorboard==2.14.0  # Visualization
 pip install wandb              # Experiment tracking
+```
 
-# (Optional) Install Ascend NPU dependencies (skip flash-attn, add torch_npu)
+### Conda Environment Setup for Ascend
+
+```bash
+# Create Conda environment
+conda create -n drivevla python=3.10
+conda activate drivevla
+
+# Install PyTorch + torch_npu (CANN 8.5.1)
+pip install torch==2.7.1 torchvision==0.20.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+pip install torch_npu==2.7.1.post4
+
+# Install core dependencies (skip flash-attn — CUDA-only)
 pip install -r requirements_ascend.txt
+
+# Install training-related dependencies
+pip install deepspeed          # Distributed training
+pip install scipy              # Scientific computing
+pip install tensorboard==2.14.0  # Visualization
+pip install wandb              # Experiment tracking
 ```
 
 ### Testing
