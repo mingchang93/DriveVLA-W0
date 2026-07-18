@@ -35,6 +35,7 @@ MODEL_NAME_OR_PATH="$DEFAULT_MODEL_NAME_OR_PATH"
 MODEL_CONFIG_PATH="$DEFAULT_MODEL_CONFIG_PATH"
 ACTION_TOKENIZER_PATH="$DEFAULT_ACTION_TOKENIZER_PATH"
 DEEPSPEED_CONFIG="$DEFAULT_DEEPSPEED_CONFIG"
+DEEPSPEED_CONFIG_EXPLICIT=false
 DATA_PATH="$DEFAULT_DATA_PATH"
 OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
 TEST_DATA_PATH="$DEFAULT_TEST_DATA_PATH"
@@ -54,12 +55,14 @@ SEED=42
 DETERMINISTIC=false
 DET_FLAG=""
 LOGGING_STEPS=10
+ZERO_STAGE=3
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model_name_or_path)     MODEL_NAME_OR_PATH="$2";       shift 2 ;;
     --model_config_path)      MODEL_CONFIG_PATH="$2";        shift 2 ;;
     --action_tokenizer_path)  ACTION_TOKENIZER_PATH="$2";    shift 2 ;;
-    --deepspeed_config)       DEEPSPEED_CONFIG="$2";         shift 2 ;;
+    --deepspeed_config)       DEEPSPEED_CONFIG="$2";  DEEPSPEED_CONFIG_EXPLICIT=true;  shift 2 ;;
+    --zero_stage)             ZERO_STAGE="$2";               shift 2 ;;
     --data_path)              DATA_PATH="$2";                shift 2 ;;
     --test_data_path)         TEST_DATA_PATH="$2";           shift 2 ;;
     --output_dir)             OUTPUT_DIR="$2";               shift 2 ;;
@@ -86,6 +89,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --model_config_path        <path>  ($DEFAULT_MODEL_CONFIG_PATH)"
       echo "  --action_tokenizer_path    <path>  ($DEFAULT_ACTION_TOKENIZER_PATH)"
       echo "  --deepspeed_config         <path>  ($DEFAULT_DEEPSPEED_CONFIG)"
+      echo "  --zero_stage               <int>   (3) — shortcut: 2→zero2_offload, 3→zero3_offload"
       echo "  --data_path                <path>  ($DEFAULT_DATA_PATH)"
       echo "  --test_data_path           <path>  ($DEFAULT_TEST_DATA_PATH)"
       echo "  --output_dir               <path>  ($DEFAULT_OUTPUT_DIR)"
@@ -117,6 +121,16 @@ done
 # Convert boolean flags to CLI arguments
 [ "$DETERMINISTIC" = true ] && DET_FLAG="--deterministic"
 
+# Resolve --zero_stage shorthand to config path.
+# --deepspeed_config takes priority if explicitly given.
+if [ "$DEEPSPEED_CONFIG_EXPLICIT" = false ]; then
+  case "$ZERO_STAGE" in
+    2) DEEPSPEED_CONFIG="$ROOT/scripts/sft/zero2_offload.json" ;;
+    3) DEEPSPEED_CONFIG="$ROOT/scripts/sft/zero3_offload.json" ;;
+    *) echo "ERROR: --zero_stage must be 2 or 3 (got '$ZERO_STAGE')"; exit 1 ;;
+  esac
+fi
+
 # ============================================================
 # Fix: symlink train/ → utils/
 # ============================================================
@@ -134,6 +148,7 @@ echo "=== Training config ==="
 echo "  model_name_or_path:      $MODEL_NAME_OR_PATH"
 echo "  model_config_path:       $MODEL_CONFIG_PATH"
 echo "  action_tokenizer_path:   $ACTION_TOKENIZER_PATH"
+echo "  zero_stage:              $ZERO_STAGE"
 echo "  deepspeed_config:        $DEEPSPEED_CONFIG"
 echo "  data_path:               $DATA_PATH"
 echo "  output_dir:              $OUTPUT_DIR"
