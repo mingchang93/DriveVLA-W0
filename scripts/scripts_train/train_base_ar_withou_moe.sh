@@ -100,6 +100,9 @@ ln -sf "$ROOT/utils" "$ROOT/train"
 
 export PYTHONPATH="$ROOT:$ROOT/reference/Emu3:$PYTHONPATH"
 
+# Reduce GPU memory fragmentation (suggested by PyTorch's OOM message)
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 # ============================================================
 # Verify paths
 # ============================================================

@@ -204,14 +204,24 @@ def load_model(model_args, model_config, training_args):
     if training_args.from_scratch:
         model_config.torch_dtype = torch.bfloat16 if training_args.bf16 else None
         model_config.attn_implementation = "flash_attention_2" if training_args.attn_type == "fa2" else None
-        return Emu3MoE(config=model_config)
+        model = Emu3MoE(config=model_config)
     else:
-        return Emu3MoE.from_pretrained(
+        model = Emu3MoE.from_pretrained(
             model_args.model_name_or_path,
             config=model_config,
             attn_implementation="flash_attention_2" if training_args.attn_type == "fa2" else None,
             torch_dtype=torch.bfloat16 if training_args.bf16 else None,
         )
+
+    # Training best-practices:
+    #   1. Disable KV cache — wasteful during training (no generation),
+    #      saves ~2 GiB of peak memory.
+    #   2. Gradient checkpointing is handled by the Trainer via the
+    #      --gradient_checkpointing flag, but we keep use_cache=False
+    #      regardless so the model doesn't allocate unused KV buffers.
+    model.config.use_cache = False
+
+    return model
 
 def get_dataset(data_args, tokenizer):
     """
