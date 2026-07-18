@@ -80,7 +80,10 @@ class LoggingTrainer(tf.Trainer):
         # Pop the index first, since it's not a model input.
         # Handle the case where 'index' might not be present in inputs
         indices = inputs.pop("index", None)
-        
+        # Pop VAVA-only keys that the model forward doesn't accept
+        inputs.pop("pre_action", None)
+        inputs.pop("cmd", None)
+
         loss = super().training_step(model, inputs)
 
         # Only proceed with logging if we have indices and are in training mode
