@@ -53,6 +53,7 @@ EVAL_STEPS=400
 SEED=42
 DETERMINISTIC=false
 DET_FLAG=""
+LOGGING_STEPS=10
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model_name_or_path)     MODEL_NAME_OR_PATH="$2";       shift 2 ;;
@@ -75,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --eval_steps)             EVAL_STEPS="$2";               shift 2 ;;
     --seed)                   SEED="$2";                     shift 2 ;;
     --deterministic)          DETERMINISTIC=true;            shift ;;
+    --logging_steps)          LOGGING_STEPS="$2";            shift 2 ;;
     --skip_inference)         SKIP_INFERENCE=true;           shift ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
@@ -100,6 +102,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --eval_steps               <int>   (400) — used when eval_strategy=steps"
       echo "  --seed                     <int>   (42)"
       echo "  --deterministic                   Strict reproducibility (NPU vs GPU debug)"
+      echo "  --logging_steps            <int>   (10)"
       echo "  --skip_inference                   Skip inference after training"
       exit 0
       ;;
@@ -146,6 +149,7 @@ echo "  eval_strategy:           $EVAL_STRATEGY"
 echo "  eval_steps:              $EVAL_STEPS"
 echo "  seed:                    $SEED"
 echo "  deterministic:           $DETERMINISTIC"
+echo "  logging_steps:           $LOGGING_STEPS"
 echo "  skip_inference:          $SKIP_INFERENCE"
 echo ""
 
@@ -210,7 +214,7 @@ torchrun \
     --seed "$SEED" \
     $DET_FLAG \
     --attn_type "$ATTN_TYPE" \
-    --logging_steps 10 \
+    --logging_steps "$LOGGING_STEPS" \
     --gradient_checkpointing True \
     --gradient_accumulation_steps 1 \
     --save_strategy steps \
