@@ -291,7 +291,7 @@ def train():
         )
     else:
         # Setup Trainer
-        trainer = tf.Trainer(
+        trainer = LoggingTrainer(
             model=model,
             args=training_args,
             train_dataset=train_dataset,
