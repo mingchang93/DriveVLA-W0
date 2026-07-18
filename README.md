@@ -139,6 +139,9 @@ pip install deepspeed          # Distributed training
 pip install scipy              # Scientific computing
 pip install tensorboard==2.14.0  # Visualization
 pip install wandb              # Experiment tracking
+
+# (Optional) Install Ascend NPU dependencies (skip flash-attn, add torch_npu)
+pip install -r requirements_ascend.txt
 ```
 
 ### Testing
