@@ -57,6 +57,11 @@ def main():
         print(f"Error: {pkl_path} not found")
         sys.exit(1)
 
+    pkl_path = Path(args.pkl_path)
+    if not pkl_path.exists():
+        print(f"Error: {pkl_path} not found")
+        sys.exit(1)
+
     print(f"Pickle:     {pkl_path.resolve()}")
     print(f"Old prefix: {args.old_prefix}")
     print(f"New prefix: {args.new_prefix}")
@@ -67,6 +72,10 @@ def main():
     if not isinstance(data, list):
         print(f"Error: expected list, got {type(data)}")
         sys.exit(1)
+
+    # Show a sample before
+    sample_path = data[0].get("image_tokens_path", "")
+    print(f"\nSample path BEFORE: {sample_path}")
 
     fixed = 0
     skipped = 0
@@ -83,6 +92,9 @@ def main():
             else:
                 item["image_tokens_path"] = new_path
             fixed += 1
+
+    sample_path_after = data[0].get("image_tokens_path", "")
+    print(f"Sample path AFTER:  {sample_path_after}")
 
     print(f"\nEntries:     {len(data)}")
     print(f"Fixed:       {fixed}")
