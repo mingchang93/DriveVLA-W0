@@ -50,7 +50,9 @@ MAX_STEPS=4000
 SAVE_STEPS=2000
 EVAL_STRATEGY="no"
 EVAL_STEPS=400
-
+SEED=42
+DETERMINISTIC=false
+DET_FLAG=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model_name_or_path)     MODEL_NAME_OR_PATH="$2";       shift 2 ;;
@@ -71,6 +73,8 @@ while [[ $# -gt 0 ]]; do
     --save_steps)             SAVE_STEPS="$2";               shift 2 ;;
     --eval_strategy)          EVAL_STRATEGY="$2";            shift 2 ;;
     --eval_steps)             EVAL_STEPS="$2";               shift 2 ;;
+    --seed)                   SEED="$2";                     shift 2 ;;
+    --deterministic)          DETERMINISTIC=true;            shift ;;
     --skip_inference)         SKIP_INFERENCE=true;           shift ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
@@ -94,6 +98,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --save_steps               <int>   (2000)"
       echo "  --eval_strategy            <str>   (no) — no, steps, or epoch"
       echo "  --eval_steps               <int>   (400) — used when eval_strategy=steps"
+      echo "  --seed                     <int>   (42)"
+      echo "  --deterministic                   Strict reproducibility (NPU vs GPU debug)"
       echo "  --skip_inference                   Skip inference after training"
       exit 0
       ;;
@@ -104,6 +110,9 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Convert boolean flags to CLI arguments
+[ "$DETERMINISTIC" = true ] && DET_FLAG="--deterministic"
 
 # ============================================================
 # Fix: symlink train/ → utils/
@@ -135,6 +144,8 @@ echo "  max_steps:               $MAX_STEPS"
 echo "  save_steps:              $SAVE_STEPS"
 echo "  eval_strategy:           $EVAL_STRATEGY"
 echo "  eval_steps:              $EVAL_STEPS"
+echo "  seed:                    $SEED"
+echo "  deterministic:           $DETERMINISTIC"
 echo "  skip_inference:          $SKIP_INFERENCE"
 echo ""
 
@@ -196,7 +207,8 @@ torchrun \
     --frames 1 \
     --action_frames 8 \
     --max_position_embeddings 1400 \
-    --seed 42 \
+    --seed "$SEED" \
+    $DET_FLAG \
     --attn_type "$ATTN_TYPE" \
     --logging_steps 10 \
     --gradient_checkpointing True \

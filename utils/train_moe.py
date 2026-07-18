@@ -1,5 +1,7 @@
 import os
 import os.path as osp
+import random
+import numpy as np
 import torch
 import gc
 from dataclasses import dataclass, field
@@ -196,6 +198,7 @@ class TrainingArguments(tf.TrainingArguments):
     eval_accumulation_steps: Optional[int] = field(default=1)
     save_on_each_node: bool = field(default=False)  # 只在主节点保存
     save_only_model: bool = field(default=False)
+    deterministic: bool = field(default=False)  # enable strict reproducibility for NPU vs GPU debugging
 
 def load_model(model_args, model_config, training_args):
     """
@@ -256,6 +259,30 @@ def update_configs(model_config, args, fields):
     for f in fields:
         cross_update(model_config, args, f)
 
+def set_reproducibility(seed: int, deterministic: bool = True):
+    """Strict reproducibility setup for cross-platform (NPU vs GPU) comparison.
+
+    Mirrors the msprobe.pytorch.seed_all() approach — see
+    https://gitcode.com/Ascend/msprobe/blob/master/docs/zh/best_practices/train_debug_guide.md
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    if deterministic:
+        torch.use_deterministic_algorithms(True)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cuda.matmul.allow_tf32 = False
+        # cuBLAS workspace config (required for deterministic cuBLAS ops)
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+    # HCCL (NPU) deterministic communication
+    os.environ.setdefault("HCCL_DETERMINISTIC", "TRUE")
+
+
 def train():
     """
     Main function to train the model.
@@ -264,6 +291,11 @@ def train():
     parser = tf.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     
+    # Strict reproducibility for cross-platform (NPU vs GPU) comparison
+    if training_args.deterministic:
+        set_reproducibility(training_args.seed, deterministic=True)
+        print(f"[Reproducibility] enabled (seed={training_args.seed})")
+
     # Handle resolution parameter conversion from string to tuple
     if isinstance(data_args.resolution, str):
         print(f"Converting resolution from string '{data_args.resolution}' to tuple")
