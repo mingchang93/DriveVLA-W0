@@ -45,6 +45,7 @@ EXP_NAME="train_base_ar"
 INPUT_NUM_FRAME="$DEFAULT_INPUT_NUM_FRAME"
 SKIP_INFERENCE=false
 FP="bf16"
+ATTN_TYPE="sdpa"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -61,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --exp_name)               EXP_NAME="$2";                 shift 2 ;;
     --input_num_frame)        INPUT_NUM_FRAME="$2";          shift 2 ;;
     --fp)                     FP="$2";                       shift 2 ;;
+    --attn_type)              ATTN_TYPE="$2";                shift 2 ;;
     --skip_inference)         SKIP_INFERENCE=true;           shift ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
@@ -79,6 +81,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --exp_name                 <str>   (train_base_ar)"
       echo "  --input_num_frame          <int>   (1)"
       echo "  --fp                       <str>   (bf16) — bf16, fp16, or fp32"
+      echo "  --attn_type                <str>   (sdpa) — sdpa, fa2, or eager"
       echo "  --skip_inference                   Skip inference after training"
       exit 0
       ;;
@@ -112,6 +115,7 @@ echo "  ngpus:                   $NGPUS"
 echo "  batch_size:              $BATCH_SIZE"
 echo "  master_port:             $MASTER_PORT"
 echo "  fp:                      $FP"
+echo "  attn_type:               $ATTN_TYPE"
 echo "  skip_inference:          $SKIP_INFERENCE"
 echo ""
 
@@ -174,6 +178,7 @@ torchrun \
     --action_frames 8 \
     --max_position_embeddings 1400 \
     --seed 42 \
+    --attn_type "$ATTN_TYPE" \
     --logging_steps 10 \
     --gradient_checkpointing True \
     --gradient_accumulation_steps 1 \
