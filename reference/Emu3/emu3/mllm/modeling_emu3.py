@@ -33,48 +33,64 @@ from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 
-def chunked_cross_entropy(
-    logits: torch.Tensor,
+def chunked_lm_head_cross_entropy(
+    hidden_states: torch.Tensor,
+    lm_head_weight: torch.Tensor,
     labels: torch.Tensor,
     chunk_size: int = 16384,
     ignore_index: int = -100,
     weight: torch.Tensor = None,
 ) -> torch.Tensor:
-    """Memory-efficient cross-entropy for large vocabularies.
+    """Chunked lm_head projection + cross-entropy for large vocabularies.
 
-    Materializes [N, chunk_size] instead of [N, V] inside log_softmax,
-    trading a tiny amount of compute (~extra sum-exp over chunks) for
-    dramatically lower peak memory.  Useful when vocab_size is large
-    (e.g. 100k+ VQ-codebook tokens).
+    Never materialises the full [N, V] logits tensor — instead iterates
+    over the vocab dimension in chunks, computing lm_head projection
+    on-the-fly for each chunk.  Peak intermediate is [N, chunk_size]
+    instead of [N, V] (~335 MiB vs ~3.8 GiB for a 5120-long sequence).
+
+    A two-pass strategy avoids numerical-precision pitfalls:
+      1. Find the global maximum over every vocab entry.
+      2. Compute logsumexp (using the stable max from pass 1) and
+         gather the logit at each label's position.
 
     Args:
-        logits: [N, V] logits (float).
+        hidden_states: [N, H] input to the lm_head (already shifted).
+        lm_head_weight: [V, H] weight matrix of the output projection.
         labels: [N] target indices or ignore_index.
         chunk_size: vocab-dimension chunk size.
         ignore_index: index to mask out.
         weight: optional [V] class-weight vector.
     """
-    N, V = logits.shape
+    N, H = hidden_states.shape
+    V = lm_head_weight.shape[0]
+    device = hidden_states.device
 
-    # Max over vocab ─ numerical stability, reduces to [N]
-    max_val = logits.max(dim=-1, keepdim=False)[0]
-
-    # LogSumExp in chunks ─ never materialises [N, V]
-    lse = torch.zeros(N, device=logits.device, dtype=logits.dtype)
+    # Pass 1 — find the global max over the full vocab for numerical stability.
+    running_max = torch.full((N,), -float("inf"), device=device)
     for i in range(0, V, chunk_size):
-        chunk = logits[:, i : i + chunk_size]
-        lse += (chunk - max_val.unsqueeze(-1)).exp().sum(dim=-1)
-    lse = lse.log() + max_val  # [N]
+        chunk_w = lm_head_weight[i : i + chunk_size]
+        chunk_l = F.linear(hidden_states, chunk_w)  # [N, chunk]
+        running_max = torch.maximum(running_max, chunk_l.max(dim=-1, keepdim=False)[0])
 
-    # Logit at the ground-truth position
-    label_logit = logits.gather(1, labels.clamp(min=0).unsqueeze(1)).squeeze(1)
+    # Pass 2 — logsumexp (stable) + gather label-position logits.
+    lse = torch.zeros(N, device=device)
+    label_logit = torch.zeros(N, device=device)
 
-    # Negative log likelihood
+    for i in range(0, V, chunk_size):
+        chunk_w = lm_head_weight[i : i + chunk_size]
+        chunk_l = F.linear(hidden_states, chunk_w)  # [N, chunk]
+        lse += (chunk_l - running_max.unsqueeze(-1)).exp().sum(dim=-1)
+
+        in_chunk = (labels >= i) & (labels < i + chunk_size)
+        if in_chunk.any():
+            local_idx = labels[in_chunk] - i
+            label_logit[in_chunk] = chunk_l[in_chunk, local_idx]
+
+    lse = lse.log() + running_max  # [N]
     nll = lse - label_logit
 
-    # Per-class weighting
     if weight is not None:
-        w = weight[labels.clamp(min=0)]  # clamp so ignore_index doesn't OOB
+        w = weight[labels.clamp(min=0)]
         w[labels == ignore_index] = 0
         nll = nll * w
 
@@ -1605,35 +1621,44 @@ class Emu3MoE(Emu3PreTrainedModel):
             # flow matching loss
             loss_action = F.mse_loss(noise - action, velo_pred)
 
-        if self.config.pretraining_tp > 1:
-            lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
-            logits = [F.linear(hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
-            logits = torch.cat(logits, dim=-1)
-        else:
-            logits = self.lm_head(hidden_states)
-        logits = logits.float()
-
         loss = None
         if labels is not None:
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
-            shift_labels = shift_labels.view(-1)
-            shift_labels = shift_labels.to(shift_logits.device)
+            # Shift labels: tokens < n predict n
+            shift_labels = labels[..., 1:].contiguous().view(-1)
 
-            # Use chunked cross-entropy to avoid OOM on the full [N, V] log_softmax
-            # (vocab_size=184k ─ a dense log_softmax eats multiple GiB).
+            # Chunked lm-head + loss — never materialises [N, V] logits.
+            # The full logits tensor for vocab_size=184k is ~3.8 GiB per
+            # copy; this replaces both that and the log-softmax with a
+            # chunked scan over the vocab dimension (peak ~335 MiB).
+            hidden_shifted = hidden_states[:, :-1, :].reshape(-1, hidden_states.size(-1))
+
             weight = None
             if self.use_weight:
-                weight = torch.ones(self.config.vocab_size, device=logits.device)
+                weight = torch.ones(self.config.vocab_size, device=hidden_states.device)
                 weight[self.bov_token_id : self.eov_token_id + 1] = self.vision_loss_weight
 
-            loss = chunked_cross_entropy(shift_logits, shift_labels, weight=weight)
+            loss = chunked_lm_head_cross_entropy(
+                hidden_shifted, self.lm_head.weight, shift_labels, weight=weight,
+            )
             if action is not None and self.action_experts:
                 loss += loss_action * self.vision_loss_weight
-            # loss = loss_action
+
+            # Placeholder for the return path — the Trainer only reads .loss
+            # during training, never .logits.
+            logits = torch.empty(0, device=hidden_states.device)
+
+        else:
+            # Inference / no labels: compute full logits for generation.
+            if self.config.pretraining_tp > 1:
+                lm_head_slices = self.lm_head.weight.split(
+                    self.vocab_size // self.config.pretraining_tp, dim=0,
+                )
+                logits = [F.linear(hidden_states, lm_head_slices[i])
+                          for i in range(self.config.pretraining_tp)]
+                logits = torch.cat(logits, dim=-1)
+            else:
+                logits = self.lm_head(hidden_states)
+            logits = logits.float()
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
