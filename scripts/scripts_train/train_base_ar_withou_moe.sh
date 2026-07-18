@@ -127,10 +127,21 @@ done
 # Convert boolean flags to CLI arguments
 [ "$DETERMINISTIC" = true ] && DET_FLAG="--deterministic"
 
-# Resolve device type for NPU vs GPU
+# Resolve device type for NPU vs GPU  ────  sets DEVICE env for Python
 if [ "$DEVICE" = "npu" ]; then
   # FA2 is CUDA-only; force sdpa on NPU
   [ "$ATTN_TYPE" = "fa2" ] && ATTN_TYPE="sdpa"
+  # NPU communication backend (HCCL)  ──  NCCL is CUDA-only
+  export HCCL_DETERMINISTIC=TRUE
+  # Ascend EP / CANN tuning (optional)
+  : "${ASCEND_RT_VISIBLE_DEVICES:=0,1,2,3,4,5,6,7}"
+elif [ "$DEVICE" = "cuda" ]; then
+  export NCCL_DEBUG=INFO
+  export NCCL_BLOCKING_WAIT=1
+  export CUDA_DEVICE_MAX_CONNECTIONS=1
+else
+  # "auto" — let Python detect; skip device-specific vars
+  :
 fi
 
 # Resolve --zero_stage shorthand to config path.
@@ -151,7 +162,13 @@ ln -sf "$ROOT/utils" "$ROOT/train"
 export PYTHONPATH="$ROOT:$ROOT/reference/Emu3:$PYTHONPATH"
 
 # Reduce GPU memory fragmentation (suggested by PyTorch's OOM message)
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Only applies to CUDA — harmless but meaningless on NPU.
+if [ "$DEVICE" != "npu" ]; then
+  export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+fi
+
+# Forward device preference to Python (auto / cuda / npu)
+export DEVICE
 
 # ============================================================
 # Verify paths

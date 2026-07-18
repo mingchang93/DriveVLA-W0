@@ -25,7 +25,15 @@ try:
 except Exception:
     _npu_available = False
 
-_device_type = "npu" if _npu_available else ("cuda" if torch.cuda.is_available() else "cpu")
+_device_override = os.environ.get("DEVICE", "auto")
+if _device_override == "npu":
+    _device_type = "npu"
+elif _device_override == "cuda":
+    _device_type = "cuda"
+elif _device_override == "cpu":
+    _device_type = "cpu"
+else:
+    _device_type = "npu" if _npu_available else ("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def device_synchronize():

@@ -20,7 +20,22 @@ def parse_args():
 
 
 def setup_distributed():
-    dist.init_process_group(backend='nccl')
+    _device_type = os.environ.get("DEVICE", "auto")
+    if _device_type == "npu":
+        backend = "hccl"
+    elif _device_type == "cuda":
+        backend = "nccl"
+    else:
+        # auto-detect
+        try:
+            import torch_npu  # noqa: F401
+            if torch.npu.is_available():
+                backend = "hccl"
+            else:
+                backend = "nccl"
+        except Exception:
+            backend = "nccl"
+    dist.init_process_group(backend=backend)
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     return rank, world_size
@@ -80,7 +95,22 @@ def main():
     DEBUG = True
 
     rank, world_size = setup_distributed()
-    device = f"cuda:{rank}"
+
+    # Device-agnostic device string
+    _device_type = os.environ.get("DEVICE", "auto")
+    if _device_type == "npu":
+        device = f"npu:{rank}"
+    elif _device_type == "cuda":
+        device = f"cuda:{rank}"
+    else:
+        try:
+            import torch_npu  # noqa: F401
+            if torch.npu.is_available():
+                device = f"npu:{rank}"
+            else:
+                device = f"cuda:{rank}"
+        except Exception:
+            device = f"cuda:{rank}"
 
     with open(CONFIG["train_meta_pkl"], 'rb') as f:
         train_meta = pickle.load(f)
@@ -92,9 +122,11 @@ def main():
     action_low = torch.tensor(norm_cfg['norm_stats']['libero']['q01']).to(device)
     action_high = torch.tensor(norm_cfg['norm_stats']['libero']['q99']).to(device)
 
+    # FA2 is CUDA-only; fall back to sdpa on NPU / other devices
+    _attn_impl = "flash_attention_2" if ("cuda" in device) else "sdpa"
     model = Emu3MoE.from_pretrained(CONFIG["emu_hub"],
         torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
+        attn_implementation=_attn_impl,
         trust_remote_code=True,
     ).to(device).eval()
 
