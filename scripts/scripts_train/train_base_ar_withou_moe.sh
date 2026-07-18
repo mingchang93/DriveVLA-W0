@@ -190,7 +190,6 @@ torchrun \
     --per_device_eval_batch_size 4 \
     --eval_accumulation_steps 1 \
     --use_previous_actions True \
-    --action_dim 3 \
     --report_to tensorboard \
     --data_type navsim_vava
 
