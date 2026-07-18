@@ -22,7 +22,7 @@
 #   python -c "import torch, torch_npu; print(torch.npu.is_available())"
 #   → True
 #
-torch_npu
+torch_npu==2.4.0.post4
 
 # ─── CANN toolkit (system-level, not pip) ────────────────────────────
 # Download from https://www.hiascend.com/software/cann/community
@@ -33,5 +33,4 @@ torch_npu
 #   source /usr/local/Ascend/ascend-toolkit/set_env.sh
 
 # ─── optional but recommended for NPU training ──────────────────────
-deepspeed             # ZeRO stages work on NPU; use --zero_stage 2 if issues
 msprobe               # Ascend precision debug tool for NPU vs GPU comparison
