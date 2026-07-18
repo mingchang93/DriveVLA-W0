@@ -47,6 +47,9 @@ SKIP_INFERENCE=false
 FP="bf16"
 ATTN_TYPE="sdpa"
 MAX_STEPS=4000
+SAVE_STEPS=2000
+EVAL_STRATEGY="no"
+EVAL_STEPS=400
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,6 +68,9 @@ while [[ $# -gt 0 ]]; do
     --fp)                     FP="$2";                       shift 2 ;;
     --attn_type)              ATTN_TYPE="$2";                shift 2 ;;
     --max_steps)              MAX_STEPS="$2";                shift 2 ;;
+    --save_steps)             SAVE_STEPS="$2";               shift 2 ;;
+    --eval_strategy)          EVAL_STRATEGY="$2";            shift 2 ;;
+    --eval_steps)             EVAL_STEPS="$2";               shift 2 ;;
     --skip_inference)         SKIP_INFERENCE=true;           shift ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
@@ -85,6 +91,9 @@ while [[ $# -gt 0 ]]; do
       echo "  --fp                       <str>   (bf16) — bf16, fp16, or fp32"
       echo "  --attn_type                <str>   (sdpa) — sdpa, fa2, or eager"
       echo "  --max_steps                <int>   (4000)"
+      echo "  --save_steps               <int>   (2000)"
+      echo "  --eval_strategy            <str>   (no) — no, steps, or epoch"
+      echo "  --eval_steps               <int>   (400) — used when eval_strategy=steps"
       echo "  --skip_inference                   Skip inference after training"
       exit 0
       ;;
@@ -123,6 +132,9 @@ echo "  master_port:             $MASTER_PORT"
 echo "  fp:                      $FP"
 echo "  attn_type:               $ATTN_TYPE"
 echo "  max_steps:               $MAX_STEPS"
+echo "  save_steps:              $SAVE_STEPS"
+echo "  eval_strategy:           $EVAL_STRATEGY"
+echo "  eval_steps:              $EVAL_STEPS"
 echo "  skip_inference:          $SKIP_INFERENCE"
 echo ""
 
@@ -190,15 +202,15 @@ torchrun \
     --gradient_checkpointing True \
     --gradient_accumulation_steps 1 \
     --save_strategy steps \
-    --save_steps 2000 \
-    --eval_strategy no \
+    --save_steps "$SAVE_STEPS" \
+    --eval_strategy "$EVAL_STRATEGY" \
     --apply_loss_on_only_vision True \
     --apply_loss_on_only_action False \
     --actions True \
     --use_gripper False \
     --driving True \
     --evaluation_strategy steps \
-    --eval_steps 400 \
+    --eval_steps "$EVAL_STEPS" \
     --per_device_eval_batch_size 4 \
     --eval_accumulation_steps 1 \
     --use_previous_actions True \
