@@ -46,6 +46,7 @@ INPUT_NUM_FRAME="$DEFAULT_INPUT_NUM_FRAME"
 SKIP_INFERENCE=false
 FP="bf16"
 ATTN_TYPE="sdpa"
+MAX_STEPS=4000
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -63,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --input_num_frame)        INPUT_NUM_FRAME="$2";          shift 2 ;;
     --fp)                     FP="$2";                       shift 2 ;;
     --attn_type)              ATTN_TYPE="$2";                shift 2 ;;
+    --max_steps)              MAX_STEPS="$2";                shift 2 ;;
     --skip_inference)         SKIP_INFERENCE=true;           shift ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
@@ -82,6 +84,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --input_num_frame          <int>   (1)"
       echo "  --fp                       <str>   (bf16) — bf16, fp16, or fp32"
       echo "  --attn_type                <str>   (sdpa) — sdpa, fa2, or eager"
+      echo "  --max_steps                <int>   (4000)"
       echo "  --skip_inference                   Skip inference after training"
       exit 0
       ;;
@@ -119,6 +122,7 @@ echo "  batch_size:              $BATCH_SIZE"
 echo "  master_port:             $MASTER_PORT"
 echo "  fp:                      $FP"
 echo "  attn_type:               $ATTN_TYPE"
+echo "  max_steps:               $MAX_STEPS"
 echo "  skip_inference:          $SKIP_INFERENCE"
 echo ""
 
@@ -172,7 +176,7 @@ torchrun \
     --adam_beta2 0.95 \
     --adam_epsilon 1e-6 \
     --data_path "$DATA_PATH" \
-    --max_steps 4000 \
+    --max_steps "$MAX_STEPS" \
     --dataloader_num_workers 12 \
     --lr_scheduler_type cosine_with_min_lr \
     --warmup_steps 50 \
