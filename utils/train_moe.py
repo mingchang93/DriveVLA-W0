@@ -15,6 +15,38 @@ import torch.distributed as dist
 from datetime import datetime
 import threading
 from queue import Queue
+
+# ---------------------------------------------------------------------------
+# Device detection: NPU > CUDA > CPU
+# ---------------------------------------------------------------------------
+try:
+    import torch_npu  # noqa: F401
+    _npu_available = torch.npu.is_available()
+except Exception:
+    _npu_available = False
+
+_device_type = "npu" if _npu_available else ("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def device_synchronize():
+    if _device_type == "npu":
+        torch.npu.synchronize()
+    elif _device_type == "cuda":
+        torch.cuda.synchronize()
+
+
+def device_empty_cache():
+    if _device_type == "npu":
+        torch.npu.empty_cache()
+    elif _device_type == "cuda":
+        torch.cuda.empty_cache()
+
+
+def device_manual_seed_all(seed: int):
+    if _device_type == "npu":
+        torch.npu.manual_seed_all(seed)
+    elif _device_type == "cuda":
+        torch.cuda.manual_seed_all(seed)
 # 获取当前脚本的目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
 # 获取父目录(即包含train和reference的目录)
@@ -32,14 +64,14 @@ class MemoryEfficientTrainer(tf.Trainer):
     """最简单的显存回收Trainer"""
     def evaluation_loop(self, dataloader, description, prediction_loss_only=None, ignore_keys=None, metric_key_prefix="eval"):
         # 评估前清理显存
-        torch.cuda.empty_cache()
+        device_empty_cache()
         gc.collect()
-        
+
         # 执行评估
         result = super().evaluation_loop(dataloader, description, prediction_loss_only, ignore_keys, metric_key_prefix)
-        
+
         # 评估后清理显存
-        torch.cuda.empty_cache()
+        device_empty_cache()
         gc.collect()
         
         return result
@@ -204,15 +236,22 @@ def load_model(model_args, model_config, training_args):
     """
     Load model based on whether to train from scratch or fine-tune from a pre-trained model.
     """
+    # FA2 is CUDA-only; fall back to sdpa on NPU / other devices.
+    if training_args.attn_type == "fa2" and _device_type != "cuda":
+        attn_impl = "sdpa"
+        print(f"[Device] FA2 not available on {_device_type}, falling back to sdpa")
+    else:
+        attn_impl = training_args.attn_type
+
     if training_args.from_scratch:
         model_config.torch_dtype = torch.bfloat16 if training_args.bf16 else None
-        model_config.attn_implementation = "flash_attention_2" if training_args.attn_type == "fa2" else None
+        model_config.attn_implementation = attn_impl
         model = Emu3MoE(config=model_config)
     else:
         model = Emu3MoE.from_pretrained(
             model_args.model_name_or_path,
             config=model_config,
-            attn_implementation="flash_attention_2" if training_args.attn_type == "fa2" else None,
+            attn_implementation=attn_impl,
             torch_dtype=torch.bfloat16 if training_args.bf16 else None,
         )
 
@@ -268,19 +307,17 @@ def set_reproducibility(seed: int, deterministic: bool = True):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    device_manual_seed_all(seed)
 
     if deterministic:
         torch.use_deterministic_algorithms(True)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cuda.matmul.allow_tf32 = False
-        # cuBLAS workspace config (required for deterministic cuBLAS ops)
-        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-
-    # HCCL (NPU) deterministic communication
-    os.environ.setdefault("HCCL_DETERMINISTIC", "TRUE")
+        if _device_type == "cuda":
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cuda.matmul.allow_tf32 = False
+            os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        # HCCL (NPU) deterministic communication
+        os.environ.setdefault("HCCL_DETERMINISTIC", "TRUE")
 
 
 def train():
@@ -290,7 +327,9 @@ def train():
     # Parse arguments
     parser = tf.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    
+
+    print(f"[Device] detected: {_device_type}")
+
     # Strict reproducibility for cross-platform (NPU vs GPU) comparison
     if training_args.deterministic:
         set_reproducibility(training_args.seed, deterministic=True)
@@ -350,7 +389,7 @@ def train():
 
     # Save model and training state
     trainer.save_state()
-    torch.cuda.synchronize()
+    device_synchronize()
     trainer.save_model(training_args.output_dir)
 
 if __name__ == "__main__":

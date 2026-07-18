@@ -47,6 +47,7 @@ INPUT_NUM_FRAME="$DEFAULT_INPUT_NUM_FRAME"
 SKIP_INFERENCE=false
 FP="bf16"
 ATTN_TYPE="sdpa"
+DEVICE="auto"
 MAX_STEPS=4000
 SAVE_STEPS=2000
 EVAL_STRATEGY="no"
@@ -74,6 +75,7 @@ while [[ $# -gt 0 ]]; do
     --input_num_frame)        INPUT_NUM_FRAME="$2";          shift 2 ;;
     --fp)                     FP="$2";                       shift 2 ;;
     --attn_type)              ATTN_TYPE="$2";                shift 2 ;;
+    --device)                 DEVICE="$2";                   shift 2 ;;
     --max_steps)              MAX_STEPS="$2";                shift 2 ;;
     --save_steps)             SAVE_STEPS="$2";               shift 2 ;;
     --eval_strategy)          EVAL_STRATEGY="$2";            shift 2 ;;
@@ -102,6 +104,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --input_num_frame          <int>   (1)"
       echo "  --fp                       <str>   (bf16) — bf16, fp16, or fp32"
       echo "  --attn_type                <str>   (sdpa) — sdpa, fa2, or eager"
+      echo "  --device                  <str>   (auto) — auto, cuda, or npu"
       echo "  --max_steps                <int>   (4000)"
       echo "  --save_steps               <int>   (2000)"
       echo "  --eval_strategy            <str>   (no) — no, steps, or epoch"
@@ -123,6 +126,12 @@ done
 
 # Convert boolean flags to CLI arguments
 [ "$DETERMINISTIC" = true ] && DET_FLAG="--deterministic"
+
+# Resolve device type for NPU vs GPU
+if [ "$DEVICE" = "npu" ]; then
+  # FA2 is CUDA-only; force sdpa on NPU
+  [ "$ATTN_TYPE" = "fa2" ] && ATTN_TYPE="sdpa"
+fi
 
 # Resolve --zero_stage shorthand to config path.
 # --deepspeed_config takes priority if explicitly given.
@@ -161,6 +170,7 @@ echo "  batch_size:              $BATCH_SIZE"
 echo "  master_port:             $MASTER_PORT"
 echo "  fp:                      $FP"
 echo "  attn_type:               $ATTN_TYPE"
+echo "  device:                  $DEVICE"
 echo "  max_steps:               $MAX_STEPS"
 echo "  save_steps:              $SAVE_STEPS"
 echo "  eval_strategy:           $EVAL_STRATEGY"
