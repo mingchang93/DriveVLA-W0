@@ -66,19 +66,20 @@ def chunked_lm_head_cross_entropy(
     device = hidden_states.device
 
     # Pass 1 — find the global max over the full vocab for numerical stability.
-    running_max = torch.full((N,), -float("inf"), device=device)
+    # .float() matches the original `logits = logits.float()` pattern.
+    running_max = torch.full((N,), -float("inf"), device=device, dtype=torch.float)
     for i in range(0, V, chunk_size):
         chunk_w = lm_head_weight[i : i + chunk_size]
-        chunk_l = F.linear(hidden_states, chunk_w)  # [N, chunk]
+        chunk_l = F.linear(hidden_states, chunk_w).float()  # [N, chunk]
         running_max = torch.maximum(running_max, chunk_l.max(dim=-1, keepdim=False)[0])
 
     # Pass 2 — logsumexp (stable) + gather label-position logits.
-    lse = torch.zeros(N, device=device)
-    label_logit = torch.zeros(N, device=device)
+    lse = torch.zeros(N, device=device, dtype=torch.float)
+    label_logit = torch.zeros(N, device=device, dtype=torch.float)
 
     for i in range(0, V, chunk_size):
         chunk_w = lm_head_weight[i : i + chunk_size]
-        chunk_l = F.linear(hidden_states, chunk_w)  # [N, chunk]
+        chunk_l = F.linear(hidden_states, chunk_w).float()  # [N, chunk]
         lse += (chunk_l - running_max.unsqueeze(-1)).exp().sum(dim=-1)
 
         in_chunk = (labels >= i) & (labels < i + chunk_size)
