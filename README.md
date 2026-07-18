@@ -152,6 +152,9 @@ conda activate drivevla
 pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1
 pip install torch_npu==2.7.1.post4
 
+# Install core dependencies
+pip install -r requirements_ascend.txt
+
 # Install training-related dependencies
 pip install deepspeed          # Distributed training
 pip install scipy              # Scientific computing
