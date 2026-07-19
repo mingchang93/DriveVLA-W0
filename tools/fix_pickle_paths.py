@@ -65,6 +65,10 @@ def main():
     with open(out, "wb") as f:
         pickle.dump(data, f)
 
+    print(f"\nDone — saved to: {out}")
+    print(f"Replace the original pickle with this fixed copy before training:")
+    print(f"  mv {out} {p}")
+
 
 if __name__ == "__main__":
     main()
