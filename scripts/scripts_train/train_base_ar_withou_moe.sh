@@ -53,6 +53,7 @@ SAVE_STEPS=2000
 EVAL_STRATEGY="no"
 EVAL_STEPS=400
 SEED=42
+SHUFFLE_TRAIN_DATA=true
 DETERMINISTIC=false
 DET_FLAG=""
 LOGGING_STEPS=10
@@ -81,6 +82,7 @@ while [[ $# -gt 0 ]]; do
     --eval_strategy)          EVAL_STRATEGY="$2";            shift 2 ;;
     --eval_steps)             EVAL_STEPS="$2";               shift 2 ;;
     --seed)                   SEED="$2";                     shift 2 ;;
+    --shuffle_train_data)     SHUFFLE_TRAIN_DATA="$2";       shift 2 ;;
     --deterministic)          DETERMINISTIC=true;            shift ;;
     --logging_steps)          LOGGING_STEPS="$2";            shift 2 ;;
     --warmup_steps)           WARMUP_STEPS="$2";             shift 2 ;;
@@ -110,6 +112,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --eval_strategy            <str>   (no) — no, steps, or epoch"
       echo "  --eval_steps               <int>   (400) — used when eval_strategy=steps"
       echo "  --seed                     <int>   (42)"
+      echo "  --shuffle_train_data      <bool>  (true) — true=shuffle, false=deterministic (NPU/GPU alignment)"
       echo "  --deterministic                   Strict reproducibility (NPU vs GPU debug)"
       echo "  --logging_steps            <int>   (10)"
       echo "  --warmup_steps             <int>   (50)"
@@ -126,6 +129,8 @@ done
 
 # Convert boolean flags to CLI arguments
 [ "$DETERMINISTIC" = true ] && DET_FLAG="--deterministic"
+# Data shuffling: true → shuffle (default), false → deterministic order (NPU/GPU alignment)
+SHUFFLE_FLAG="--dataloader_shuffle $SHUFFLE_TRAIN_DATA"
 
 # Resolve device type for NPU vs GPU  ────  sets DEVICE env for Python
 if [ "$DEVICE" = "npu" ]; then
@@ -193,6 +198,7 @@ echo "  save_steps:              $SAVE_STEPS"
 echo "  eval_strategy:           $EVAL_STRATEGY"
 echo "  eval_steps:              $EVAL_STEPS"
 echo "  seed:                    $SEED"
+echo "  shuffle_train_data:      $SHUFFLE_TRAIN_DATA"
 echo "  deterministic:           $DETERMINISTIC"
 echo "  logging_steps:           $LOGGING_STEPS"
 echo "  warmup_steps:            $WARMUP_STEPS"
@@ -258,6 +264,7 @@ torchrun \
     --action_frames 8 \
     --max_position_embeddings 1400 \
     --seed "$SEED" \
+    $SHUFFLE_FLAG \
     $DET_FLAG \
     --attn_type "$ATTN_TYPE" \
     --logging_steps "$LOGGING_STEPS" \

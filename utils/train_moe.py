@@ -77,7 +77,7 @@ from transformers import AutoModel,Trainer
 from datasets import Emu3DrivingDataset
 from datasets import Emu3DrivingVAVADataset
 from datasets import Emu3DrivingNuplan6VADataset
-from torch.utils.data import WeightedRandomSampler, DataLoader
+from torch.utils.data import WeightedRandomSampler, DataLoader, RandomSampler, SequentialSampler
 
 class MemoryEfficientTrainer(tf.Trainer):
     """最简单的显存回收Trainer"""
@@ -104,10 +104,24 @@ class LoggingTrainer(tf.Trainer):
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             log_filename = f"sample_log_consolidated_{timestamp}.json"
             self.log_filepath = osp.join(self.args.output_dir, log_filename)
-            
+
             self.log_queue = Queue()
             self.logging_thread = threading.Thread(target=self._log_writer, daemon=True)
             self.logging_thread.start()
+
+    def _get_train_sampler(self, train_dataset=None) -> Optional[torch.utils.data.Sampler]:
+        if train_dataset is None:
+            train_dataset = self.train_dataset
+        if train_dataset is None or not has_length(train_dataset):
+            return None
+
+        if self.args.group_by_length:
+            return super()._get_train_sampler(train_dataset)
+
+        if self.args.dataloader_shuffle:
+            return RandomSampler(train_dataset)
+        else:
+            return SequentialSampler(train_dataset)
 
     def _log_writer(self):
         log_data = {}
@@ -244,6 +258,7 @@ class TrainingArguments(tf.TrainingArguments):
     max_position_embeddings: Optional[int] = field(default=None)
     from_scratch: bool = field(default=False)
     dataloader_num_workers: Optional[int] = field(default=0)
+    dataloader_shuffle: bool = field(default=True)  # False → deterministic data order (NPU/GPU alignment)
     evaluation_strategy: str = field(default="steps")  # or "epoch"
     eval_steps: Optional[int] = field(default=1000)     # 每 1000 step 验证一次
     per_device_eval_batch_size: Optional[int] = field(default=1)
