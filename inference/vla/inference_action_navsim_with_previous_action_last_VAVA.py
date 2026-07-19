@@ -87,7 +87,7 @@ def main():
         "fast_tokenizer": "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu/pretrained_models/fast",
         # "fast_tokenizer": "/mnt/nvme0n1p1/yingyan.li/repo/OmniSim//pretrained_models/fast_navsim_s20",
         "norm_config": "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu/configs/normalizer_navsim_trainval/norm_stats.json",
-        "token_yaml": "data/navsim/processed_data/scene_files/scene_filter/navtest.yaml",
+        "token_yaml": "inference/navsim/navsim/navsim/planning/script/config/common/train_test_split/scene_filter/navtest.yaml",
     }
 
     action_predict_frame = 8
