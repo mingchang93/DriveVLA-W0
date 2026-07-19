@@ -17,22 +17,33 @@ import threading
 from queue import Queue
 
 # ---------------------------------------------------------------------------
-# Device detection: NPU > CUDA > CPU
+# Device detection: NPU > CUDA > CPU  (override via DEVICE env var)
 # ---------------------------------------------------------------------------
-try:
-    import torch_npu  # noqa: F401
-    _npu_available = torch.npu.is_available()
-except Exception:
-    _npu_available = False
-
 _device_override = os.environ.get("DEVICE", "auto")
+
 if _device_override == "npu":
+    # When the user explicitly asks for NPU, try importing torch_npu.
+    # The bare-except at module level is fine here — we want the ImportError
+    # to propagate so the user sees what's wrong.
+    import torch_npu  # noqa: F401 — will raise ImportError if missing
+    _npu_available = torch.npu.is_available()
+    if not _npu_available:
+        raise RuntimeError("DEVICE=npu set but no NPU detected (torch.npu.is_available()=False)")
     _device_type = "npu"
+
 elif _device_override == "cuda":
     _device_type = "cuda"
+
 elif _device_override == "cpu":
     _device_type = "cpu"
+
 else:
+    # "auto" — import torch_npu quietly; failure is fine, fall back to cuda/cpu
+    try:
+        import torch_npu  # noqa: F401
+        _npu_available = torch.npu.is_available()
+    except Exception:
+        _npu_available = False
     _device_type = "npu" if _npu_available else ("cuda" if torch.cuda.is_available() else "cpu")
 
 
