@@ -350,20 +350,41 @@ def set_reproducibility(seed: int, deterministic: bool = True):
     Mirrors the msprobe.pytorch.seed_all() approach — see
     https://gitcode.com/Ascend/msprobe/blob/master/docs/zh/best_practices/train_debug_guide.md
     """
+    # Python-level hash seed — must be set BEFORE any dict/set operations
+    os.environ.setdefault("PYTHONHASHSEED", str(seed))
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     device_manual_seed_all(seed)
 
     if deterministic:
-        torch.use_deterministic_algorithms(True)
+        torch.use_deterministic_algorithms(True, warn_only=True)
         if _device_type == "cuda":
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
             torch.backends.cuda.matmul.allow_tf32 = False
             os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+            # NCCL deterministic communication (GPU)
+            os.environ.setdefault("NCCL_DETERMINISTIC", "TRUE")
+            os.environ.setdefault("NCCL_CROSS_NIC", "1")
         # HCCL (NPU) deterministic communication
         os.environ.setdefault("HCCL_DETERMINISTIC", "TRUE")
+        # NPU non-saturation mode: ensure overflow → Inf/NaN (matches GPU default)
+        os.environ.setdefault("INF_NAN_MODE_ENABLE", "1")
+
+    return seed  # useful for callers to chain
+
+
+def disable_model_dropout(model: torch.nn.Module) -> None:
+    """Disable all dropout layers in the model for deterministic precision comparison.
+
+    Walks the module tree and sets p=0 on every Dropout/DropoutNd instance.
+    Mirrors msprobe.pytorch.seed_all(rm_dropout=True) behavior.
+    """
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.modules.dropout._DropoutNd):
+            module.p = 0.0
+            print(f"[Reproducibility] Dropout disabled: {name}")
 
 
 def train():
@@ -404,6 +425,9 @@ def train():
 
     # Initialize model
     model = load_model(model_args, model_config, training_args)
+
+    if training_args.deterministic:
+        disable_model_dropout(model)
 
     # Initialize dataset
     train_dataset, eval_dataset = get_dataset_split(data_args, tokenizer)

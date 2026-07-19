@@ -138,11 +138,16 @@ if [ "$DEVICE" = "npu" ]; then
   [ "$ATTN_TYPE" = "fa2" ] && ATTN_TYPE="sdpa"
   # NPU communication backend (HCCL)  ──  NCCL is CUDA-only
   export HCCL_DETERMINISTIC=TRUE
+  # Non-saturation mode: overflow → Inf/NaN (matches GPU default behavior)
+  export INF_NAN_MODE_ENABLE=1
+  # Stream sync for memory corruption diagnosis (uncomment to enable)
+  # export ASCEND_LAUNCH_BLOCKING=1
   # Ascend EP / CANN tuning (optional)
   : "${ASCEND_RT_VISIBLE_DEVICES:=0,1,2,3,4,5,6,7}"
 elif [ "$DEVICE" = "cuda" ]; then
   export NCCL_DEBUG=INFO
   export NCCL_BLOCKING_WAIT=1
+  export NCCL_DETERMINISTIC=TRUE
   export CUDA_DEVICE_MAX_CONNECTIONS=1
 else
   # "auto" — let Python detect; skip device-specific vars
