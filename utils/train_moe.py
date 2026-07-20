@@ -143,13 +143,26 @@ class LoggingTrainer(tf.Trainer):
                 f.truncate()
                 f.flush() # Ensure data is written to disk
 
+    # Non-model keys added by VAVA/AR datasets that Emu3MoE.forward() doesn't accept.
+    # Pop in both training_step and compute_loss so evaluation doesn't crash on them.
+    _VAVA_EXTRA_KEYS = {"pre_action", "token", "vlm_input_ids", "vlm_attention_mask", "vlm_labels", "action_input_ids"}
+
+    def _strip_non_model_keys(self, inputs: dict) -> dict:
+        """Remove dataset keys that aren't accepted by model.forward().
+
+        Mutates inputs in place and returns it for convenience.
+        """
+        inputs.pop("index", None)
+        inputs.pop("cmd", None)
+        for k in self._VAVA_EXTRA_KEYS:
+            inputs.pop(k, None)
+        return inputs
+
     def training_step(self, model: torch.nn.Module, inputs: dict) -> torch.Tensor:
         # Pop the index first, since it's not a model input.
-        # Handle the case where 'index' might not be present in inputs
         indices = inputs.pop("index", None)
         # Pop VAVA-only keys that the model forward doesn't accept
-        inputs.pop("pre_action", None)
-        inputs.pop("cmd", None)
+        self._strip_non_model_keys(inputs)
 
         loss = super().training_step(model, inputs)
 
@@ -173,6 +186,16 @@ class LoggingTrainer(tf.Trainer):
                     self.log_queue.put((self.state.global_step, consolidated_indices))
 
         return loss
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        """Strip non-model keys before model(**inputs) — mirrors training_step.
+
+        Without this, evaluation (which calls compute_loss → model(**inputs) via
+        prediction_step) crashes with ``unexpected keyword argument 'pre_action'``
+        when the dataset adds VAVA / AR auxiliary keys.
+        """
+        self._strip_non_model_keys(inputs)
+        return super().compute_loss(model, inputs, return_outputs=return_outputs)
 
     def __del__(self):
         # Gracefully shut down the logging thread
@@ -206,6 +229,19 @@ class WeightedSamplerTrainer(Trainer):
             num_workers=self.args.dataloader_num_workers,
             pin_memory=self.args.dataloader_pin_memory,
         )
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        """Strip non-model keys before model(**inputs).
+
+        Same as LoggingTrainer.compute_loss: VAVA/AR datasets add pre_action,
+        cmd, token, etc. that Emu3MoE.forward() doesn't accept.
+        """
+        inputs.pop("index", None)
+        inputs.pop("cmd", None)
+        for k in ({"pre_action", "token", "vlm_input_ids", "vlm_attention_mask",
+                   "vlm_labels", "action_input_ids"}):
+            inputs.pop(k, None)
+        return super().compute_loss(model, inputs, return_outputs=return_outputs)
 
 
 @dataclass
