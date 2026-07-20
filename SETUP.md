@@ -95,3 +95,9 @@ bash scripts/scripts_train/train_base_ar_withou_moe.sh \
 ```
 
 See `scripts/scripts_train/train_base_ar_withou_moe.sh --help` for all options.
+
+## 5. Precision Alignment (NPU vs GPU)
+
+For deterministic reproducibility across platforms, follow the step-by-step guide:
+
+→ **[PRECISION_ALIGNMENT.md](PRECISION_ALIGNMENT.md)**
