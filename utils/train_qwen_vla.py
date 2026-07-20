@@ -14,6 +14,33 @@ import transformers
 from typing import Dict
 from collections import defaultdict
 
+# ---------------------------------------------------------------------------
+# Device detection: NPU > CUDA > CPU  (override via DEVICE env var)
+# ---------------------------------------------------------------------------
+_device_override = os.environ.get("DEVICE", "auto")
+
+if _device_override == "npu":
+    import torch_npu  # noqa: F401 — will raise ImportError if missing
+    _npu_available = torch.npu.is_available()
+    if not _npu_available:
+        raise RuntimeError("DEVICE=npu set but no NPU detected (torch.npu.is_available()=False)")
+    _device_type = "npu"
+
+elif _device_override == "cuda":
+    _device_type = "cuda"
+
+elif _device_override == "cpu":
+    _device_type = "cpu"
+
+else:
+    # "auto" — import torch_npu quietly; failure is fine, fall back to cuda/cpu
+    try:
+        import torch_npu  # noqa: F401
+        _npu_available = torch.npu.is_available()
+    except Exception:
+        _npu_available = False
+    _device_type = "npu" if _npu_available else ("cuda" if torch.cuda.is_available() else "cpu")
+
 # Add paths to import Qwen-VL components
 qwen_vl_path = Path(__file__).parent.parent / "reference" / "Qwen2.5-VL" / "qwen-vl-finetune"
 sys.path.append(str(qwen_vl_path))
@@ -146,11 +173,20 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
                 extract_action_hidden=True,
                 sd_model_path=model_args.sd_model_path,
             )
+    # Resolve attention implementation with device-aware fallback
+    # FA2 is CUDA-only; fall back to sdpa on NPU / other devices
+    attn_type = getattr(training_args, "attn_type", "fa2")
+    if attn_type == "fa2" and _device_type != "cuda":
+        attn_impl = "sdpa"
+        print(f"[Device] FA2 not available on {_device_type}, falling back to sdpa")
+    else:
+        attn_impl = attn_type
+
     model = model_class.from_pretrained(
             model_args.model_name_or_path,
             config=ross_cfg,
             cache_dir=training_args.cache_dir,
-            attn_implementation="flash_attention_2",
+            attn_implementation=attn_impl,
             torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
             trust_remote_code=True,
     )

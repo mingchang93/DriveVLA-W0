@@ -53,3 +53,4 @@ class TrainingArguments(transformers.TrainingArguments):
     dataloader_shuffle: bool = field(default=True)
     save_only_model: bool = field(default=False, metadata={"help": "Save only model weights, not optimizer states"})
     min_learning_rate: Optional[float] = field(default=None)
+    attn_type: Optional[str] = field(default="fa2", metadata={"help": "Attention implementation: fa2, sdpa, or eager. FA2 is CUDA-only; falls back to sdpa on NPU."})
