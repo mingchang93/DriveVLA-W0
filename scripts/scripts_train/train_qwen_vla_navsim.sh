@@ -4,7 +4,7 @@
 #
 # Usage:
 #   bash scripts/scripts_train/train_qwen_vla_navsim.sh \
-#       --sd_model_path ./pretrained_models/stable-diffusion-v1-5/unet \
+#       --sd_model_path ./pretrained_models/stable-diffusion-v1-5 \
 #       --data_root ./data/navsim/processed_data
 #
 # Run without arguments to use defaults (assuming standard repo layout).
@@ -19,7 +19,7 @@ set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 
 DEFAULT_MODEL_NAME_OR_PATH="Qwen/Qwen2.5-VL-3B-Instruct"
-DEFAULT_SD_MODEL_PATH="$ROOT/pretrained_models/stable-diffusion-v1-5/unet"
+DEFAULT_SD_MODEL_PATH="$ROOT/pretrained_models/stable-diffusion-v1-5"
 DEFAULT_ACTION_TOKENIZER_PATH="$ROOT/configs/fast"
 DEFAULT_DEEPSPEED_CONFIG="$ROOT/scripts/sft/zero3_offload.json"
 DEFAULT_DATA_PATH="$ROOT/data/navsim/processed_data/meta/navsim_emu_vla_256_144_trainval_pre_1s.pkl"
@@ -109,7 +109,7 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Options (all optional, defaults in parentheses):"
       echo "  --model_name_or_path       <path>  ($DEFAULT_MODEL_NAME_OR_PATH)"
-      echo "  --sd_model_path            <path>  ($DEFAULT_SD_MODEL_PATH)"
+      echo "  --sd_model_path            <path>  ($DEFAULT_SD_MODEL_PATH) — parent dir with unet/ and vae/ subdirs"
       echo "  --action_tokenizer_path    <path>  ($DEFAULT_ACTION_TOKENIZER_PATH)"
       echo "  --deepspeed_config         <path>  ($DEFAULT_DEEPSPEED_CONFIG)"
       echo "  --zero_stage               <int>   (3) — shortcut: 2→zero2_offload, 3→zero3_offload"
@@ -257,11 +257,22 @@ if [ "$DATA_ROOT" != "$OLD_DATA_PREFIX" ] && [ ! -e "$OLD_DATA_PREFIX" ]; then
 fi
 
 # ============================================================
+# Resolve SD model sub-paths
+# ============================================================
+# User passes the parent directory (e.g. stable-diffusion-v1-5).
+# The Python script expects the UNet path and derives the VAE path
+# via .replace("/unet", "/vae"), so we pass <sd_model_path>/unet.
+SD_MODEL_UNET_PATH="$SD_MODEL_PATH/unet"
+SD_MODEL_VAE_PATH="$SD_MODEL_PATH/vae"
+
+# ============================================================
 # Verify paths
 # ============================================================
 echo "=== Qwen VLA Training config ==="
 echo "  model_name_or_path:      $MODEL_NAME_OR_PATH"
 echo "  sd_model_path:           $SD_MODEL_PATH"
+echo "    → unet:                $SD_MODEL_UNET_PATH"
+echo "    → vae:                 $SD_MODEL_VAE_PATH"
 echo "  action_tokenizer_path:   $ACTION_TOKENIZER_PATH"
 echo "  zero_stage:              $ZERO_STAGE"
 echo "  deepspeed_config:        $DEEPSPEED_CONFIG"
@@ -294,7 +305,7 @@ echo "  max_grad_norm:           $MAX_GRAD_NORM"
 echo "  skip_inference:          $SKIP_INFERENCE"
 echo ""
 
-for p in "$MODEL_NAME_OR_PATH" "$SD_MODEL_PATH" "$ACTION_TOKENIZER_PATH" "$DEEPSPEED_CONFIG" "$DATA_PATH" "$DATA_ROOT"; do
+for p in "$MODEL_NAME_OR_PATH" "$ACTION_TOKENIZER_PATH" "$DEEPSPEED_CONFIG" "$DATA_PATH" "$DATA_ROOT"; do
   # Skip HF Hub model names (contain '/', not local paths)
   if [ "$p" = "$MODEL_NAME_OR_PATH" ] && [[ "$p" != /* ]] && [[ "$p" != ./* ]]; then
     echo "[Skip] model_name_or_path=$p (non-local, assumed HF Hub)"
@@ -303,7 +314,6 @@ for p in "$MODEL_NAME_OR_PATH" "$SD_MODEL_PATH" "$ACTION_TOKENIZER_PATH" "$DEEPS
   if [ ! -e "$p" ]; then
     echo "ERROR: $p not found."
     case "$p" in
-      "$SD_MODEL_PATH")          hint="--sd_model_path" ;;
       "$ACTION_TOKENIZER_PATH")  hint="--action_tokenizer_path" ;;
       "$DEEPSPEED_CONFIG")       hint="--deepspeed_config" ;;
       "$DATA_PATH")              hint="--data_path" ;;
@@ -314,6 +324,20 @@ for p in "$MODEL_NAME_OR_PATH" "$SD_MODEL_PATH" "$ACTION_TOKENIZER_PATH" "$DEEPS
     exit 1
   fi
 done
+
+# Verify SD model sub-paths separately
+if [ ! -e "$SD_MODEL_UNET_PATH" ]; then
+  echo "ERROR: $SD_MODEL_UNET_PATH not found."
+  echo "  Expected: <sd_model_path>/unet/config.json"
+  echo "  Download:  huggingface-cli download runwayml/stable-diffusion-v1-5 --local-dir $SD_MODEL_PATH"
+  exit 1
+fi
+if [ ! -e "$SD_MODEL_VAE_PATH" ]; then
+  echo "ERROR: $SD_MODEL_VAE_PATH not found."
+  echo "  Expected: <sd_model_path>/vae/config.json"
+  echo "  Download:  huggingface-cli download runwayml/stable-diffusion-v1-5 --local-dir $SD_MODEL_PATH"
+  exit 1
+fi
 
 # ============================================================
 # Precision flags
@@ -342,7 +366,7 @@ torchrun \
     --master_port=${MASTER_PORT} \
     utils/train_qwen_vla.py \
     --model_name_or_path "$MODEL_NAME_OR_PATH" \
-    --sd_model_path "$SD_MODEL_PATH" \
+    --sd_model_path "$SD_MODEL_UNET_PATH" \
     --dataset_type "$DATASET_TYPE" \
     --data_path "$DATA_PATH" \
     --data_root "$DATA_ROOT" \
