@@ -62,11 +62,17 @@ def main():
         return
 
     out = p.parent / f"{p.stem}_fixed.pkl"
+
+    # Remove stale _fixed.pkl from a previous run so we start clean
+    if out.exists():
+        out.unlink()
+        print(f"\nRemoved previous fixed copy: {out}")
+
     with open(out, "wb") as f:
         pickle.dump(data, f)
 
     print(f"\nDone — saved to: {out}")
-    print(f"Replace the original pickle with this fixed copy before training:")
+    print(f"\nTo use the fixed pickle for training, replace the original:")
     print(f"  mv {out} {p}")
 
 
