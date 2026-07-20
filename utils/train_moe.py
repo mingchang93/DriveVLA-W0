@@ -1,3 +1,6 @@
+from msprobe.pytorch import seed_all
+seed_all(seed=1234, mode=True, rm_dropout=True)
+
 import os
 import os.path as osp
 import random
