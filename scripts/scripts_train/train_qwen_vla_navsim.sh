@@ -4,10 +4,10 @@
 #
 # Usage:
 #   bash scripts/scripts_train/train_qwen_vla_navsim.sh \
-#       --sd_model_path ./pretrained_models/stable-diffusion-v1-5 \
-#       --data_root ./data/navsim/processed_data
+#       --sensor_blobs /path/to/sensor_blobs \
+#       --data_path /path/to/train.pkl
 #
-# Run without arguments to use defaults (assuming standard repo layout).
+# Run without arguments to use defaults.
 # Use --help for all options.
 #
 
@@ -19,13 +19,17 @@ set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
+DEFAULT_SENSOR_BLOBS="$HOME/navsim_workspace/dataset/sensor_blobs/trainval"
+DEFAULT_NAVSIM_LOGS="$HOME/navsim_workspace/dataset/navsim_logs/trainval"
 DEFAULT_MODEL_NAME_OR_PATH="Qwen/Qwen2.5-VL-3B-Instruct"
 DEFAULT_SD_MODEL_PATH="$ROOT/pretrained_models/stable-diffusion-v1-5"
 DEFAULT_ACTION_TOKENIZER_PATH="$ROOT/configs/fast"
 DEFAULT_DEEPSPEED_CONFIG="$ROOT/scripts/sft/zero3_offload.json"
+# Pickle files live in the repo (or anywhere — override via --data_path / --test_data_path)
 DEFAULT_DATA_PATH="$ROOT/data/navsim/processed_data/meta/navsim_emu_vla_256_144_trainval_pre_1s.pkl"
 DEFAULT_TEST_DATA_PATH="$ROOT/data/navsim/processed_data/meta/navsim_emu_vla_256_144_test_pre_1s.pkl"
-DEFAULT_DATA_ROOT="$ROOT/data/navsim/processed_data"
+# Data root for camera images — derived from NavSim workspace + split
+DEFAULT_DATA_ROOT="$DEFAULT_SENSOR_BLOBS"
 DEFAULT_OUTPUT_DIR="$ROOT/logs/train_qwen_vla_$TIMESTAMP"
 DEFAULT_DATASET_TYPE="navsim2va_ross"
 
@@ -33,6 +37,8 @@ DEFAULT_DATASET_TYPE="navsim2va_ross"
 # Parse input arguments
 # ============================================================
 MODEL_NAME_OR_PATH="$DEFAULT_MODEL_NAME_OR_PATH"
+SENSOR_BLOBS="$DEFAULT_SENSOR_BLOBS"
+NAVSIM_LOGS="$DEFAULT_NAVSIM_LOGS"
 SD_MODEL_PATH="$DEFAULT_SD_MODEL_PATH"
 ACTION_TOKENIZER_PATH="$DEFAULT_ACTION_TOKENIZER_PATH"
 DEEPSPEED_CONFIG="$DEFAULT_DEEPSPEED_CONFIG"
@@ -76,6 +82,8 @@ SKIP_INFERENCE=true
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model_name_or_path)     MODEL_NAME_OR_PATH="$2";       shift 2 ;;
+    --sensor_blobs)           SENSOR_BLOBS="$2";             shift 2 ;;
+    --navsim_logs)            NAVSIM_LOGS="$2";               shift 2 ;;
     --sd_model_path)          SD_MODEL_PATH="$2";            shift 2 ;;
     --action_tokenizer_path)  ACTION_TOKENIZER_PATH="$2";    shift 2 ;;
     --deepspeed_config)       DEEPSPEED_CONFIG="$2";  DEEPSPEED_CONFIG_EXPLICIT=true;  shift 2 ;;
@@ -117,13 +125,15 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Options (all optional, defaults in parentheses):"
       echo "  --model_name_or_path       <path>  ($DEFAULT_MODEL_NAME_OR_PATH)"
+      echo "  --sensor_blobs             <path>  ($DEFAULT_SENSOR_BLOBS) — camera image root (data_root)"
+      echo "  --navsim_logs              <path>  ($DEFAULT_NAVSIM_LOGS) — NavSim annotation logs dir"
       echo "  --sd_model_path            <path>  ($DEFAULT_SD_MODEL_PATH) — parent dir with unet/ and vae/ subdirs"
       echo "  --action_tokenizer_path    <path>  ($DEFAULT_ACTION_TOKENIZER_PATH)"
       echo "  --deepspeed_config         <path>  ($DEFAULT_DEEPSPEED_CONFIG)"
       echo "  --zero_stage               <int>   (3) — shortcut: 2→zero2_offload, 3→zero3_offload"
       echo "  --data_path                <path>  ($DEFAULT_DATA_PATH)"
       echo "  --test_data_path           <path>  ($DEFAULT_TEST_DATA_PATH) — used for post-training inference"
-      echo "  --data_root                <path>  ($DEFAULT_DATA_ROOT) — camera image root"
+      echo "  --data_root                <path>  (derived from --sensor_blobs) — camera image root"
       echo "  --dataset_type             <str>   (navsim2va_ross) — or nuplan2va_ross"
       echo "  --output_dir               <path>  ($DEFAULT_OUTPUT_DIR)"
       echo "  --ngpus                    <int>   (8)"
@@ -162,6 +172,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Derive data_root from sensor_blobs (honour explicit --data_root if set)
+if [ "$DATA_ROOT" = "$DEFAULT_DATA_ROOT" ]; then
+  DATA_ROOT="$SENSOR_BLOBS"
+fi
 
 # Convert boolean flags to CLI arguments
 [ "$DETERMINISTIC" = true ] && DET_FLAG="--deterministic"
@@ -218,56 +233,6 @@ fi
 export DEVICE
 
 # ============================================================
-# Symlink: hardcoded pickle path → actual data root
-# ============================================================
-# Pickle files may contain absolute paths from the original machine
-# (e.g. /mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu_Huawei/data/navsim/processed_data).
-# Instead of rewriting all pickle files, create a symlink so the
-# hardcoded paths resolve to the real data location.
-OLD_DATA_PREFIX="/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu_Huawei/data/navsim/processed_data"
-
-if [ "$DATA_ROOT" != "$OLD_DATA_PREFIX" ] && [ ! -e "$OLD_DATA_PREFIX" ]; then
-  echo "=== Creating symlink for legacy pickle paths ==="
-  echo "  $OLD_DATA_PREFIX  →  $DATA_ROOT"
-
-  OLD_PARENT_DIR="$(dirname "$OLD_DATA_PREFIX")"
-  if [ ! -d "$OLD_PARENT_DIR" ]; then
-    if mkdir -p "$OLD_PARENT_DIR" 2>/dev/null; then
-      echo "  Created parent dirs: $OLD_PARENT_DIR"
-    else
-      echo "  ┌─────────────────────────────────────────────────────────────┐"
-      echo "  │ WARNING: Cannot create $OLD_PARENT_DIR"
-      echo "  │"
-      echo "  │ Pickle files reference paths under:"
-      echo "  │   $OLD_DATA_PREFIX"
-      echo "  │"
-      echo "  │ To fix, run ONE of the following:"
-      echo "  │"
-      echo "  │   sudo mkdir -p \"$OLD_PARENT_DIR\" \\"
-      echo "  │     && sudo ln -s \"$DATA_ROOT\" \"$OLD_DATA_PREFIX\""
-      echo "  │"
-      echo "  │   python tools/fix_pickle_paths.py \"$DATA_PATH\" \\"
-      echo "  │     --new_prefix \"$DATA_ROOT\" \\"
-      echo "  │     && mv \"\${DATA_PATH%.pkl}_fixed.pkl\" \"$DATA_PATH\""
-      echo "  └─────────────────────────────────────────────────────────────┘"
-    fi
-  fi
-
-  if [ -d "$OLD_PARENT_DIR" ] && [ ! -e "$OLD_DATA_PREFIX" ]; then
-    if ln -s "$DATA_ROOT" "$OLD_DATA_PREFIX" 2>/dev/null; then
-      echo "  Symlink created successfully."
-    else
-      echo "  ┌─────────────────────────────────────────────────────────────┐"
-      echo "  │ WARNING: Symlink creation failed (likely need sudo).       │"
-      echo "  │ Run:                                                       │"
-      echo "  │   sudo ln -s \"$DATA_ROOT\" \"$OLD_DATA_PREFIX\"                │"
-      echo "  └─────────────────────────────────────────────────────────────┘"
-    fi
-  fi
-  echo ""
-fi
-
-# ============================================================
 # Resolve SD model sub-paths
 # ============================================================
 # User passes the parent directory (e.g. stable-diffusion-v1-5).
@@ -281,6 +246,8 @@ SD_MODEL_VAE_PATH="$SD_MODEL_PATH/vae"
 # ============================================================
 echo "=== Qwen VLA Training config ==="
 echo "  model_name_or_path:      $MODEL_NAME_OR_PATH"
+echo "  sensor_blobs:            $SENSOR_BLOBS"
+echo "  navsim_logs:             $NAVSIM_LOGS"
 echo "  sd_model_path:           $SD_MODEL_PATH"
 echo "    → unet:                $SD_MODEL_UNET_PATH"
 echo "    → vae:                 $SD_MODEL_VAE_PATH"
@@ -450,6 +417,7 @@ if [ "$SKIP_INFERENCE" = false ]; then
     --action_tokenizer_path "${ACTION_TOKENIZER_PATH}" \
     --token_yaml "${TOKEN_YAML}" \
     --norm_stats_path "${NORM_STATS_PATH}" \
+    --raw_img_root "${SENSOR_BLOBS}" \
     --cur_frame_idx "${CUR_FRAME_IDX}" \
     --future_nums "${FUTURE_NUMS}" \
     --action_dim 3 \
