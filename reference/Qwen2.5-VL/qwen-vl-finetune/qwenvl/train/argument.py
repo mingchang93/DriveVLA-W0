@@ -54,3 +54,4 @@ class TrainingArguments(transformers.TrainingArguments):
     save_only_model: bool = field(default=False, metadata={"help": "Save only model weights, not optimizer states"})
     min_learning_rate: Optional[float] = field(default=None)
     attn_type: Optional[str] = field(default="fa2", metadata={"help": "Attention implementation: fa2, sdpa, or eager. FA2 is CUDA-only; falls back to sdpa on NPU."})
+    deterministic: bool = field(default=False, metadata={"help": "Enable strict reproducibility for NPU vs GPU cross-platform comparison"})

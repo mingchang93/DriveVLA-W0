@@ -8,11 +8,14 @@ import sys
 import logging
 import pathlib
 import pickle
+import random
+import numpy as np
 from pathlib import Path
 import torch
 import transformers
-from typing import Dict
+from typing import Dict, Optional
 from collections import defaultdict
+from torch.utils.data import SequentialSampler, RandomSampler
 
 # ---------------------------------------------------------------------------
 # Device detection: NPU > CUDA > CPU  (override via DEVICE env var)
@@ -40,6 +43,73 @@ else:
     except Exception:
         _npu_available = False
     _device_type = "npu" if _npu_available else ("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# ---------------------------------------------------------------------------
+# Reproducibility helpers (mirrors train_moe.py — PRECISION_ALIGNMENT.md)
+# ---------------------------------------------------------------------------
+
+def device_synchronize():
+    if _device_type == "npu":
+        torch.npu.synchronize()
+    elif _device_type == "cuda":
+        torch.cuda.synchronize()
+
+
+def device_empty_cache():
+    if _device_type == "npu":
+        torch.npu.empty_cache()
+    elif _device_type == "cuda":
+        torch.cuda.empty_cache()
+
+
+def device_manual_seed_all(seed: int):
+    if _device_type == "npu":
+        torch.npu.manual_seed_all(seed)
+    elif _device_type == "cuda":
+        torch.cuda.manual_seed_all(seed)
+
+
+def set_reproducibility(seed: int, deterministic: bool = True):
+    """Strict reproducibility setup for cross-platform (NPU vs GPU) comparison.
+
+    Mirrors the msprobe.pytorch.seed_all() approach — see PRECISION_ALIGNMENT.md.
+    """
+    # Python-level hash seed — must be set BEFORE any dict/set operations
+    os.environ.setdefault("PYTHONHASHSEED", str(seed))
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    device_manual_seed_all(seed)
+
+    if deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        if _device_type == "cuda":
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cuda.matmul.allow_tf32 = False
+            os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+            # NCCL deterministic communication (GPU)
+            os.environ.setdefault("NCCL_DETERMINISTIC", "TRUE")
+            os.environ.setdefault("NCCL_CROSS_NIC", "1")
+        # HCCL (NPU) deterministic communication
+        os.environ.setdefault("HCCL_DETERMINISTIC", "TRUE")
+        # NPU non-saturation mode: ensure overflow → Inf/NaN (matches GPU default)
+        os.environ.setdefault("INF_NAN_MODE_ENABLE", "1")
+
+    return seed
+
+
+def disable_model_dropout(model: torch.nn.Module) -> None:
+    """Disable all dropout layers for deterministic precision comparison.
+
+    Walks the module tree and sets p=0 on every Dropout/DropoutNd instance.
+    Mirrors msprobe.pytorch.seed_all(rm_dropout=True) behavior.
+    """
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.modules.dropout._DropoutNd):
+            module.p = 0.0
+            print(f"[Reproducibility] Dropout disabled: {name}")
 
 # Add paths to import Qwen-VL components
 qwen_vl_path = Path(__file__).parent.parent / "reference" / "Qwen2.5-VL" / "qwen-vl-finetune"
@@ -94,6 +164,23 @@ class RossTrainer(Trainer):
         self._acc_sum = defaultdict(float)
         self._acc_n = 0
         self._micro_in_accum = 0  # 当前累积里的 micro-step 计数
+
+    def _get_train_sampler(self, train_dataset=None) -> Optional[torch.utils.data.Sampler]:
+        """Override sampler to respect --dataloader_shuffle for deterministic reproducibility.
+
+        When dataloader_shuffle=False, use SequentialSampler instead of RandomSampler
+        so NPU and GPU see the same data order (PRECISION_ALIGNMENT.md Phase 2.3).
+        """
+        if train_dataset is None:
+            train_dataset = self.train_dataset
+        if train_dataset is None or not hasattr(train_dataset, '__len__'):
+            return None
+        if self.args.group_by_length:
+            return super()._get_train_sampler(train_dataset)
+        if getattr(self.args, 'dataloader_shuffle', True):
+            return RandomSampler(train_dataset)
+        else:
+            return SequentialSampler(train_dataset)
 
     def _log_mean_and_reset(self):
         if self._acc_n == 0:
@@ -313,20 +400,32 @@ def setup_vla_data_args(data_args, image_processor, model_type):
 
 def train():
     global local_rank
-    
+
     # Parse arguments
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    
+
     local_rank = training_args.local_rank
     os.makedirs(training_args.output_dir, exist_ok=True)
-    
+
+    rank0_print(f"[Device] detected: {_device_type}")
+
+    # Strict reproducibility for cross-platform (NPU vs GPU) comparison
+    # Phase 2 + Phase 3 of PRECISION_ALIGNMENT.md
+    if training_args.deterministic:
+        set_reproducibility(training_args.seed, deterministic=True)
+        rank0_print(f"[Reproducibility] enabled (seed={training_args.seed})")
+
     rank0_print("="*50)
     rank0_print("Qwen-VL VLA Training Setup")
     rank0_print("="*50)
-    
+
     # Setup model and tokenizer (includes all training configuration)
     model, tokenizer, image_processor, model_type = setup_vla_model_and_tokenizer(model_args, training_args)
+
+    # Disable dropout for deterministic comparison (Phase 2.2)
+    if training_args.deterministic:
+        disable_model_dropout(model)
     
     # Setup data
     data_args = setup_vla_data_args(data_args, image_processor, model_type)
