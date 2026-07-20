@@ -207,6 +207,56 @@ fi
 export DEVICE
 
 # ============================================================
+# Symlink: hardcoded pickle path → actual data root
+# ============================================================
+# Pickle files may contain absolute paths from the original machine
+# (e.g. /mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu_Huawei/data/navsim/processed_data).
+# Instead of rewriting all pickle files, create a symlink so the
+# hardcoded paths resolve to the real data location.
+OLD_DATA_PREFIX="/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu_Huawei/data/navsim/processed_data"
+
+if [ "$DATA_ROOT" != "$OLD_DATA_PREFIX" ] && [ ! -e "$OLD_DATA_PREFIX" ]; then
+  echo "=== Creating symlink for legacy pickle paths ==="
+  echo "  $OLD_DATA_PREFIX  →  $DATA_ROOT"
+
+  OLD_PARENT_DIR="$(dirname "$OLD_DATA_PREFIX")"
+  if [ ! -d "$OLD_PARENT_DIR" ]; then
+    if mkdir -p "$OLD_PARENT_DIR" 2>/dev/null; then
+      echo "  Created parent dirs: $OLD_PARENT_DIR"
+    else
+      echo "  ┌─────────────────────────────────────────────────────────────┐"
+      echo "  │ WARNING: Cannot create $OLD_PARENT_DIR"
+      echo "  │"
+      echo "  │ Pickle files reference paths under:"
+      echo "  │   $OLD_DATA_PREFIX"
+      echo "  │"
+      echo "  │ To fix, run ONE of the following:"
+      echo "  │"
+      echo "  │   sudo mkdir -p \"$OLD_PARENT_DIR\" \\"
+      echo "  │     && sudo ln -s \"$DATA_ROOT\" \"$OLD_DATA_PREFIX\""
+      echo "  │"
+      echo "  │   python tools/fix_pickle_paths.py \"$DATA_PATH\" \\"
+      echo "  │     --new_prefix \"$DATA_ROOT\" \\"
+      echo "  │     && mv \"\${DATA_PATH%.pkl}_fixed.pkl\" \"$DATA_PATH\""
+      echo "  └─────────────────────────────────────────────────────────────┘"
+    fi
+  fi
+
+  if [ -d "$OLD_PARENT_DIR" ] && [ ! -e "$OLD_DATA_PREFIX" ]; then
+    if ln -s "$DATA_ROOT" "$OLD_DATA_PREFIX" 2>/dev/null; then
+      echo "  Symlink created successfully."
+    else
+      echo "  ┌─────────────────────────────────────────────────────────────┐"
+      echo "  │ WARNING: Symlink creation failed (likely need sudo).       │"
+      echo "  │ Run:                                                       │"
+      echo "  │   sudo ln -s \"$DATA_ROOT\" \"$OLD_DATA_PREFIX\"                │"
+      echo "  └─────────────────────────────────────────────────────────────┘"
+    fi
+  fi
+  echo ""
+fi
+
+# ============================================================
 # Verify paths
 # ============================================================
 echo "=== Qwen VLA Training config ==="
