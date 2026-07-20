@@ -34,6 +34,8 @@ import sys
 # Add the pickle_gen directory for navsim_coor
 _SCRIPT_DIR = osp.dirname(osp.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
+# Add repo root for project imports (e.g. utils.datasets)
+sys.path.insert(0, osp.dirname(osp.dirname(osp.dirname(_SCRIPT_DIR))))
 from navsim_coor import StateSE2, convert_absolute_to_relative_se2_array, normalize_angle
 
 # --- constants ---
@@ -103,6 +105,7 @@ def main():
         print(f"Found {len(token_list)} scene tokens from log files")
 
     # --- Phase 1: Build scene_dict_all from per-scene logs ---
+    # Keyed by scene_name (from log filename); each value is a list of per-frame dicts.
     scene_dict_all = {}
 
     log_files = [f for f in os.listdir(logs_dir) if f.endswith('.pkl')]
@@ -112,6 +115,9 @@ def main():
         log_path = osp.join(logs_dir, log_name)
         scene = pickle.load(open(log_path, "rb"))
         num_frames = len(scene)
+
+        # Derive scene name from log filename (e.g. "2021.05.12...pkl" -> "2021.05.12...")
+        scene_name = log_name.replace('.pkl', '')
 
         # 1. Read all global SE2 poses
         global_ego_poses = []
@@ -180,34 +186,36 @@ def main():
                 fi["pre_1s_text_list"] = scene[i - 2]["text_list"]
                 fi["pre_1s_image_vq_list"] = scene[i - 2]["image_vq_list"]
 
-            # 3.5 Store in scene_dict_all
-            token = fi.pop("token")
-            scene_dict_all[token] = fi
+            # 3.5 Store in scene_dict_all keyed by (scene_name, frame_index)
+            per_frame_token = fi.pop("token")
+            _ = per_frame_token  # not used for matching — see Phase 2
+            scene_dict_all.setdefault(scene_name, []).append(fi)
 
     # --- Phase 2: Build result_file ordered by token_list ---
     result_file = []
     missing = 0
-    for token in tqdm(token_list, desc="Generating result_file"):
-        info = scene_dict_all.get(token)
-        if info is None:
+    for scene_name in tqdm(token_list, desc="Generating result_file"):
+        frame_list = scene_dict_all.get(scene_name)
+        if frame_list is None:
             missing += 1
             continue
-        result_file.append({
-            "token": token,
-            "text": info["text_list"],
-            "image": info["image_vq_list"],
-            "action": info["relative_action_list"],
-            "pre_1s_text": info["pre_1s_text_list"],
-            "pre_1s_image": info["pre_1s_image_vq_list"],
-            "pre_1s_action": info["pre_1s_relative_action_list"],
-        })
+        for fi in frame_list:
+            result_file.append({
+                "token": scene_name,
+                "text": fi["text_list"],
+                "image": fi["image_vq_list"],
+                "action": fi["relative_action_list"],
+                "pre_1s_text": fi["pre_1s_text_list"],
+                "pre_1s_image": fi["pre_1s_image_vq_list"],
+                "pre_1s_action": fi["pre_1s_relative_action_list"],
+            })
 
     print(f"Total scenes in result: {len(result_file)}")
     if missing > 0:
         print(f"Missing scenes (not in logs): {missing}")
 
     # --- Phase 3: Normalize actions ---
-    from utils.dataset.normalize_pi0 import RunningStats, save
+    from utils.datasets.normalize_pi0 import RunningStats, save
     norm_path = osp.join(output_dir, f"normalizer_navsim_{split}")
     os.makedirs(norm_path, exist_ok=True)
 
