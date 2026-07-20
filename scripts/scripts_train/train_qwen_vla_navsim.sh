@@ -23,6 +23,7 @@ DEFAULT_SD_MODEL_PATH="$ROOT/pretrained_models/stable-diffusion-v1-5"
 DEFAULT_ACTION_TOKENIZER_PATH="$ROOT/configs/fast"
 DEFAULT_DEEPSPEED_CONFIG="$ROOT/scripts/sft/zero3_offload.json"
 DEFAULT_DATA_PATH="$ROOT/data/navsim/processed_data/meta/navsim_emu_vla_256_144_trainval_pre_1s.pkl"
+DEFAULT_TEST_DATA_PATH="$ROOT/data/navsim/processed_data/meta/navsim_emu_vla_256_144_test_pre_1s.pkl"
 DEFAULT_DATA_ROOT="$ROOT/data/navsim/processed_data"
 DEFAULT_OUTPUT_DIR="$ROOT/logs/train_qwen_vla"
 DEFAULT_DATASET_TYPE="navsim2va_ross"
@@ -36,6 +37,7 @@ ACTION_TOKENIZER_PATH="$DEFAULT_ACTION_TOKENIZER_PATH"
 DEEPSPEED_CONFIG="$DEFAULT_DEEPSPEED_CONFIG"
 DEEPSPEED_CONFIG_EXPLICIT=false
 DATA_PATH="$DEFAULT_DATA_PATH"
+TEST_DATA_PATH="$DEFAULT_TEST_DATA_PATH"
 DATA_ROOT="$DEFAULT_DATA_ROOT"
 DATASET_TYPE="$DEFAULT_DATASET_TYPE"
 OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
@@ -48,6 +50,8 @@ ATTN_TYPE="sdpa"
 DEVICE="auto"
 MAX_STEPS=4000
 SAVE_STEPS=2000
+EVAL_STRATEGY="no"
+EVAL_STEPS=400
 SEED=42
 SHUFFLE_TRAIN_DATA=true
 DETERMINISTIC=false
@@ -76,6 +80,7 @@ while [[ $# -gt 0 ]]; do
     --deepspeed_config)       DEEPSPEED_CONFIG="$2";  DEEPSPEED_CONFIG_EXPLICIT=true;  shift 2 ;;
     --zero_stage)             ZERO_STAGE="$2";               shift 2 ;;
     --data_path)              DATA_PATH="$2";                shift 2 ;;
+    --test_data_path)         TEST_DATA_PATH="$2";           shift 2 ;;
     --data_root)              DATA_ROOT="$2";                shift 2 ;;
     --dataset_type)           DATASET_TYPE="$2";             shift 2 ;;
     --output_dir)             OUTPUT_DIR="$2";               shift 2 ;;
@@ -88,6 +93,8 @@ while [[ $# -gt 0 ]]; do
     --device)                 DEVICE="$2";                   shift 2 ;;
     --max_steps)              MAX_STEPS="$2";                shift 2 ;;
     --save_steps)             SAVE_STEPS="$2";               shift 2 ;;
+    --eval_strategy)          EVAL_STRATEGY="$2";            shift 2 ;;
+    --eval_steps)             EVAL_STEPS="$2";               shift 2 ;;
     --seed)                   SEED="$2";                     shift 2 ;;
     --shuffle_train_data)     SHUFFLE_TRAIN_DATA="$2";       shift 2 ;;
     --deterministic)          DETERMINISTIC=true;            shift ;;
@@ -114,6 +121,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --deepspeed_config         <path>  ($DEFAULT_DEEPSPEED_CONFIG)"
       echo "  --zero_stage               <int>   (3) — shortcut: 2→zero2_offload, 3→zero3_offload"
       echo "  --data_path                <path>  ($DEFAULT_DATA_PATH)"
+      echo "  --test_data_path           <path>  ($DEFAULT_TEST_DATA_PATH) — used for post-training inference"
       echo "  --data_root                <path>  ($DEFAULT_DATA_ROOT) — camera image root"
       echo "  --dataset_type             <str>   (navsim2va_ross) — or nuplan2va_ross"
       echo "  --output_dir               <path>  ($DEFAULT_OUTPUT_DIR)"
@@ -126,6 +134,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --device                   <str>   (auto) — auto, cuda, or npu"
       echo "  --max_steps                <int>   (4000)"
       echo "  --save_steps               <int>   (2000)"
+      echo "  --eval_strategy            <str>   (no) — no, steps, or epoch"
+      echo "  --eval_steps               <int>   (400) — used when eval_strategy=steps"
       echo "  --seed                     <int>   (42)"
       echo "  --shuffle_train_data       <bool>  (true) — true=shuffle, false=deterministic order"
       echo "  --deterministic                    Strict reproducibility (NPU vs GPU debug)"
@@ -277,6 +287,7 @@ echo "  action_tokenizer_path:   $ACTION_TOKENIZER_PATH"
 echo "  zero_stage:              $ZERO_STAGE"
 echo "  deepspeed_config:        $DEEPSPEED_CONFIG"
 echo "  data_path:               $DATA_PATH"
+echo "  test_data_path:          $TEST_DATA_PATH"
 echo "  data_root:               $DATA_ROOT"
 echo "  dataset_type:            $DATASET_TYPE"
 echo "  output_dir:              ${OUTPUT_DIR}/${EXP_NAME}"
@@ -288,6 +299,8 @@ echo "  attn_type:               $ATTN_TYPE"
 echo "  device:                  $DEVICE"
 echo "  max_steps:               $MAX_STEPS"
 echo "  save_steps:              $SAVE_STEPS"
+echo "  eval_strategy:           $EVAL_STRATEGY"
+echo "  eval_steps:              $EVAL_STEPS"
 echo "  seed:                    $SEED"
 echo "  shuffle_train_data:      $SHUFFLE_TRAIN_DATA"
 echo "  deterministic:           $DETERMINISTIC"
@@ -400,7 +413,8 @@ torchrun \
     --gradient_accumulation_steps 1 \
     --save_strategy steps \
     --save_steps "$SAVE_STEPS" \
-    --eval_strategy no \
+    --eval_strategy "$EVAL_STRATEGY" \
+    --eval_steps "$EVAL_STEPS" \
     --use_previous_actions "$USE_PREVIOUS_ACTIONS" \
     --tune_mm_llm "$TUNE_MM_LLM" \
     --tune_mm_mlp "$TUNE_MM_MLP" \
@@ -412,3 +426,40 @@ torchrun \
 echo ""
 echo "=== Training complete ==="
 echo "Checkpoint at: ${OUTPUT_DIR}/${EXP_NAME}"
+
+# ============================================================
+# Inference (skipped with --skip_inference)
+# ============================================================
+if [ "$SKIP_INFERENCE" = false ]; then
+  echo ""
+  echo "=== Running inference on test set ==="
+  echo "  checkpoint:   ${OUTPUT_DIR}/${EXP_NAME}"
+  echo "  test_data:    ${TEST_DATA_PATH}"
+  echo "  output:       ${OUTPUT_DIR}/${EXP_NAME}/json_output"
+  echo ""
+
+  NORM_STATS_PATH="$ROOT/configs/normalizer_navsim_trainval/norm_stats.json"
+  TOKEN_YAML="$ROOT/inference/navsim/navsim/navsim/planning/script/config/common/train_test_split/scene_filter/navtest.yaml"
+
+  torchrun --nproc_per_node=${NGPUS} \
+    inference/qwen/inference_action_navsim_vava.py \
+    --qwen_hub "${OUTPUT_DIR}/${EXP_NAME}" \
+    --output_dir "${OUTPUT_DIR}/${EXP_NAME}/json_output" \
+    --test_data_pkl "${TEST_DATA_PATH}" \
+    --action_tokenizer_path "${ACTION_TOKENIZER_PATH}" \
+    --token_yaml "${TOKEN_YAML}" \
+    --norm_stats_path "${NORM_STATS_PATH}" \
+    --cur_frame_idx "${CUR_FRAME_IDX}" \
+    --future_nums "${FUTURE_NUMS}" \
+    --action_dim 3 \
+    --model_max_length "${MODEL_MAX_LENGTH}" \
+    --bf16 \
+    --use_previous_actions \
+    --save_gt
+
+  echo "=== Inference done ==="
+  echo "Results at: ${OUTPUT_DIR}/${EXP_NAME}/json_output"
+else
+  echo ""
+  echo "Skipping inference (--skip_inference)."
+fi
