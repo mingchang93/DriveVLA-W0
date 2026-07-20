@@ -215,10 +215,42 @@ def main():
         print(f"Missing scenes (not in logs): {missing}")
 
     # --- Phase 3: Normalize actions ---
-    from utils.datasets.normalize_pi0 import RunningStats, save
-    norm_path = osp.join(output_dir, f"normalizer_navsim_{split}")
-    os.makedirs(norm_path, exist_ok=True)
+    # Inline minimal normalize_pi0 (module not available in this repo)
+    from dataclasses import dataclass
 
+    @dataclass
+    class NormStats:
+        mean: np.ndarray
+        std: np.ndarray
+        q01: np.ndarray
+        q99: np.ndarray
+
+    class RunningStats:
+        """Accumulate per-element running statistics for action normalization."""
+        def __init__(self):
+            self.data = []
+
+        def update(self, x):
+            self.data.append(x.reshape(-1, x.shape[-1]))
+
+        def get_statistics(self):
+            all_data = np.concatenate(self.data, axis=0)
+            return NormStats(
+                mean=all_data.mean(axis=0),
+                std=all_data.std(axis=0),
+                q01=np.percentile(all_data, 1, axis=0),
+                q99=np.percentile(all_data, 99, axis=0),
+            )
+
+    def save(norm_path, stats_dict):
+        """Save normalization stats as a pickle file."""
+        os.makedirs(norm_path, exist_ok=True)
+        stat_path = osp.join(norm_path, "stat.pkl")
+        with open(stat_path, "wb") as f:
+            pickle.dump(stats_dict, f)
+        print(f"Saved norm stats to {stat_path}")
+
+    norm_path = osp.join(output_dir, f"normalizer_navsim_{split}")
     normalizer = RunningStats()
     action_data = np.concatenate([scene["action"] for scene in result_file])
     normalizer.update(action_data)
