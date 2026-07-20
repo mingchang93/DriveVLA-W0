@@ -52,6 +52,8 @@ SEED=42
 SHUFFLE_TRAIN_DATA=true
 DETERMINISTIC=false
 DET_FLAG=""
+LOG_DATA_HASH=false
+HASH_FLAG=""
 LOGGING_STEPS=10
 WARMUP_STEPS=50
 ZERO_STAGE=3
@@ -89,6 +91,7 @@ while [[ $# -gt 0 ]]; do
     --seed)                   SEED="$2";                     shift 2 ;;
     --shuffle_train_data)     SHUFFLE_TRAIN_DATA="$2";       shift 2 ;;
     --deterministic)          DETERMINISTIC=true;            shift ;;
+    --log_data_hash)          LOG_DATA_HASH=true;            shift ;;
     --logging_steps)          LOGGING_STEPS="$2";            shift 2 ;;
     --warmup_steps)           WARMUP_STEPS="$2";             shift 2 ;;
     --model_max_length)       MODEL_MAX_LENGTH="$2";         shift 2 ;;
@@ -126,6 +129,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --seed                     <int>   (42)"
       echo "  --shuffle_train_data       <bool>  (true) — true=shuffle, false=deterministic order"
       echo "  --deterministic                    Strict reproducibility (NPU vs GPU debug)"
+      echo "  --log_data_hash                    Log SHA256 hash per batch for cross-platform data verification"
       echo "  --logging_steps            <int>   (10)"
       echo "  --warmup_steps             <int>   (50)"
       echo "  --model_max_length         <int>   (4096)"
@@ -150,6 +154,7 @@ done
 
 # Convert boolean flags to CLI arguments
 [ "$DETERMINISTIC" = true ] && DET_FLAG="--deterministic"
+[ "$LOG_DATA_HASH" = true ] && HASH_FLAG="--log_data_hash"
 
 # ============================================================
 # Device-specific environment (NPU vs CUDA)
@@ -314,7 +319,8 @@ torchrun \
     --future_nums "$FUTURE_NUMS" \
     --seed "$SEED" \
     --dataloader_shuffle "$SHUFFLE_TRAIN_DATA" \
-    $DET_FLAG \
+    $DET_FLAG \ 
+    $HASH_FLAG \
     --logging_steps "$LOGGING_STEPS" \
     --gradient_checkpointing True \
     --gradient_accumulation_steps 1 \

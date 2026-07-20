@@ -5,6 +5,8 @@ Combines Qwen-VL's multimodal capabilities with VLA action prediction
 """
 import os
 import sys
+import hashlib
+import json
 import logging
 import pathlib
 import pickle
@@ -13,7 +15,7 @@ import numpy as np
 from pathlib import Path
 import torch
 import transformers
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from collections import defaultdict
 from torch.utils.data import SequentialSampler, RandomSampler
 
@@ -111,6 +113,35 @@ def disable_model_dropout(model: torch.nn.Module) -> None:
             module.p = 0.0
             print(f"[Reproducibility] Dropout disabled: {name}")
 
+
+def compute_batch_hash(inputs: Dict) -> str:
+    """Compute a deterministic SHA256 hash of a batch for cross-platform comparison.
+
+    Each tensor is converted float32 → CPU numpy → tobytes() for bit-identical
+    hashing across NPU and GPU platforms (PRECISION_ALIGNMENT.md Phase 4.1).
+
+    Keys are sorted to guarantee deterministic ordering.  Non-tensor values
+    (None, lists of tensors) are handled explicitly.
+    """
+    h = hashlib.sha256()
+    for key in sorted(inputs.keys()):
+        val = inputs[key]
+        h.update(key.encode())
+        if isinstance(val, torch.Tensor):
+            h.update(val.detach().float().cpu().numpy().tobytes())
+        elif val is None:
+            h.update(b"<NONE>")
+        elif isinstance(val, (list, tuple)):
+            for v in val:
+                if isinstance(v, torch.Tensor):
+                    h.update(v.detach().float().cpu().numpy().tobytes())
+                else:
+                    h.update(str(v).encode())
+        else:
+            h.update(str(val).encode())
+    return h.hexdigest()
+
+
 # Add paths to import Qwen-VL components
 qwen_vl_path = Path(__file__).parent.parent / "reference" / "Qwen2.5-VL" / "qwen-vl-finetune"
 sys.path.append(str(qwen_vl_path))
@@ -165,6 +196,17 @@ class RossTrainer(Trainer):
         self._acc_n = 0
         self._micro_in_accum = 0  # 当前累积里的 micro-step 计数
 
+        # Data hash logging for cross-platform (NPU vs GPU) data-order verification
+        # PRECISION_ALIGNMENT.md Phase 4.1 — per-rank file so NPU and GPU can be diffed
+        self._hash_logfile = None
+        if getattr(self.args, 'log_data_hash', False):
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+            hash_dir = os.path.join(self.args.output_dir, 'data_hashes')
+            os.makedirs(hash_dir, exist_ok=True)
+            hash_path = os.path.join(hash_dir, f'rank{rank}.jsonl')
+            self._hash_logfile = open(hash_path, 'w')
+            rank0_print(f'[DataHash] Logging batch hashes to {hash_path}')
+
     def _get_train_sampler(self, train_dataset=None) -> Optional[torch.utils.data.Sampler]:
         """Override sampler to respect --dataloader_shuffle for deterministic reproducibility.
 
@@ -197,6 +239,17 @@ class RossTrainer(Trainer):
         self._acc_n = 0
 
     def training_step(self, model, inputs, num_items_in_batch=None):
+        # Data hash logging — compute BEFORE forward (the model can mutate inputs)
+        # PRECISION_ALIGNMENT.md Phase 4.1: diff hash files across NPU vs GPU
+        if self._hash_logfile is not None:
+            step = self.state.global_step
+            batch_hash = compute_batch_hash(inputs)
+            # Hash only 'index' for compact diff (the entire batch duplicates tensors
+            # already visible in the index trace, but we hashed the full batch)
+            record = {'step': step, 'hash': batch_hash}
+            self._hash_logfile.write(json.dumps(record) + '\n')
+            self._hash_logfile.flush()  # survive crashes
+
         loss = super().training_step(model, inputs, num_items_in_batch)
 
         # 累积 forward 写入的 _last_logs
