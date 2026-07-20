@@ -17,6 +17,7 @@ set -e
 # Defaults — adjust to your repo layout
 # ============================================================
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 DEFAULT_MODEL_NAME_OR_PATH="Qwen/Qwen2.5-VL-3B-Instruct"
 DEFAULT_SD_MODEL_PATH="$ROOT/pretrained_models/stable-diffusion-v1-5"
@@ -25,7 +26,7 @@ DEFAULT_DEEPSPEED_CONFIG="$ROOT/scripts/sft/zero3_offload.json"
 DEFAULT_DATA_PATH="$ROOT/data/navsim/processed_data/meta/navsim_emu_vla_256_144_trainval_pre_1s.pkl"
 DEFAULT_TEST_DATA_PATH="$ROOT/data/navsim/processed_data/meta/navsim_emu_vla_256_144_test_pre_1s.pkl"
 DEFAULT_DATA_ROOT="$ROOT/data/navsim/processed_data"
-DEFAULT_OUTPUT_DIR="$ROOT/logs/train_qwen_vla"
+DEFAULT_OUTPUT_DIR="$ROOT/logs/train_qwen_vla_$TIMESTAMP"
 DEFAULT_DATASET_TYPE="navsim2va_ross"
 
 # ============================================================
