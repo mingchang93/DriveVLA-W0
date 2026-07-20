@@ -10,6 +10,7 @@ import pathlib
 import transformers as tf
 from datasets import Emu3SFTDataset
 import sys
+import hashlib
 import json
 import torch.distributed as dist
 from datetime import datetime
@@ -98,6 +99,18 @@ class MemoryEfficientTrainer(tf.Trainer):
 class LoggingTrainer(tf.Trainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        # Data hash logging for cross-platform (NPU vs GPU) data-order verification
+        self._hash_logfile = None
+        if getattr(self.args, 'log_data_hash', False):
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+            hash_dir = os.path.join(self.args.output_dir, 'data_hashes')
+            os.makedirs(hash_dir, exist_ok=True)
+            hash_path = os.path.join(hash_dir, f'rank{rank}.jsonl')
+            self._hash_logfile = open(hash_path, 'w')
+            if self.state.is_world_process_zero:
+                print(f'[DataHash] Logging batch hashes to {hash_path}')
+
         self.log_queue = None
         # Only the main process will handle file I/O and the logging thread.
         if self.state.is_world_process_zero:
@@ -159,6 +172,14 @@ class LoggingTrainer(tf.Trainer):
         return inputs
 
     def training_step(self, model: torch.nn.Module, inputs: dict) -> torch.Tensor:
+        # Data hash logging -- compute BEFORE forward (the model can mutate inputs)
+        if self._hash_logfile is not None:
+            step = self.state.global_step
+            batch_hash = compute_batch_hash(inputs)
+            record = {'step': step, 'hash': batch_hash}
+            self._hash_logfile.write(json.dumps(record) + '\n')
+            self._hash_logfile.flush()  # survive crashes
+
         # Pop the index first, since it's not a model input.
         indices = inputs.pop("index", None)
         # Pop VAVA-only keys that the model forward doesn't accept
@@ -302,6 +323,7 @@ class TrainingArguments(tf.TrainingArguments):
     save_on_each_node: bool = field(default=False)  # 只在主节点保存
     save_only_model: bool = field(default=False)
     deterministic: bool = field(default=False)  # enable strict reproducibility for NPU vs GPU debugging
+    log_data_hash: bool = field(default=False)  # log SHA256 hash per batch for cross-platform data verification
 
 def load_model(model_args, model_config, training_args):
     """
@@ -421,6 +443,31 @@ def disable_model_dropout(model: torch.nn.Module) -> None:
         if isinstance(module, torch.nn.modules.dropout._DropoutNd):
             module.p = 0.0
             print(f"[Reproducibility] Dropout disabled: {name}")
+
+
+def compute_batch_hash(inputs):
+    """Compute a deterministic SHA256 hash of a batch for cross-platform comparison.
+
+    Each tensor is converted float32 -> CPU numpy -> tobytes() for bit-identical
+    hashing across NPU and GPU platforms.
+    """
+    h = hashlib.sha256()
+    for key in sorted(inputs.keys()):
+        val = inputs[key]
+        h.update(key.encode())
+        if isinstance(val, torch.Tensor):
+            h.update(val.detach().float().cpu().numpy().tobytes())
+        elif val is None:
+            h.update(b"<NONE>")
+        elif isinstance(val, (list, tuple)):
+            for v in val:
+                if isinstance(v, torch.Tensor):
+                    h.update(v.detach().float().cpu().numpy().tobytes())
+                else:
+                    h.update(str(v).encode())
+        else:
+            h.update(str(val).encode())
+    return h.hexdigest()
 
 
 def train():
