@@ -79,6 +79,7 @@ from datasets import Emu3DrivingDataset
 from datasets import Emu3DrivingVAVADataset
 from datasets import Emu3DrivingNuplan6VADataset
 from torch.utils.data import WeightedRandomSampler, DataLoader, RandomSampler, SequentialSampler
+from transformers.trainer_utils import has_length
 
 class MemoryEfficientTrainer(tf.Trainer):
     """最简单的显存回收Trainer"""
