@@ -4,7 +4,10 @@ from typing import Dict, List, Optional, Sequence
 # import datasets
 import torch
 import torch.nn as nn
-from flash_attn.flash_attn_interface import flash_attn_varlen_func
+try:
+    from flash_attn.flash_attn_interface import flash_attn_varlen_func
+except (ModuleNotFoundError, ImportError):
+    flash_attn_varlen_func = None
 from torch.utils.data import DataLoader, Sampler
 from torch.utils.data import RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
@@ -126,6 +129,12 @@ def _flash_attention_forward(
         causal = is_causal and query_length != 1
 
     # Assuming 4D tensors, key_states.shape[1] is the key/value sequence length (source length).
+    if flash_attn_varlen_func is None:
+        raise RuntimeError(
+            "flash_attn is not installed but flash_attention_2 was requested. "
+            "Install flash_attn (CUDA-only) or use --attn_type sdpa."
+        )
+
     flash_kwargs = {}
 
     if softcap is not None:
