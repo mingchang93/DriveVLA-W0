@@ -19,6 +19,9 @@ from typing import Dict, List, Optional
 from collections import defaultdict
 from torch.utils.data import SequentialSampler, RandomSampler
 
+from msprobe.pytorch import seed_all
+seed_all(seed=1234, mode=True, rm_dropout=True)
+
 # ---------------------------------------------------------------------------
 # Device detection: NPU > CUDA > CPU  (override via DEVICE env var)
 # ---------------------------------------------------------------------------
