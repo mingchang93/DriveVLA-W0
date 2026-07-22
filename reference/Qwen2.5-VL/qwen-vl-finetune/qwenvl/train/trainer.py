@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 try:
     from flash_attn.flash_attn_interface import flash_attn_varlen_func
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     flash_attn_varlen_func = None
 from torch.utils.data import DataLoader, Sampler
 from torch.utils.data import RandomSampler, SequentialSampler
