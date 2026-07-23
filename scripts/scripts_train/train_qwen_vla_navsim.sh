@@ -132,6 +132,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --sensor_blobs             <path>  ($DEFAULT_SENSOR_BLOBS) — camera image root (data_root)"
       echo "  --navsim_logs              <path>  ($DEFAULT_NAVSIM_LOGS) — NavSim annotation logs dir"
       echo "  --sd_model_path            <path>  ($DEFAULT_SD_MODEL_PATH) — parent dir with unet/ and vae/ subdirs"
+      echo "  --ross_grad_clip           <float> (10.0) — gradient clip value for ROSS→LLM boundary; 0=disable"
       echo "  --action_tokenizer_path    <path>  ($DEFAULT_ACTION_TOKENIZER_PATH)"
       echo "  --deepspeed_config         <path>  ($DEFAULT_DEEPSPEED_CONFIG)"
       echo "  --zero_stage               <int>   (3) — shortcut: 2→zero2_offload, 3→zero3_offload"
