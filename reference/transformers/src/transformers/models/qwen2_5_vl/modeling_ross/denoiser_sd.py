@@ -21,12 +21,15 @@ class RossStableDiffusionXOmni(nn.Module):
         z_channel,
         mlp_depth,
         n_patches=576,
-        negative_prompt_path="/mnt/vdb1/yingyan.li/repo/VLA/reference/transformers/src/transformers/models/qwen2_5_vl/modeling_ross/negative_prompt_sd15.pt",
+        negative_prompt_path=None,
     ):
         super().__init__()
         self.ln_pre = nn.LayerNorm(z_channel, elementwise_affine=False)
         self.pos_embed = nn.Parameter(torch.zeros(1, n_patches, z_channel), requires_grad=True)
         # torch.nn.init.normal_(self.pos_embed, std=.02)
+        # Use default path relative to this file if not provided
+        if negative_prompt_path is None:
+            negative_prompt_path = os.path.join(os.path.dirname(__file__), "negative_prompt_sd15.pt")
         self.negative_prompt_path = negative_prompt_path
 
         self.ln_pre_a = nn.LayerNorm(z_channel, elementwise_affine=False)
