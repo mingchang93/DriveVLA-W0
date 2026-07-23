@@ -133,7 +133,7 @@ done
 
 # Convert boolean flags to CLI arguments
 [ "$DETERMINISTIC" = true ] && DET_FLAG="--deterministic"
-[ "$LOG_DATA_HASH" = true ] && HASH_FLAG="--log_data_hash"
+[ "$LOG_DATA_HASH" = true ] && HASH_FLAG="--log_data_hash true"
 # Data shuffling: true → shuffle (default), false → deterministic order (NPU/GPU alignment)
 SHUFFLE_FLAG="--dataloader_shuffle $SHUFFLE_TRAIN_DATA"
 
