@@ -363,7 +363,7 @@ torchrun \
     --attn_type "$ATTN_TYPE" \
     --learning_rate "$LEARNING_RATE" \
     --weight_decay 0.1 \
-    --min_learning_rate 1e-6 \
+    --lr_scheduler_kwargs '{"min_lr": 1e-6}' \
     --max_grad_norm "$MAX_GRAD_NORM" \
     --adam_beta1 0.9 \
     --adam_beta2 0.95 \
