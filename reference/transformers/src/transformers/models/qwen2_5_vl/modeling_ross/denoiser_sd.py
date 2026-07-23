@@ -79,6 +79,16 @@ class RossStableDiffusionXOmni(nn.Module):
         # Obtain hidden states
         encoder_hidden_states = torch.load(self.negative_prompt_path).to(target.device).to(target.dtype)
         encoder_hidden_states = encoder_hidden_states.repeat(bsz, 1, 1)
+        # Sanitize: the negative prompt embeddings file may have NaN values
+        # (from how it was saved).  These propagate through UNet cross-attention
+        # backward and corrupt all downstream gradients including factor/z/MLP.
+        if torch.isnan(encoder_hidden_states).any() or torch.isinf(encoder_hidden_states).any():
+            if not getattr(self, "_neg_prompt_warned", False):
+                nan_cnt = torch.isnan(encoder_hidden_states).sum().item()
+                inf_cnt = torch.isinf(encoder_hidden_states).sum().item()
+                print(f"[ROSS NegPrompt] {nan_cnt} NaN + {inf_cnt} Inf — sanitizing.")
+                object.__setattr__(self, "_neg_prompt_warned", True)
+            encoder_hidden_states = torch.nan_to_num(encoder_hidden_states, nan=0.0, posinf=1.0, neginf=-1.0)
 
         # interpolate
         if z.shape[2] != noisy_model_input.shape[2] or z.shape[3] != noisy_model_input.shape[3]:
