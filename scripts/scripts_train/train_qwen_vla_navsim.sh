@@ -181,6 +181,8 @@ fi
 # Convert boolean flags to CLI arguments
 [ "$DETERMINISTIC" = true ] && DET_FLAG="--deterministic"
 [ "$LOG_DATA_HASH" = true ] && HASH_FLAG="--log_data_hash"
+# Data shuffling: true → shuffle (default), false → deterministic order (NPU/GPU alignment)
+SHUFFLE_FLAG="--dataloader_shuffle $SHUFFLE_TRAIN_DATA"
 
 # ============================================================
 # Device-specific environment (NPU vs CUDA)
@@ -272,6 +274,7 @@ echo "  eval_steps:              $EVAL_STEPS"
 echo "  seed:                    $SEED"
 echo "  shuffle_train_data:      $SHUFFLE_TRAIN_DATA"
 echo "  deterministic:           $DETERMINISTIC"
+echo "  log_data_hash:           $LOG_DATA_HASH"
 echo "  logging_steps:           $LOGGING_STEPS"
 echo "  warmup_steps:            $WARMUP_STEPS"
 echo "  model_max_length:        $MODEL_MAX_LENGTH"
@@ -373,8 +376,8 @@ torchrun \
     --model_max_length "$MODEL_MAX_LENGTH" \
     --future_nums "$FUTURE_NUMS" \
     --seed "$SEED" \
-    --dataloader_shuffle "$SHUFFLE_TRAIN_DATA" \
-    $DET_FLAG \ 
+    $SHUFFLE_FLAG \
+    $DET_FLAG \
     $HASH_FLAG \
     --logging_steps "$LOGGING_STEPS" \
     --gradient_checkpointing True \
