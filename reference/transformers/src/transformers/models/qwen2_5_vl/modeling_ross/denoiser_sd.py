@@ -64,16 +64,6 @@ class RossStableDiffusionXOmni(nn.Module):
         # z: [B, C, H, W] LMM output features
         # target: [B, C, H*2, W*2] clean latent features (before 2x2 grouping)
 
-        def _check(name, t):
-            if t is not None and torch.isnan(t).any():
-                print(f"[ROSS NaN] {name}: shape={t.shape}, nan_count={torch.isnan(t).sum().item()}")
-            elif t is not None:
-                print(f"[ROSS OK] {name}: shape={t.shape}, min={t.min().item():.4f}, max={t.max().item():.4f}, mean={t.mean().item():.4f}")
-
-        _check("z_input", z)
-        _check("target_input", target)
-        _check("z_a_input", z_a)
-
         noise = torch.randn_like(target)
         bsz, channels, height, width = target.shape
         # Sample a random timestep for each image
@@ -85,29 +75,22 @@ class RossStableDiffusionXOmni(nn.Module):
         # Add noise to the model input according to the noise magnitude at each timestep
         # (this is the forward diffusion process)
         noisy_model_input = self.noise_scheduler.add_noise(target, noise, timesteps)
-        _check("noisy_model_input", noisy_model_input)
 
         # Obtain hidden states
         encoder_hidden_states = torch.load(self.negative_prompt_path).to(target.device).to(target.dtype)
         encoder_hidden_states = encoder_hidden_states.repeat(bsz, 1, 1)
-        _check("encoder_hidden_states", encoder_hidden_states)
 
         # interpolate
         if z.shape[2] != noisy_model_input.shape[2] or z.shape[3] != noisy_model_input.shape[3]:
             z = F.interpolate(z, size=noisy_model_input.shape[-2:], mode="bilinear").contiguous()
-        _check("z_after_interp", z)
         _, _, z_h, z_w = z.shape
         z = self.mlp(rearrange(z, "b c h w -> b (h w) c").contiguous())
-        _check("z_after_mlp", z)
         z = rearrange(z, "b (h w) c -> b c h w", h=z_h, w=z_w).contiguous()
-        _check("z_after_rearrange", z)
 
         if z_a is not None:
             z_a = self.mlp_a(z_a).unsqueeze(-1).unsqueeze(-1).contiguous()
-            _check("z_a_after_mlp", z_a)
 
         cond = self.factor * z + self.factor_a * z_a if z_a is not None else self.factor * z
-        _check("unet_cond_z", cond)
 
         # Predict the noise residual
         model_pred = self.unet(
@@ -118,22 +101,23 @@ class RossStableDiffusionXOmni(nn.Module):
             return_dict=False,
             z=cond,
         )[0]
-        _check("model_pred", model_pred)
 
         if model_pred.shape[1] == 6:
             model_pred, _ = torch.chunk(model_pred, 2, dim=1)
 
-         # Get the target for loss depending on the prediction type
+        # Numerical stability: the UNet (with bf16 weights under autocast) can produce
+        # NaN/Inf in fp16 attention ops. Sanitize before loss computation.
+        model_pred = torch.nan_to_num(model_pred, nan=0.0, posinf=1.0, neginf=-1.0)
+
+        # Get the target for loss depending on the prediction type
         if self.noise_scheduler.config.prediction_type == "epsilon":
             noise_target = noise
         elif self.noise_scheduler.config.prediction_type == "v_prediction":
             noise_target = self.noise_scheduler.get_velocity(target, noise, timesteps)
         else:
             raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
-        _check("noise_target", noise_target)
 
         loss = F.mse_loss(model_pred.float(), noise_target.float(), reduction="none")
-        _check("loss", loss)
 
         return loss
     
