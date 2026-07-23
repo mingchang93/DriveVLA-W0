@@ -389,37 +389,43 @@ class LazySupervisedNavsim2VAROSSDataset(Dataset):
         return self._construct_image_path(image_path)
     
     def _construct_image_path(self, original_path):
-        # 分割路径获取后两位
+        # Path format: SCENE/CAM_F0/filename.ext  (relative to data_root)
         path_parts = original_path.split('/')
-        
-        if len(path_parts) >= 2:
-            # 获取最后一个文件名并去掉.npy扩展名（如果存在）
+        data_root = self.data_args.data_root
+
+        if len(path_parts) >= 3:
+            # Scene folder is the parent of CAM_F0
+            scene = path_parts[-3]
+            cam = path_parts[-2]
+            filename = path_parts[-1]
+            # Strip .npy extension if present, keep image extensions as-is
+            if filename.endswith('.npy'):
+                filename = filename[:-4]
+            rel_path = os.path.join(scene, cam, filename)
+        elif len(path_parts) == 2:
             filename = path_parts[-1]
             if filename.endswith('.npy'):
-                filename = filename[:-4]  # 去掉.npy
-            
-            # 获取最后两个路径组件
-            last_two = os.path.join(path_parts[-2], "CAM_F0", filename)
+                filename = filename[:-4]
+            rel_path = os.path.join(path_parts[-2], filename)
         else:
             filename = path_parts[-1]
             if filename.endswith('.npy'):
-                filename = filename[:-4]  # 去掉.npy
-            last_two = filename
-        
-        # 构造实际路径
-        data_root = self.data_args.data_root
-        actual_path = os.path.join(data_root, last_two + '.jpg')
-        
+                filename = filename[:-4]
+            rel_path = filename
+
+        # Try exact path first
+        actual_path = os.path.join(data_root, rel_path)
         if os.path.exists(actual_path):
             return actual_path
-        
-        # 尝试其他扩展名
-        for ext in ['.jpeg', '.png']:
-            alt_path = os.path.join(data_root, last_two + ext)
-            if os.path.exists(alt_path):
-                return alt_path
-        
-        # 如果都找不到，返回原始路径（让后续处理报错）
+
+        # Try appending .jpg if no extension
+        if not os.path.splitext(filename)[1]:
+            for ext in ['.jpg', '.jpeg', '.png']:
+                alt_path = os.path.join(data_root, rel_path + ext)
+                if os.path.exists(alt_path):
+                    return alt_path
+
+        # Fallback: return original (relative) path
         print(f"Warning: Cannot resolve image path: {original_path}, trying original path")
         return original_path
 
