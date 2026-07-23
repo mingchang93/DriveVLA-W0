@@ -339,58 +339,58 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
             )
 
         ### conditions from t to **predict** t+1
-        assert image_hidden.shape[1] == 2, "Currently only support 2 images for each sample"
-        assert action_hidden.shape[1] == 2, "Currently only support 2 images for each sample"
-        assert raw_pixel_values_vae.shape[0] == 2, "Currently only support 2 images for each sample"
+        if raw_pixel_values_vae is None or image_hidden is None or action_hidden is None:
+            ross_loss = torch.tensor(0.0, device=outputs.loss.device) if outputs.loss is not None else None
+            cond_pixel_values = None
+        else:
+            image_hidden = image_hidden[:, 0].squeeze(1)             # [bsz, seq_len, dim]
+            action_hidden = action_hidden.mean(2)[:, 0]   # [bsz, dim]
+            cond_pixel_values = raw_pixel_values_vae[0]
+            raw_pixel_values_vae = raw_pixel_values_vae[1]          # [bsz, 3, h, w]
 
-        image_hidden = image_hidden[:, 0].squeeze(1)             # [bsz, seq_len, dim]
-        action_hidden = action_hidden.mean(2)[:, 0]   # [bsz, dim]
-        cond_pixel_values = raw_pixel_values_vae[0]
-        raw_pixel_values_vae = raw_pixel_values_vae[1]          # [bsz, 3, h, w]
+            ### conditions from t to **reconstruct** t
+            # image_hidden = image_hidden.flatten(0, 1).squeeze()                                 # [bsz * t, seq_len, dim]
+            # action_hidden = action_hidden.mean(2).flatten(0, 1)                                 # [bsz * t, dim]
+            # raw_pixel_values_vae = raw_pixel_values_vae.permute(1, 0, 2, 3, 4).flatten(0, 1)    # [bsz * t, 3, h, w]
 
-        ### conditions from t to **reconstruct** t
-        # image_hidden = image_hidden.flatten(0, 1).squeeze()                                 # [bsz * t, seq_len, dim]
-        # action_hidden = action_hidden.mean(2).flatten(0, 1)                                 # [bsz * t, dim]
-        # raw_pixel_values_vae = raw_pixel_values_vae.permute(1, 0, 2, 3, 4).flatten(0, 1)    # [bsz * t, 3, h, w]
+            raw_pixel_values_vae = torch.nn.functional.interpolate(raw_pixel_values_vae, size=(280, 504), mode='bilinear', align_corners=False)
 
-        raw_pixel_values_vae = torch.nn.functional.interpolate(raw_pixel_values_vae, size=(280, 504), mode='bilinear', align_corners=False)
+            # fp32 training — no autocast needed.
+            with torch.no_grad():
+                posterior = self.vae.encode(raw_pixel_values_vae).latent_dist
+                z_q = (posterior.sample() - self.vae_shift_factor) * self.vae_scaling_factor
 
-        # fp32 training — no autocast needed.
-        with torch.no_grad():
-            posterior = self.vae.encode(raw_pixel_values_vae).latent_dist
-            z_q = (posterior.sample() - self.vae_shift_factor) * self.vae_scaling_factor
+            # Register gradient hooks BEFORE ln_pre to clip the ROSS gradient.
+            # The UNet backward can produce NaN/Inf or very large gradients that
+            # corrupt the LLM parameters.  These hooks sanitize the gradient at the
+            # boundary between the denoiser and the LLM.
+            clip_val = self.ross_grad_clip
+            def _ross_grad_hook(grad):
+                if grad is not None:
+                    grad = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
+                    if clip_val > 0:
+                        grad = torch.clamp(grad, -clip_val, clip_val)
+                return grad
 
-        # Register gradient hooks BEFORE ln_pre to clip the ROSS gradient.
-        # The UNet backward can produce NaN/Inf or very large gradients that
-        # corrupt the LLM parameters.  These hooks sanitize the gradient at the
-        # boundary between the denoiser and the LLM.
-        clip_val = self.ross_grad_clip
-        def _ross_grad_hook(grad):
-            if grad is not None:
-                grad = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
-                if clip_val > 0:
-                    grad = torch.clamp(grad, -clip_val, clip_val)
-            return grad
+            action_hidden.register_hook(_ross_grad_hook)
+            image_hidden.register_hook(_ross_grad_hook)
 
-        action_hidden.register_hook(_ross_grad_hook)
-        image_hidden.register_hook(_ross_grad_hook)
+            action_hidden = self.denoiser.ln_pre_a(action_hidden)
+            image_hidden = self.denoiser.ln_pre(image_hidden)
+            image_hidden = rearrange(image_hidden, 'b (h w) c -> b c h w', h=18, w=32)
+            ross_loss = self.denoiser(z=image_hidden, target=z_q, z_a=action_hidden)
+            # NO actions for **reconstruction**
+            # ross_loss = self.denoiser(z=image_hidden, target=z_q, z_a=None)
 
-        action_hidden = self.denoiser.ln_pre_a(action_hidden)
-        image_hidden = self.denoiser.ln_pre(image_hidden)
-        image_hidden = rearrange(image_hidden, 'b (h w) c -> b c h w', h=18, w=32)
-        ross_loss = self.denoiser(z=image_hidden, target=z_q, z_a=action_hidden)
-        # NO actions for **reconstruction**
-        # ross_loss = self.denoiser(z=image_hidden, target=z_q, z_a=None)
-
-        # Numerical safety: sanitize NaN/Inf in ross_loss (belt-and-suspenders).
-        if torch.isnan(ross_loss).any() or torch.isinf(ross_loss).any():
-            if not getattr(self, "_ross_nan_warned", False):
-                nan_count = torch.isnan(ross_loss).sum().item()
-                inf_count = torch.isinf(ross_loss).sum().item()
-                print(f"[ROSS NaN Guard] {nan_count} NaN + {inf_count} Inf in ross_loss "
-                      f"— replacing with 0. (suppressing further warnings)")
-                object.__setattr__(self, "_ross_nan_warned", True)
-            ross_loss = torch.nan_to_num(ross_loss, nan=0.0, posinf=1.0, neginf=0.0)
+            # Numerical safety: sanitize NaN/Inf in ross_loss (belt-and-suspenders).
+            if torch.isnan(ross_loss).any() or torch.isinf(ross_loss).any():
+                if not getattr(self, "_ross_nan_warned", False):
+                    nan_count = torch.isnan(ross_loss).sum().item()
+                    inf_count = torch.isinf(ross_loss).sum().item()
+                    print(f"[ROSS NaN Guard] {nan_count} NaN + {inf_count} Inf in ross_loss "
+                          f"— replacing with 0. (suppressing further warnings)")
+                    object.__setattr__(self, "_ross_nan_warned", True)
+                ross_loss = torch.nan_to_num(ross_loss, nan=0.0, posinf=1.0, neginf=0.0)
 
 
         self._last_logs = {
