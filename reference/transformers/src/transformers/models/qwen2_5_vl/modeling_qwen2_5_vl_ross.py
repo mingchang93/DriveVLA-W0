@@ -66,6 +66,7 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
             z_channel=getattr(config, 'hidden_size', 3584),
             mlp_depth=2,
             n_patches=576,
+            negative_prompt_path=None,
         )
         # 优先使用更安全的 safetensors 格式，如果不可用则使用 pickle 格式
         vae_path = getattr(config, 'sd_model_path', 'pretrained_models/stable-diffusion-v1-5/unet').replace('/unet', '/vae')
