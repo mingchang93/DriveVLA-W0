@@ -286,6 +286,17 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
         last_hidden = None
         
         last_hidden = outputs.hidden_states[-1]  # [B, L, C]
+
+        # Debug: track where NaN first appears in the LLM output.
+        # The action_loss NaN at step 1 could be from the LLM hidden states
+        # or from the LM head logits.  This fires once per process.
+        if not getattr(self, "_llm_nan_warned", False):
+            if torch.isnan(last_hidden).any():
+                print(f"[LLM NaN] hidden_states[-1] has NaN before ROSS block!")
+                object.__setattr__(self, "_llm_nan_warned", True)
+            if outputs.loss is not None and torch.isnan(outputs.loss).any():
+                print(f"[LLM NaN] parent model loss is NaN before ROSS block!")
+                object.__setattr__(self, "_llm_nan_warned", True)
         
         # 如果 collator 已经提供了按 batch 拼接且长度对齐的张量，直接使用；
         # 否则在这里进行一次性填充并拼接为张量。
@@ -349,27 +360,19 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
 
         raw_pixel_values_vae = torch.nn.functional.interpolate(raw_pixel_values_vae, size=(280, 504), mode='bilinear', align_corners=False)
 
+        # fp32 training — no autocast needed.
         with torch.no_grad():
             posterior = self.vae.encode(raw_pixel_values_vae).latent_dist
             z_q = (posterior.sample() - self.vae_shift_factor) * self.vae_scaling_factor
 
-        # Ensure fp32 precision for LayerNorm — the LLM hidden states may be in fp16
-        # (from DeepSpeed ZeRO-3), and LayerNorm in fp16 is numerically unstable.
-        # The autocast wrapper prevents dtype mismatch between float32 inputs (from
-        # .float() on ln_pre) and bf16/16 weights (from DeepSpeed) in the denoiser's MLP/UNet.
-        with torch.amp.autocast('cuda', dtype=torch.float32):
-            action_hidden = self.denoiser.ln_pre_a(action_hidden.float())
-            image_hidden = self.denoiser.ln_pre(image_hidden.float())
-            # image_hidden = image_hidden + self.denoiser.pos_embed
-            image_hidden = rearrange(image_hidden, 'b (h w) c -> b c h w', h=18, w=32)
-            ross_loss = self.denoiser(z=image_hidden, target=z_q.float(), z_a=action_hidden)
-            # NO actions for **reconstruction**
-            # ross_loss = self.denoiser(z=image_hidden.float(), target=z_q.float(), z_a=None)
+        action_hidden = self.denoiser.ln_pre_a(action_hidden)
+        image_hidden = self.denoiser.ln_pre(image_hidden)
+        image_hidden = rearrange(image_hidden, 'b (h w) c -> b c h w', h=18, w=32)
+        ross_loss = self.denoiser(z=image_hidden, target=z_q, z_a=action_hidden)
+        # NO actions for **reconstruction**
+        # ross_loss = self.denoiser(z=image_hidden, target=z_q, z_a=None)
 
-        # Numerical safety: sanitize NaN/Inf in ross_loss to prevent training collapse.
-        # The denoiser's UNet (bf16 weights under autocast) can produce NaN in attention
-        # ops.  nan_to_num inside the denoiser already handles this; this is a belt-and-
-        # suspenders check that fires at most once per process.
+        # Numerical safety: sanitize NaN/Inf in ross_loss (belt-and-suspenders).
         if torch.isnan(ross_loss).any() or torch.isinf(ross_loss).any():
             if not getattr(self, "_ross_nan_warned", False):
                 nan_count = torch.isnan(ross_loss).sum().item()
