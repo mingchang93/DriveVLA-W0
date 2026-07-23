@@ -396,7 +396,10 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
         self._last_logs = {
             "action_loss": float(outputs.loss.detach().cpu()),
             "ross_loss": float(ross_loss.mean().detach().cpu()),
-        } 
+        }
+        if not getattr(self, "_factor_logged", False):
+            print(f"[ROSS] factor={self.denoiser.factor.item():.6f}, factor_a={self.denoiser.factor_a.item():.6f}")
+            object.__setattr__(self, "_factor_logged", True) 
 
         outputs.loss = outputs.loss + ross_loss.mean()
         
