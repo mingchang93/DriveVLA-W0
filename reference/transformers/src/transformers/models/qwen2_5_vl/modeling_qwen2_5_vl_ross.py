@@ -43,6 +43,7 @@ class Qwen2_5_VLConfigROSS(Qwen2_5_VLConfig):
         extract_image_hidden: bool = True,
         extract_action_hidden: bool = True,
         sd_model_path: Optional[str] = None,
+        ross_loss_weight: float = 0.1,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -50,6 +51,7 @@ class Qwen2_5_VLConfigROSS(Qwen2_5_VLConfig):
         self.extract_image_hidden = extract_image_hidden
         self.extract_action_hidden = extract_action_hidden
         self.sd_model_path = sd_model_path
+        self.ross_loss_weight = ross_loss_weight
 
 
 class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration):
@@ -61,6 +63,7 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
         self.enable_ross = getattr(config, 'enable_ross', True)
         self.extract_image_hidden = getattr(config, 'extract_image_hidden', True)
         self.extract_action_hidden = getattr(config, 'extract_action_hidden', True)
+        self.ross_loss_weight = getattr(config, 'ross_loss_weight', 0.1)
         self.denoiser = RossStableDiffusionXOmni(
             unet_path=getattr(config, 'sd_model_path', 'pretrained_models/stable-diffusion-v1-5/unet'),
             z_channel=getattr(config, 'hidden_size', 3584),
@@ -286,17 +289,6 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
         last_hidden = None
         
         last_hidden = outputs.hidden_states[-1]  # [B, L, C]
-
-        # Debug: track where NaN first appears in the LLM output.
-        # The action_loss NaN at step 1 could be from the LLM hidden states
-        # or from the LM head logits.  This fires once per process.
-        if not getattr(self, "_llm_nan_warned", False):
-            if torch.isnan(last_hidden).any():
-                print(f"[LLM NaN] hidden_states[-1] has NaN before ROSS block!")
-                object.__setattr__(self, "_llm_nan_warned", True)
-            if outputs.loss is not None and torch.isnan(outputs.loss).any():
-                print(f"[LLM NaN] parent model loss is NaN before ROSS block!")
-                object.__setattr__(self, "_llm_nan_warned", True)
         
         # 如果 collator 已经提供了按 batch 拼接且长度对齐的张量，直接使用；
         # 否则在这里进行一次性填充并拼接为张量。
@@ -388,7 +380,7 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
             "ross_loss": float(ross_loss.mean().detach().cpu()),
         } 
 
-        outputs.loss = outputs.loss + ross_loss.mean()
+        outputs.loss = outputs.loss + self.ross_loss_weight * ross_loss.mean()
         
         # Return ROSS output
         return Qwen2_5_VLROSSOutput(

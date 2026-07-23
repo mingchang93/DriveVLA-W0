@@ -57,6 +57,7 @@ ATTN_TYPE="sdpa"
 DEVICE="auto"
 MAX_STEPS=4000
 SAVE_STEPS=2000
+ROSS_LOSS_WEIGHT=0.1
 EVAL_STRATEGY="no"
 EVAL_STEPS=400
 SEED=42
@@ -85,6 +86,7 @@ while [[ $# -gt 0 ]]; do
     --sensor_blobs)           SENSOR_BLOBS="$2";             shift 2 ;;
     --navsim_logs)            NAVSIM_LOGS="$2";               shift 2 ;;
     --sd_model_path)          SD_MODEL_PATH="$2";            shift 2 ;;
+    --ross_loss_weight)       ROSS_LOSS_WEIGHT="$2";         shift 2 ;;
     --action_tokenizer_path)  ACTION_TOKENIZER_PATH="$2";    shift 2 ;;
     --deepspeed_config)       DEEPSPEED_CONFIG="$2";  DEEPSPEED_CONFIG_EXPLICIT=true;  shift 2 ;;
     --zero_stage)             ZERO_STAGE="$2";               shift 2 ;;
@@ -351,6 +353,7 @@ torchrun \
     utils/train_qwen_vla.py \
     --model_name_or_path "$MODEL_NAME_OR_PATH" \
     --sd_model_path "$SD_MODEL_UNET_PATH" \
+    --ross_loss_weight "$ROSS_LOSS_WEIGHT" \
     --dataset_type "$DATASET_TYPE" \
     --data_path "$DATA_PATH" \
     --data_root "$DATA_ROOT" \
