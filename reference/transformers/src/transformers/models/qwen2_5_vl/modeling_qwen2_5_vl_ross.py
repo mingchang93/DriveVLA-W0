@@ -17,6 +17,7 @@ from .modeling_qwen2_5_vl import (
 )
 from .configuration_qwen2_5_vl import Qwen2_5_VLConfig
 from ...utils import ModelOutput
+from diffusers.models.attention_processor import AttnProcessor
 from .modeling_ross.denoiser_sd import RossStableDiffusionXOmni
 
 ## 直接copy
@@ -74,6 +75,11 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
             n_patches=576,
             negative_prompt_path=None,
         )
+        # Replace FusedAttnProcessor2_0 (cuDNN SDPA) with basic AttnProcessor
+        # (torch.bmm + F.softmax).  cuDNN SDPA backward is known to produce NaN
+        # gradients in fp32 (pytorch#166211).  The basic processor is slower but
+        # numerically stable.
+        self.denoiser.unet.set_attn_processor(AttnProcessor())
         # 优先使用更安全的 safetensors 格式，如果不可用则使用 pickle 格式
         vae_path = getattr(config, 'sd_model_path', 'pretrained_models/stable-diffusion-v1-5/unet').replace('/unet', '/vae')
         try:
@@ -378,13 +384,7 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
             action_hidden = self.denoiser.ln_pre_a(action_hidden)
             image_hidden = self.denoiser.ln_pre(image_hidden)
             image_hidden = rearrange(image_hidden, 'b (h w) c -> b c h w', h=18, w=32)
-            # cuDNN SDPA backward produces NaN in grad_q even with well-behaved
-            # fp32 inputs (pytorch#166211, diffusers#9768).  Use mem_efficient
-            # backend instead (works on V100, compatible with fp32).
-            with torch.backends.cuda.sdp_kernel(
-                enable_flash=False, enable_math=False, enable_mem_efficient=True
-            ):
-                ross_loss = self.denoiser(z=image_hidden, target=z_q, z_a=action_hidden)
+            ross_loss = self.denoiser(z=image_hidden, target=z_q, z_a=action_hidden)
             # NO actions for **reconstruction**
             # ross_loss = self.denoiser(z=image_hidden, target=z_q, z_a=None)
 

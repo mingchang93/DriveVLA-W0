@@ -92,6 +92,15 @@ class RossStableDiffusionXOmni(nn.Module):
 
         cond = self.factor * z + self.factor_a * z_a if z_a is not None else self.factor * z
 
+        # NaN-safe gradient hook on cond: the UNet backward can produce NaN
+        # gradients even in fp32 (cuDNN SDPA bug, pytorch#166211).  Sanitize
+        # before it reaches factor/lm_pre/MLP so the denoiser doesn't get NaN weights.
+        def _cond_grad_hook(grad):
+            if grad is not None:
+                return torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
+            return grad
+        cond.register_hook(_cond_grad_hook)
+
         # Predict the noise residual
         model_pred = self.unet(
             noisy_model_input,
