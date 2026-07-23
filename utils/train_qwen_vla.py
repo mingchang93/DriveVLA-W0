@@ -315,6 +315,8 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
                 extract_image_hidden=True,
                 extract_action_hidden=True,
                 sd_model_path=model_args.sd_model_path,
+                ross_loss_weight=getattr(model_args, 'ross_loss_weight', 0.1),
+                ross_grad_clip=getattr(model_args, 'ross_grad_clip', 10.0),
             )
     # Resolve attention implementation with device-aware fallback
     # FA2 is CUDA-only; fall back to sdpa on NPU / other devices

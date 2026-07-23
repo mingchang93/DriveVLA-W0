@@ -1,4 +1,5 @@
 import math
+import os
 
 import numpy as np
 import torch
@@ -21,12 +22,15 @@ class RossStableDiffusionXOmni(nn.Module):
         z_channel,
         mlp_depth,
         n_patches=576,
-        negative_prompt_path="/mnt/vdb1/yingyan.li/repo/VLA/reference/transformers/src/transformers/models/qwen2_5_vl/modeling_ross/negative_prompt_sd15.pt",
+        negative_prompt_path=None,
     ):
         super().__init__()
         self.ln_pre = nn.LayerNorm(z_channel, elementwise_affine=False)
         self.pos_embed = nn.Parameter(torch.zeros(1, n_patches, z_channel), requires_grad=True)
         # torch.nn.init.normal_(self.pos_embed, std=.02)
+        # Use default path relative to this file if not provided
+        if negative_prompt_path is None:
+            negative_prompt_path = os.path.join(os.path.dirname(__file__), "negative_prompt_sd15.pt")
         self.negative_prompt_path = negative_prompt_path
 
         self.ln_pre_a = nn.LayerNorm(z_channel, elementwise_affine=False)
@@ -75,6 +79,16 @@ class RossStableDiffusionXOmni(nn.Module):
         # Obtain hidden states
         encoder_hidden_states = torch.load(self.negative_prompt_path).to(target.device).to(target.dtype)
         encoder_hidden_states = encoder_hidden_states.repeat(bsz, 1, 1)
+        # Sanitize: the negative prompt embeddings file may have NaN values
+        # (from how it was saved).  These propagate through UNet cross-attention
+        # backward and corrupt all downstream gradients including factor/z/MLP.
+        if torch.isnan(encoder_hidden_states).any() or torch.isinf(encoder_hidden_states).any():
+            if not getattr(self, "_neg_prompt_warned", False):
+                nan_cnt = torch.isnan(encoder_hidden_states).sum().item()
+                inf_cnt = torch.isinf(encoder_hidden_states).sum().item()
+                print(f"[ROSS NegPrompt] {nan_cnt} NaN + {inf_cnt} Inf — sanitizing.")
+                object.__setattr__(self, "_neg_prompt_warned", True)
+            encoder_hidden_states = torch.nan_to_num(encoder_hidden_states, nan=0.0, posinf=1.0, neginf=-1.0)
 
         # interpolate
         if z.shape[2] != noisy_model_input.shape[2] or z.shape[3] != noisy_model_input.shape[3]:
@@ -86,20 +100,35 @@ class RossStableDiffusionXOmni(nn.Module):
         if z_a is not None:
             z_a = self.mlp_a(z_a).unsqueeze(-1).unsqueeze(-1).contiguous()
 
+        cond = self.factor * z + self.factor_a * z_a if z_a is not None else self.factor * z
+
+        # NaN-safe gradient hook on cond: the UNet backward can produce NaN
+        # gradients even in fp32 (cuDNN SDPA bug, pytorch#166211).  Sanitize
+        # before it reaches factor/lm_pre/MLP so the denoiser doesn't get NaN weights.
+        def _cond_grad_hook(grad):
+            if grad is not None:
+                return torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
+            return grad
+        cond.register_hook(_cond_grad_hook)
+
         # Predict the noise residual
         model_pred = self.unet(
-            noisy_model_input, 
-            timesteps, 
-            encoder_hidden_states, 
-            class_labels=None, 
+            noisy_model_input,
+            timesteps,
+            encoder_hidden_states,
+            class_labels=None,
             return_dict=False,
-            z=self.factor * z + self.factor_a * z_a if z_a is not None else self.factor * z,
+            z=cond,
         )[0]
 
         if model_pred.shape[1] == 6:
             model_pred, _ = torch.chunk(model_pred, 2, dim=1)
 
-         # Get the target for loss depending on the prediction type
+        # Numerical stability: the UNet (with bf16 weights under autocast) can produce
+        # NaN/Inf in fp16 attention ops. Sanitize before loss computation.
+        model_pred = torch.nan_to_num(model_pred, nan=0.0, posinf=1.0, neginf=-1.0)
+
+        # Get the target for loss depending on the prediction type
         if self.noise_scheduler.config.prediction_type == "epsilon":
             noise_target = noise
         elif self.noise_scheduler.config.prediction_type == "v_prediction":

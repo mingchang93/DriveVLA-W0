@@ -65,7 +65,8 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
             unet_path=getattr(config, 'sd_model_path', 'pretrained_models/stable-diffusion-v1-5/unet'),
             z_channel=getattr(config, 'hidden_size', 3584),
             mlp_depth=2,
-            n_patches=180,
+            n_patches=576,
+            negative_prompt_path=None,
         )
         # 优先使用更安全的 safetensors 格式，如果不可用则使用 pickle 格式
         vae_path = getattr(config, 'sd_model_path', 'pretrained_models/stable-diffusion-v1-5/unet').replace('/unet', '/vae')
@@ -336,8 +337,8 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
         assert action_hidden.shape[1] == 2, "Currently only support 2 images for each sample"
         assert raw_pixel_values_vae.shape[0] == 2, "Currently only support 2 images for each sample"
 
-        image_hidden = image_hidden[:, 0].squeeze()             # [bsz, seq_len, dim]
-        action_hidden = action_hidden.mean(2)[:, 0].squeeze()   # [bsz, dim]
+        image_hidden = image_hidden[:, 0].squeeze(1)             # [bsz, seq_len, dim]
+        action_hidden = action_hidden.mean(2)[:, 0]   # [bsz, dim]
         cond_pixel_values = raw_pixel_values_vae[0]
         raw_pixel_values_vae = raw_pixel_values_vae[1]          # [bsz, 3, h, w]
 
@@ -356,7 +357,7 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
             action_hidden = self.denoiser.ln_pre_a(action_hidden)
             image_hidden = self.denoiser.ln_pre(image_hidden)
             # image_hidden = image_hidden + self.denoiser.pos_embed
-            image_hidden = rearrange(image_hidden, 'b (h w) c -> b c h w', h=10, w=18)
+            image_hidden = rearrange(image_hidden, 'b (h w) c -> b c h w', h=18, w=32)
             ross_loss = self.denoiser(z=image_hidden.float(), target=z_q.float(), z_a=action_hidden.float())
             # NO actions for **reconstruction**
             # ross_loss = self.denoiser(z=image_hidden.float(), target=z_q.float(), z_a=None)
