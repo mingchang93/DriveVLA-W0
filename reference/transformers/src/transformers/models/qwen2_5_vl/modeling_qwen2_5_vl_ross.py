@@ -353,14 +353,23 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
             posterior = self.vae.encode(raw_pixel_values_vae).latent_dist
             z_q = (posterior.sample() - self.vae_shift_factor) * self.vae_scaling_factor
 
-        with torch.amp.autocast('cuda', dtype=torch.float32):
-            action_hidden = self.denoiser.ln_pre_a(action_hidden)
-            image_hidden = self.denoiser.ln_pre(image_hidden)
-            # image_hidden = image_hidden + self.denoiser.pos_embed
-            image_hidden = rearrange(image_hidden, 'b (h w) c -> b c h w', h=18, w=32)
-            ross_loss = self.denoiser(z=image_hidden.float(), target=z_q.float(), z_a=action_hidden.float())
-            # NO actions for **reconstruction**
-            # ross_loss = self.denoiser(z=image_hidden.float(), target=z_q.float(), z_a=None)
+        # Ensure fp32 precision for LayerNorm — the LLM hidden states may be in fp16
+        # (from DeepSpeed ZeRO-3), and LayerNorm in fp16 is numerically unstable.
+        # The autocast wrapper is intentionally omitted: .float() on the critical path
+        # is explicit and avoids autocast dtype confusion.
+        action_hidden = self.denoiser.ln_pre_a(action_hidden.float())
+        image_hidden = self.denoiser.ln_pre(image_hidden.float())
+        # image_hidden = image_hidden + self.denoiser.pos_embed
+        image_hidden = rearrange(image_hidden, 'b (h w) c -> b c h w', h=18, w=32)
+        ross_loss = self.denoiser(z=image_hidden, target=z_q.float(), z_a=action_hidden)
+        # Numerical safety: sanitize NaN/Inf in ross_loss to prevent training collapse.
+        if torch.isnan(ross_loss).any() or torch.isinf(ross_loss).any():
+            nan_count = torch.isnan(ross_loss).sum().item()
+            inf_count = torch.isinf(ross_loss).sum().item()
+            print(f"[ROSS NaN Guard] {nan_count} NaN + {inf_count} Inf in ross_loss — replacing with 0.")
+            ross_loss = torch.nan_to_num(ross_loss, nan=0.0, posinf=1.0, neginf=0.0)
+        # NO actions for **reconstruction**
+        # ross_loss = self.denoiser(z=image_hidden.float(), target=z_q.float(), z_a=None)
 
 
         self._last_logs = {
