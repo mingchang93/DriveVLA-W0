@@ -88,7 +88,7 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
         self.vae_scaling_factor = self.vae.config.scaling_factor if self.vae.config.scaling_factor is not None else 1.
         
         self.post_init()
-    
+
     def extract_hidden_with_masks(
         self,
         hidden: torch.Tensor,  # [B, L, C]
@@ -378,7 +378,13 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
             action_hidden = self.denoiser.ln_pre_a(action_hidden)
             image_hidden = self.denoiser.ln_pre(image_hidden)
             image_hidden = rearrange(image_hidden, 'b (h w) c -> b c h w', h=18, w=32)
-            ross_loss = self.denoiser(z=image_hidden, target=z_q, z_a=action_hidden)
+            # cuDNN SDPA backward produces NaN in grad_q even with well-behaved
+            # fp32 inputs (pytorch#166211, diffusers#9768).  Use mem_efficient
+            # backend instead (works on V100, compatible with fp32).
+            with torch.backends.cuda.sdp_kernel(
+                enable_flash=False, enable_math=False, enable_mem_efficient=True
+            ):
+                ross_loss = self.denoiser(z=image_hidden, target=z_q, z_a=action_hidden)
             # NO actions for **reconstruction**
             # ross_loss = self.denoiser(z=image_hidden, target=z_q, z_a=None)
 
