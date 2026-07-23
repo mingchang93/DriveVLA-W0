@@ -14,6 +14,7 @@ class ModelArguments:
     model_type: str = field(default="qwen2.5vl")
     sd_model_path: Optional[str] = field(default=None)
     ross_loss_weight: float = field(default=0.1)
+    ross_grad_clip: float = field(default=10.0)
 
 @dataclass
 class DataArguments:

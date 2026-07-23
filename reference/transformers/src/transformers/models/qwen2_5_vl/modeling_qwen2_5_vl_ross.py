@@ -44,6 +44,7 @@ class Qwen2_5_VLConfigROSS(Qwen2_5_VLConfig):
         extract_action_hidden: bool = True,
         sd_model_path: Optional[str] = None,
         ross_loss_weight: float = 0.1,
+        ross_grad_clip: float = 10.0,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -52,6 +53,7 @@ class Qwen2_5_VLConfigROSS(Qwen2_5_VLConfig):
         self.extract_action_hidden = extract_action_hidden
         self.sd_model_path = sd_model_path
         self.ross_loss_weight = ross_loss_weight
+        self.ross_grad_clip = ross_grad_clip
 
 
 class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration):
@@ -64,6 +66,7 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
         self.extract_image_hidden = getattr(config, 'extract_image_hidden', True)
         self.extract_action_hidden = getattr(config, 'extract_action_hidden', True)
         self.ross_loss_weight = getattr(config, 'ross_loss_weight', 0.1)
+        self.ross_grad_clip = getattr(config, 'ross_grad_clip', 10.0)
         self.denoiser = RossStableDiffusionXOmni(
             unet_path=getattr(config, 'sd_model_path', 'pretrained_models/stable-diffusion-v1-5/unet'),
             z_channel=getattr(config, 'hidden_size', 3584),
@@ -357,6 +360,21 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
             posterior = self.vae.encode(raw_pixel_values_vae).latent_dist
             z_q = (posterior.sample() - self.vae_shift_factor) * self.vae_scaling_factor
 
+        # Register gradient hooks BEFORE ln_pre to clip the ROSS gradient.
+        # The UNet backward can produce NaN/Inf or very large gradients that
+        # corrupt the LLM parameters.  These hooks sanitize the gradient at the
+        # boundary between the denoiser and the LLM.
+        clip_val = self.ross_grad_clip
+        def _ross_grad_hook(grad):
+            if grad is not None:
+                grad = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
+                if clip_val > 0:
+                    grad = torch.clamp(grad, -clip_val, clip_val)
+            return grad
+
+        action_hidden.register_hook(_ross_grad_hook)
+        image_hidden.register_hook(_ross_grad_hook)
+
         action_hidden = self.denoiser.ln_pre_a(action_hidden)
         image_hidden = self.denoiser.ln_pre(image_hidden)
         image_hidden = rearrange(image_hidden, 'b (h w) c -> b c h w', h=18, w=32)
@@ -380,7 +398,7 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
             "ross_loss": float(ross_loss.mean().detach().cpu()),
         } 
 
-        outputs.loss = outputs.loss + self.ross_loss_weight * ross_loss.mean()
+        outputs.loss = outputs.loss + ross_loss.mean()
         
         # Return ROSS output
         return Qwen2_5_VLROSSOutput(
