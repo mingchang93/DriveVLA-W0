@@ -47,6 +47,9 @@ bash "$TRAIN_SCRIPT" \
     --save_steps 50 \
     --exp_name bf16_100steps
 
+echo "Waiting 10 minutes for GPU cleanup..."
+sleep 600
+
 # Experiment 2: bf16, 200 steps
 echo ""
 echo "=== [2/4] bf16, 200 steps ==="
@@ -57,6 +60,9 @@ bash "$TRAIN_SCRIPT" \
     --save_steps 100 \
     --exp_name bf16_200steps
 
+echo "Waiting 10 minutes for GPU cleanup..."
+sleep 600
+
 # Experiment 3: fp16, 100 steps
 echo ""
 echo "=== [3/4] fp16, 100 steps ==="
@@ -66,6 +72,9 @@ bash "$TRAIN_SCRIPT" \
     --max_steps 100 \
     --save_steps 50 \
     --exp_name fp16_100steps
+
+echo "Waiting 10 minutes for GPU cleanup..."
+sleep 600
 
 # Experiment 4: fp16, 200 steps
 echo ""
