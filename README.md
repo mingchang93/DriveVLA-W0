@@ -132,13 +132,8 @@ conda activate drivevla
 pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
 
 # Install core dependencies
+pip install --no-build-isolation flash-attn==2.5.7
 pip install -r requirements.txt
-
-# Install training-related dependencies
-pip install deepspeed          # Distributed training
-pip install scipy              # Scientific computing
-pip install tensorboard==2.14.0  # Visualization
-pip install wandb              # Experiment tracking
 ```
 
 ### Conda Environment Setup for Ascend
@@ -154,14 +149,8 @@ pip install torch_npu==2.7.1.post4
 
 # Install core dependencies
 pip install -r requirements_ascend.txt
-
-# Install training-related dependencies
-pip install deepspeed          # Distributed training
-pip install scipy              # Scientific computing
-pip install tensorboard==2.14.0  # Visualization
-pip install wandb              # Experiment tracking
-pip install mindstudio-probe
 ```
+	
 
 ### Testing
 
