@@ -28,3 +28,8 @@ transformers[torch]==4.44.0
 tiktoken==0.6.0
 pillow
 gradio==4.44.0
+deepspeed
+scipy
+tensorboard==2.14.0
+wandb
+mindstudio-probe
