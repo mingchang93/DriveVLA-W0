@@ -25,7 +25,7 @@ DEFAULT_ACTION_TOKENIZER_PATH="$ROOT/configs/fast"
 DEFAULT_DEEPSPEED_CONFIG="$ROOT/scripts/sft/zero3_offload.json"
 DEFAULT_DATA_PATH="$ROOT/data/navsim/processed_data/meta/navsim_emu_vla_256_144_trainval_pre_1s.pkl"
 DEFAULT_TEST_DATA_PATH="$ROOT/data/navsim/processed_data/meta/navsim_emu_vla_256_144_test_pre_1s.pkl"
-DEFAULT_OUTPUT_DIR="$ROOT/logs/train_base_ar"
+DEFAULT_OUTPUT_DIR="$ROOT/logs/train_base_ar_$(date +%Y%m%d_%H%M%S)"
 DEFAULT_INPUT_NUM_FRAME="1"
 
 # ============================================================
@@ -238,6 +238,15 @@ case "$FP" in
   fp32)  FP_FLAGS="--bf16 False --fp16 False" ;;
   *)     echo "ERROR: --fp must be bf16, fp16, or fp32 (got '$FP')"; exit 1 ;;
 esac
+
+# ============================================================
+# Log startup command
+# ============================================================
+RUN_DIR="${OUTPUT_DIR}/${EXP_NAME}"
+mkdir -p "$RUN_DIR"
+echo "$0 $*" > "$RUN_DIR/startup_command.txt"
+echo "Launch time: $(date)" >> "$RUN_DIR/startup_command.txt"
+echo "Host: $(hostname)" >> "$RUN_DIR/startup_command.txt"
 
 # ============================================================
 # Launch training
