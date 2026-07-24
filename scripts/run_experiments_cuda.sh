@@ -28,6 +28,7 @@ COMMON_ARGS="
     --device cuda
     --log_data_hash
     --deterministic
+    --shuffle_train_data false
     --eval_strategy no
     --eval_steps 10000
     --skip_inference
