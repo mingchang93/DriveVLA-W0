@@ -16,6 +16,7 @@ def parse_args():
     parser.add_argument("--output_dir", required=True, type=str)
     parser.add_argument("--train_meta_pkl", required=True, type=str)
     parser.add_argument("--input_num_frame", type=int, default=1)
+    parser.add_argument("--norm_config", type=str, default="configs/normalizer_navsim_trainval/norm_stats.json")
     return parser.parse_args()
 
 
@@ -86,7 +87,7 @@ def main():
         "vision_hub": "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu/pretrained_models/Emu3-VisionTokenizer",
         "fast_tokenizer": "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu/pretrained_models/fast",
         # "fast_tokenizer": "/mnt/nvme0n1p1/yingyan.li/repo/OmniSim//pretrained_models/fast_navsim_s20",
-        "norm_config": "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu/configs/normalizer_navsim_trainval/norm_stats.json",
+        "norm_config": args.norm_config,
         "token_yaml": "inference/navsim/navsim/navsim/planning/script/config/common/train_test_split/scene_filter/navtest.yaml",
     }
 
