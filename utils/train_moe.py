@@ -191,6 +191,12 @@ class LoggingTrainer(tf.Trainer):
 
         loss = super().training_step(model, inputs)
 
+        # ponytail: flush device stream so DeepSpeed get_global_grad_norm()
+        # returns the actual gradient (not 0.0) on all platforms. Without this,
+        # CUDA reports 3 zero-grad_norm steps vs NPU's 2 due to async allreduce.
+        if self.state.global_step < 5:
+            device_synchronize()
+
         # Only proceed with logging if we have indices and are in training mode
         if indices is not None and self.is_in_train:
             if dist.is_initialized():
