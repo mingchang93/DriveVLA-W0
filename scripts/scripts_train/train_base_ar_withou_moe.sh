@@ -22,6 +22,9 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 DEFAULT_MODEL_NAME_OR_PATH="$ROOT/pretrained_models/Emu3-Stage1"
 DEFAULT_MODEL_CONFIG_PATH="$ROOT/configs/moe_fast_video.json"
 DEFAULT_ACTION_TOKENIZER_PATH="$ROOT/configs/fast"
+DEFAULT_VQ_HUB="$ROOT/pretrained_models/Emu3-Stage1"
+DEFAULT_VISION_HUB="$ROOT/pretrained_models/Emu3-VisionTokenizer"
+DEFAULT_NORM_CONFIG="$ROOT/configs/normalizer_navsim_trainval/norm_stats.json"
 DEFAULT_DEEPSPEED_CONFIG="$ROOT/scripts/sft/zero3_offload.json"
 DEFAULT_DATA_PATH="$ROOT/data/navsim/processed_data/meta/navsim_emu_vla_256_144_trainval_pre_1s.pkl"
 DEFAULT_TEST_DATA_PATH="$ROOT/data/navsim/processed_data/meta/navsim_emu_vla_256_144_test_pre_1s.pkl"
@@ -34,6 +37,9 @@ DEFAULT_INPUT_NUM_FRAME="1"
 MODEL_NAME_OR_PATH="$DEFAULT_MODEL_NAME_OR_PATH"
 MODEL_CONFIG_PATH="$DEFAULT_MODEL_CONFIG_PATH"
 ACTION_TOKENIZER_PATH="$DEFAULT_ACTION_TOKENIZER_PATH"
+VQ_HUB="$DEFAULT_VQ_HUB"
+VISION_HUB="$DEFAULT_VISION_HUB"
+NORM_CONFIG="$DEFAULT_NORM_CONFIG"
 DEEPSPEED_CONFIG="$DEFAULT_DEEPSPEED_CONFIG"
 DEEPSPEED_CONFIG_EXPLICIT=false
 DATA_PATH="$DEFAULT_DATA_PATH"
@@ -68,6 +74,9 @@ while [[ $# -gt 0 ]]; do
     --model_name_or_path)     MODEL_NAME_OR_PATH="$2";       shift 2 ;;
     --model_config_path)      MODEL_CONFIG_PATH="$2";        shift 2 ;;
     --action_tokenizer_path)  ACTION_TOKENIZER_PATH="$2";    shift 2 ;;
+    --vq_hub)                VQ_HUB="$2";                  shift 2 ;;
+    --vision_hub)            VISION_HUB="$2";              shift 2 ;;
+    --norm_config)           NORM_CONFIG="$2";             shift 2 ;;
     --deepspeed_config)       DEEPSPEED_CONFIG="$2";  DEEPSPEED_CONFIG_EXPLICIT=true;  shift 2 ;;
     --zero_stage)             ZERO_STAGE="$2";               shift 2 ;;
     --data_path)              DATA_PATH="$2";                shift 2 ;;
@@ -343,7 +352,11 @@ if [ "$SKIP_INFERENCE" = false ]; then
     --emu_hub "${OUTPUT_DIR}/${EXP_NAME}" \
     --output_dir "${OUTPUT_DIR}/${EXP_NAME}/json_output" \
     --train_meta_pkl "${TEST_DATA_PATH}" \
-    --input_num_frame "${INPUT_NUM_FRAME}"
+    --input_num_frame "${INPUT_NUM_FRAME}" \
+    --vq_hub "${VQ_HUB}" \
+    --vision_hub "${VISION_HUB}" \
+    --fast_tokenizer "${ACTION_TOKENIZER_PATH}" \
+    --norm_config "${NORM_CONFIG}"
 
   echo "=== Inference done ==="
   echo "Results at: ${OUTPUT_DIR}/${EXP_NAME}/json_output"

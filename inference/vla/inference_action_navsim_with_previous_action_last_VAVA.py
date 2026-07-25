@@ -17,6 +17,9 @@ def parse_args():
     parser.add_argument("--train_meta_pkl", required=True, type=str)
     parser.add_argument("--input_num_frame", type=int, default=1)
     parser.add_argument("--norm_config", type=str, default="configs/normalizer_navsim_trainval/norm_stats.json")
+    parser.add_argument("--vq_hub", type=str, default="pretrained_models/Emu3-Stage1")
+    parser.add_argument("--vision_hub", type=str, default="pretrained_models/Emu3-VisionTokenizer")
+    parser.add_argument("--fast_tokenizer", type=str, default="configs/fast")
     return parser.parse_args()
 
 
@@ -83,10 +86,9 @@ def main():
         "train_meta_pkl": args.train_meta_pkl,
         
 
-        "vq_hub": "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu/pretrained_models/Emu3-Stage1",
-        "vision_hub": "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu/pretrained_models/Emu3-VisionTokenizer",
-        "fast_tokenizer": "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu/pretrained_models/fast",
-        # "fast_tokenizer": "/mnt/nvme0n1p1/yingyan.li/repo/OmniSim//pretrained_models/fast_navsim_s20",
+        "vq_hub": args.vq_hub,
+        "vision_hub": args.vision_hub,
+        "fast_tokenizer": args.fast_tokenizer,
         "norm_config": args.norm_config,
         "token_yaml": "inference/navsim/navsim/navsim/planning/script/config/common/train_test_split/scene_filter/navtest.yaml",
     }
@@ -168,7 +170,7 @@ def main():
         cur_idx = 3
 
         # video_code = torch.tensor(np.load(image_list[cur_idx])).unsqueeze(0).to(device)  ✅修改
-        video_code = [torch.from_numpy(np.load(img.replace("/mnt/vdb1/yingyan.li/repo/VLA", "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu"))) for img in image_list[cur_idx-2*(num_frames-1):cur_idx+1:2]]
+        video_code = [torch.from_numpy(np.load(img)) for img in image_list[cur_idx-2*(num_frames-1):cur_idx+1:2]]
         video_code = torch.stack(video_code, dim=1).to(device)
         input_text = text[cur_idx]
 
@@ -186,7 +188,7 @@ def main():
         pre_action_list = task_data['pre_1s_action']
         pre_text = task_data['pre_1s_text']
 
-        pre_video_code = [torch.from_numpy(np.load(img.replace("/mnt/vdb1/yingyan.li/repo/VLA", "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu")).reshape(1,18,32)) for img in pre_image_list[cur_idx-2*(num_frames-1):cur_idx+1:2]]
+        pre_video_code = [torch.from_numpy(np.load(img).reshape(1,18,32)) for img in pre_image_list[cur_idx-2*(num_frames-1):cur_idx+1:2]]
         pre_video_code = torch.stack(pre_video_code, dim=1).to(device)
         pre_input_text = pre_text[cur_idx]
 
