@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# 4 experiments on CUDA: bf16/fp16 × 100/200 steps
+# 4 experiments on CUDA: fp16/fp32 × 100/200 steps
+# Constant LR, no bf16 (V100 doesn't support it natively)
 #
 # Usage:
 #   bash scripts/run_experiments_cuda.sh
@@ -32,41 +33,16 @@ COMMON_ARGS="
     --eval_strategy no
     --eval_steps 10000
     --skip_inference
+    --constant_lr
 "
 
 echo "============================================"
 echo "CUDA experiments — output: $OUTPUT_DIR"
 echo "============================================"
 
-# Experiment 1: bf16, 100 steps
+# Experiment 1: fp16, 100 steps
 echo ""
-echo "=== [1/4] bf16, 100 steps ==="
-bash "$TRAIN_SCRIPT" \
-    $COMMON_ARGS \
-    --fp bf16 \
-    --max_steps 100 \
-    --save_steps 50 \
-    --exp_name bf16_100steps
-
-echo "Waiting 10 minutes for GPU cleanup..."
-sleep 600
-
-# Experiment 2: bf16, 200 steps
-echo ""
-echo "=== [2/4] bf16, 200 steps ==="
-bash "$TRAIN_SCRIPT" \
-    $COMMON_ARGS \
-    --fp bf16 \
-    --max_steps 200 \
-    --save_steps 100 \
-    --exp_name bf16_200steps
-
-echo "Waiting 10 minutes for GPU cleanup..."
-sleep 600
-
-# Experiment 3: fp16, 100 steps
-echo ""
-echo "=== [3/4] fp16, 100 steps ==="
+echo "=== [1/4] fp16, 100 steps ==="
 bash "$TRAIN_SCRIPT" \
     $COMMON_ARGS \
     --fp fp16 \
@@ -77,15 +53,41 @@ bash "$TRAIN_SCRIPT" \
 echo "Waiting 10 minutes for GPU cleanup..."
 sleep 600
 
-# Experiment 4: fp16, 200 steps
+# Experiment 2: fp16, 200 steps
 echo ""
-echo "=== [4/4] fp16, 200 steps ==="
+echo "=== [2/4] fp16, 200 steps ==="
 bash "$TRAIN_SCRIPT" \
     $COMMON_ARGS \
     --fp fp16 \
     --max_steps 200 \
     --save_steps 100 \
     --exp_name fp16_200steps
+
+echo "Waiting 10 minutes for GPU cleanup..."
+sleep 600
+
+# Experiment 3: fp32, 100 steps
+echo ""
+echo "=== [3/4] fp32, 100 steps ==="
+bash "$TRAIN_SCRIPT" \
+    $COMMON_ARGS \
+    --fp fp32 \
+    --max_steps 100 \
+    --save_steps 50 \
+    --exp_name fp32_100steps
+
+echo "Waiting 10 minutes for GPU cleanup..."
+sleep 600
+
+# Experiment 4: fp32, 200 steps
+echo ""
+echo "=== [4/4] fp32, 200 steps ==="
+bash "$TRAIN_SCRIPT" \
+    $COMMON_ARGS \
+    --fp fp32 \
+    --max_steps 200 \
+    --save_steps 100 \
+    --exp_name fp32_200steps
 
 echo ""
 echo "============================================"

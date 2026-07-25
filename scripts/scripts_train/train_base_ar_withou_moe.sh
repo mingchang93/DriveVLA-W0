@@ -61,6 +61,8 @@ HASH_FLAG=""
 LOGGING_STEPS=10
 WARMUP_STEPS=50
 ZERO_STAGE=3
+LEARNING_RATE=2e-5
+CONSTANT_LR=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model_name_or_path)     MODEL_NAME_OR_PATH="$2";       shift 2 ;;
@@ -90,6 +92,8 @@ while [[ $# -gt 0 ]]; do
     --logging_steps)          LOGGING_STEPS="$2";            shift 2 ;;
     --warmup_steps)           WARMUP_STEPS="$2";             shift 2 ;;
     --skip_inference)         SKIP_INFERENCE=true;           shift ;;
+    --constant_lr)            CONSTANT_LR=true;               shift ;;
+    --learning_rate)          LEARNING_RATE="$2";             shift 2 ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
       echo ""
@@ -121,6 +125,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --logging_steps            <int>   (10)"
       echo "  --warmup_steps             <int>   (50)"
       echo "  --skip_inference                   Skip inference after training"
+      echo "  --constant_lr                      Use constant LR (no decay, no warmup)"
+      echo "  --learning_rate            <float> (2e-5)"
       exit 0
       ;;
     *)
@@ -266,7 +272,7 @@ torchrun \
     --output_dir "${OUTPUT_DIR}/${EXP_NAME}" \
     $FP_FLAGS \
     --tf32 False \
-    --learning_rate 8e-5 \
+    --learning_rate "$LEARNING_RATE" \
     --null_prompt_prob 0.15 \
     --weight_decay 0.1 \
     --min_learning_rate 1e-6 \
@@ -277,8 +283,8 @@ torchrun \
     --data_path "$DATA_PATH" \
     --max_steps "$MAX_STEPS" \
     --dataloader_num_workers 12 \
-    --lr_scheduler_type cosine_with_min_lr \
-    --warmup_steps "$WARMUP_STEPS" \
+    --lr_scheduler_type "$([ "$CONSTANT_LR" = true ] && echo "constant" || echo "cosine_with_min_lr")" \
+    --warmup_steps "$([ "$CONSTANT_LR" = true ] && echo "0" || echo "$WARMUP_STEPS")" \
     --per_device_train_batch_size ${BATCH_SIZE} \
     --frames 1 \
     --action_frames 8 \
