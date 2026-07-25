@@ -123,8 +123,12 @@ def main():
     action_low = torch.tensor(norm_cfg['norm_stats']['libero']['q01']).to(device)
     action_high = torch.tensor(norm_cfg['norm_stats']['libero']['q99']).to(device)
 
-    # FA2 is CUDA-only; fall back to sdpa on NPU / other devices
-    _attn_impl = "flash_attention_2" if ("cuda" in device) else "sdpa"
+    # FA2 is CUDA-only; fall back to sdpa on NPU / other devices, or if not installed
+    try:
+        import flash_attn  # noqa: F401
+        _attn_impl = "flash_attention_2" if ("cuda" in device) else "sdpa"
+    except ImportError:
+        _attn_impl = "sdpa"
     model = Emu3MoE.from_pretrained(CONFIG["emu_hub"],
         torch_dtype=torch.bfloat16,
         attn_implementation=_attn_impl,
