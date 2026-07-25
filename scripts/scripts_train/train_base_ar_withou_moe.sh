@@ -61,7 +61,7 @@ HASH_FLAG=""
 LOGGING_STEPS=10
 WARMUP_STEPS=50
 ZERO_STAGE=3
-LEARNING_RATE=2e-5
+LEARNING_RATE=1e-5
 CONSTANT_LR=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -143,23 +143,37 @@ done
 # Data shuffling: true → shuffle (default), false → deterministic order (NPU/GPU alignment)
 SHUFFLE_FLAG="--dataloader_shuffle $SHUFFLE_TRAIN_DATA"
 
+# ============================================================
+# Reproducibility & precision alignment (common)
+# ============================================================
+export PYTHONHASHSEED=1234
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export NCCL_DETERMINISTIC=TRUE
+export HCCL_DETERMINISTIC=TRUE
+
 # Resolve device type for NPU vs GPU  ────  sets DEVICE env for Python
 if [ "$DEVICE" = "npu" ]; then
   # FA2 is CUDA-only; force sdpa on NPU
   [ "$ATTN_TYPE" = "fa2" ] && ATTN_TYPE="sdpa"
-  # NPU communication backend (HCCL)  ──  NCCL is CUDA-only
-  export HCCL_DETERMINISTIC=TRUE
-  # Non-saturation mode: overflow → Inf/NaN (matches GPU default behavior)
-  export INF_NAN_MODE_ENABLE=1
-  # Stream sync for memory corruption diagnosis (uncomment to enable)
-  # export ASCEND_LAUNCH_BLOCKING=1
+
+  # NPU precision alignment
+  export INF_NAN_MODE_ENABLE=1            # IEEE 754 (overflow → Inf/NaN)
+  export CLOSE_MATMUL_K_SHIFT=1           # deterministic MatMul
+  export ATB_MATMUL_SHUFFLE_K_ENABLE=0    # disable shuffle optimization
+  export ACL_OP_DETERMINISTIC=1           # deterministic ACL ops
+
+  # Synchronous execution (traceable error stacks)
+  export ASCEND_LAUNCH_BLOCKING=1
+  export TASK_QUEUE_ENABLE=0              # disable task queue optimization
+
+  # Disable private storage format
+  export FLAGS_npu_storage_format=0
+
   # Ascend EP / CANN tuning (optional)
   : "${ASCEND_RT_VISIBLE_DEVICES:=0,1,2,3,4,5,6,7}"
 elif [ "$DEVICE" = "cuda" ]; then
   export NCCL_DEBUG=INFO
   export NCCL_BLOCKING_WAIT=1
-  export NCCL_DETERMINISTIC=TRUE
-  export CUDA_DEVICE_MAX_CONNECTIONS=1
 else
   # "auto" — let Python detect; skip device-specific vars
   :
