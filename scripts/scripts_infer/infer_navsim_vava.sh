@@ -33,6 +33,7 @@ EMU_HUB="$DEFAULT_EMU_HUB"
 OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
 TRAIN_META_PKL="$DEFAULT_TRAIN_META_PKL"
 INPUT_NUM_FRAME="$DEFAULT_INPUT_NUM_FRAME"
+MAX_SAMPLES=""
 NGPUS="$DEFAULT_NGPUS"
 MASTER_PORT="$DEFAULT_MASTER_PORT"
 DEVICE="$DEFAULT_DEVICE"
@@ -43,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --output_dir)        OUTPUT_DIR="$2";        shift 2 ;;
     --train_meta_pkl)    TRAIN_META_PKL="$2";    shift 2 ;;
     --input_num_frame)   INPUT_NUM_FRAME="$2";   shift 2 ;;
+    --max_samples)       MAX_SAMPLES="$2";        shift 2 ;;
     --ngpus)             NGPUS="$2";             shift 2 ;;
     --master_port)       MASTER_PORT="$2";       shift 2 ;;
     --device)            DEVICE="$2";            shift 2 ;;
@@ -54,6 +56,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --output_dir        <path>  ($DEFAULT_OUTPUT_DIR)"
       echo "  --train_meta_pkl    <path>  ($DEFAULT_TRAIN_META_PKL)"
       echo "  --input_num_frame   <int>   (1)"
+      echo "  --max_samples       <int>   — truncate to N samples per GPU (default: all)"
       echo "  --ngpus             <int>   (1)"
       echo "  --master_port       <int>   (23458)"
       echo "  --device            <str>   (auto) — auto, cuda, or npu"
@@ -93,6 +96,7 @@ echo "  emu_hub:           $EMU_HUB"
 echo "  output_dir:        $OUTPUT_DIR"
 echo "  train_meta_pkl:    $TRAIN_META_PKL"
 echo "  input_num_frame:   $INPUT_NUM_FRAME"
+[ -n "$MAX_SAMPLES" ] && echo "  max_samples:       $MAX_SAMPLES"
 echo "  ngpus:             $NGPUS"
 echo "  master_port:       $MASTER_PORT"
 echo "  device:            $DEVICE"
@@ -120,7 +124,8 @@ torchrun \
     --emu_hub "$EMU_HUB" \
     --output_dir "$OUTPUT_DIR" \
     --train_meta_pkl "$TRAIN_META_PKL" \
-    --input_num_frame "$INPUT_NUM_FRAME"
+    --input_num_frame "$INPUT_NUM_FRAME" \
+    $([ -n "$MAX_SAMPLES" ] && echo "--max_samples $MAX_SAMPLES")
 
 echo ""
 echo "=== Inference done ==="

@@ -16,6 +16,7 @@ def parse_args():
     parser.add_argument("--output_dir", required=True, type=str)
     parser.add_argument("--train_meta_pkl", required=True, type=str)
     parser.add_argument("--input_num_frame", type=int, default=1)
+    parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--norm_config", type=str, default="configs/normalizer_navsim_trainval/norm_stats.json")
     return parser.parse_args()
 
@@ -155,6 +156,8 @@ def main():
 
     # 为当前 rank 分配的 index 子集
     total_tasks = list(range(rank, len(train_meta), world_size))
+    if args.max_samples is not None:
+        total_tasks = total_tasks[:args.max_samples]  # truncate per rank
     pbar = tqdm(total=len(total_tasks), desc=f"Rank {rank}", position=rank)
     # token_length = []
     for local_idx, idx in enumerate(total_tasks):
