@@ -2,12 +2,45 @@ import os, sys, yaml, json, pickle, argparse
 import torch
 import torch.distributed as dist
 import numpy as np
+from scipy.fft import idct
 from transformers import (
     AutoModel, AutoImageProcessor, GenerationConfig, AutoProcessor, LogitsProcessor
 )
 from emu3.mllm import Emu3MoE, Emu3Tokenizer
 from emu3.mllm.processing_emu3 import Emu3Processor
 from tqdm import tqdm
+
+
+def robust_decode_action(action_tokenizer, token_list, time_horizon, action_dim):
+    """
+    Decode action tokens with padding for short sequences.
+    Fallback to manual decode if the tokenizer's built-in decode fails.
+    """
+    try:
+        result = action_tokenizer.decode(token_list, time_horizon=time_horizon, action_dim=action_dim)
+        # Check if result is all zeros (decode failure fallback)
+        if not np.allclose(result, 0):
+            return result
+    except Exception:
+        pass
+
+    # Manual decode with padding
+    expected_elems = time_horizon * action_dim
+    decoded_actions = []
+    for token in token_list:
+        try:
+            decoded_str = action_tokenizer.bpe_tokenizer.decode(token)
+            coeff_flat = np.array(list(map(ord, decoded_str)), dtype=np.int64) + action_tokenizer.min_token
+            n = int(coeff_flat.size)
+            if n < expected_elems:
+                coeff_flat = np.pad(coeff_flat, (0, expected_elems - n), mode="constant", constant_values=0)
+            elif n > expected_elems:
+                coeff_flat = coeff_flat[:expected_elems]
+            decoded_dct_coeff = coeff_flat.reshape(time_horizon, action_dim)
+        except Exception:
+            decoded_dct_coeff = np.zeros((time_horizon, action_dim))
+        decoded_actions.append(idct(decoded_dct_coeff / action_tokenizer.scale, axis=0, norm="ortho"))
+    return np.stack(decoded_actions)
 
 
 def parse_args():
@@ -17,7 +50,7 @@ def parse_args():
     parser.add_argument("--train_meta_pkl", required=True, type=str)
     parser.add_argument("--input_num_frame", type=int, default=1)
     parser.add_argument("--max_samples", type=int, default=None)
-    parser.add_argument("--min_action_tokens", type=int, default=15)
+    parser.add_argument("--min_action_tokens", type=int, default=0)
     parser.add_argument("--norm_config", type=str, default="configs/normalizer_navsim_trainval/norm_stats.json")
     return parser.parse_args()
 
@@ -272,36 +305,30 @@ def main():
             pos_inputs.token_type_ids = torch.cat([pre_pos_inputs.token_type_ids, pos_inputs.token_type_ids], dim=-1)
 
 
-        # Fresh logits processor per sample (SuppressEOSForNSteps has internal step counter)
         logits_processor = [
             ActionIDConstraintLogitsProcessor(allowed_token_ids),
-            SuppressEOSForNStepsLogitsProcessor(eos_token_id=151845, min_steps=args.min_action_tokens),
         ]
         outputs = model.generate(
             pos_inputs.input_ids.to(device),
             GENERATION_CONFIG,
-            max_new_tokens=args.min_action_tokens + 10,  # enough for action tokens + possible EOS padding
+            max_new_tokens=50,
             logits_processor=logits_processor,
             attention_mask=pos_inputs.attention_mask.to(device),
         )
-        num_generated = outputs.shape[-1] - pos_inputs.input_ids.shape[-1]
         outputs = outputs[:, pos_inputs.input_ids.shape[-1]:-1]
-        if local_idx < 3:  # debug first 3 samples
-            print(f"[DEBUG] sample {local_idx}: generated {num_generated} tokens, "
-                  f"after strip: {outputs.shape[-1]}, "
-                  f"raw: {outputs[0].tolist()[:10]}...")
         processed_outputs = torch.tensor(last_token_id, device=outputs.device) - outputs
         processed_output_list = processed_outputs.cpu().numpy().tolist()
 
         action = torch.from_numpy(
-            action_tokenizer.decode(processed_output_list, time_horizon=action_predict_frame, action_dim=3)[0]
+            robust_decode_action(action_tokenizer, processed_output_list, action_predict_frame, 3)[0]
         ).to(device)
 
 
         action_denorm = 0.5 * (action + 1) * (action_high - action_low) + action_low
 
         output_dict = {
-            "action": action_denorm.cpu().numpy().tolist()
+            "action": action_denorm.cpu().numpy().tolist(),
+            "raw_tokens": processed_output_list,  # for GPU vs NPU comparison
         }
 
         if DEBUG:
@@ -310,7 +337,7 @@ def main():
             output_dict["action_gt_denorm"] = gt_action_denorm.cpu().numpy().tolist()
 
             action_gt_id = action_tokenizer(gt_action.cpu())
-            action_gt_decode = action_tokenizer.decode(action_gt_id, time_horizon=action_predict_frame, action_dim=3)
+            action_gt_decode = robust_decode_action(action_tokenizer, action_gt_id, action_predict_frame, 3)
             action_gt_decode = torch.tensor(action_gt_decode).to(device)[0]
             gt_action_denorm_decode = 0.5 * (action_gt_decode + 1) * (action_high - action_low) + action_low
             output_dict["action_gt_denorm_decode"] = gt_action_denorm_decode.cpu().numpy().tolist()

@@ -22,7 +22,6 @@ DEFAULT_EMU_HUB="/data/models/DriveVLA-W0"
 DEFAULT_OUTPUT_DIR="$ROOT/logs/infer_navsim_vava_$(date +%Y%m%d_%H%M%S)"
 DEFAULT_TRAIN_META_PKL="$ROOT/data/navsim/processed_data/meta/navsim_emu_vla_256_144_test_pre_1s.pkl"
 DEFAULT_INPUT_NUM_FRAME="1"
-DEFAULT_MIN_ACTION_TOKENS="15"
 DEFAULT_NGPUS=1
 DEFAULT_MASTER_PORT=23458
 DEFAULT_DEVICE="auto"
@@ -34,7 +33,6 @@ EMU_HUB="$DEFAULT_EMU_HUB"
 OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
 TRAIN_META_PKL="$DEFAULT_TRAIN_META_PKL"
 INPUT_NUM_FRAME="$DEFAULT_INPUT_NUM_FRAME"
-MIN_ACTION_TOKENS="$DEFAULT_MIN_ACTION_TOKENS"
 MAX_SAMPLES=""
 NGPUS="$DEFAULT_NGPUS"
 MASTER_PORT="$DEFAULT_MASTER_PORT"
@@ -47,7 +45,6 @@ while [[ $# -gt 0 ]]; do
     --train_meta_pkl)    TRAIN_META_PKL="$2";    shift 2 ;;
     --input_num_frame)   INPUT_NUM_FRAME="$2";   shift 2 ;;
     --max_samples)       MAX_SAMPLES="$2";        shift 2 ;;
-    --min_action_tokens) MIN_ACTION_TOKENS="$2";  shift 2 ;;
     --ngpus)             NGPUS="$2";             shift 2 ;;
     --master_port)       MASTER_PORT="$2";       shift 2 ;;
     --device)            DEVICE="$2";            shift 2 ;;
@@ -99,7 +96,6 @@ echo "  emu_hub:           $EMU_HUB"
 echo "  output_dir:        $OUTPUT_DIR"
 echo "  train_meta_pkl:    $TRAIN_META_PKL"
 echo "  input_num_frame:   $INPUT_NUM_FRAME"
-echo "  min_action_tokens: $MIN_ACTION_TOKENS"
 [ -n "$MAX_SAMPLES" ] && echo "  max_samples:       $MAX_SAMPLES"
 echo "  ngpus:             $NGPUS"
 echo "  master_port:       $MASTER_PORT"
@@ -129,7 +125,6 @@ torchrun \
     --output_dir "$OUTPUT_DIR" \
     --train_meta_pkl "$TRAIN_META_PKL" \
     --input_num_frame "$INPUT_NUM_FRAME" \
-    --min_action_tokens "$MIN_ACTION_TOKENS" \
     $([ -n "$MAX_SAMPLES" ] && echo "--max_samples $MAX_SAMPLES")
 
 echo ""
