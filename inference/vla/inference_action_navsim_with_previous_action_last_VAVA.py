@@ -168,10 +168,6 @@ def main():
 
     last_token_id = tokenizer.pad_token_id - 1
     allowed_token_ids = list(range(last_token_id - action_tokenizer.vocab_size, last_token_id + 1)) + [151845]
-    logits_processor = [
-        ActionIDConstraintLogitsProcessor(allowed_token_ids),
-        SuppressEOSForNStepsLogitsProcessor(eos_token_id=151845, min_steps=args.min_action_tokens),
-    ]
     kwargs = dict(mode='VLA', padding="longest")
     os.makedirs(CONFIG["output_dir"], exist_ok=True)
 
@@ -276,14 +272,24 @@ def main():
             pos_inputs.token_type_ids = torch.cat([pre_pos_inputs.token_type_ids, pos_inputs.token_type_ids], dim=-1)
 
 
+        # Fresh logits processor per sample (SuppressEOSForNSteps has internal step counter)
+        logits_processor = [
+            ActionIDConstraintLogitsProcessor(allowed_token_ids),
+            SuppressEOSForNStepsLogitsProcessor(eos_token_id=151845, min_steps=args.min_action_tokens),
+        ]
         outputs = model.generate(
             pos_inputs.input_ids.to(device),
             GENERATION_CONFIG,
-            max_new_tokens=50,
+            max_new_tokens=args.min_action_tokens + 10,  # enough for action tokens + possible EOS padding
             logits_processor=logits_processor,
             attention_mask=pos_inputs.attention_mask.to(device),
         )
+        num_generated = outputs.shape[-1] - pos_inputs.input_ids.shape[-1]
         outputs = outputs[:, pos_inputs.input_ids.shape[-1]:-1]
+        if local_idx < 3:  # debug first 3 samples
+            print(f"[DEBUG] sample {local_idx}: generated {num_generated} tokens, "
+                  f"after strip: {outputs.shape[-1]}, "
+                  f"raw: {outputs[0].tolist()[:10]}...")
         processed_outputs = torch.tensor(last_token_id, device=outputs.device) - outputs
         processed_output_list = processed_outputs.cpu().numpy().tolist()
 

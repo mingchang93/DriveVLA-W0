@@ -17,7 +17,9 @@ def relative_to_absolute(actions):
     """Convert relative (dx, dy, dtheta) to absolute (x, y) positions."""
     positions = np.zeros((len(actions), 2))
     x, y, theta = 0.0, 0.0, 0.0
-    for i, (dx, dy, dtheta) in enumerate(actions):
+    for i, row in enumerate(actions):
+        dx, dy = row[0], row[1]
+        dtheta = row[2] if len(row) >= 3 else 0.0
         x += dx * np.cos(theta) - dy * np.sin(theta)
         y += dx * np.sin(theta) + dy * np.cos(theta)
         theta += dtheta
@@ -43,8 +45,8 @@ def main():
             errors += 1
             continue
 
-        pred_pos = relative_to_absolute(pred[:, :2])  # (8, 2) ignore heading
-        gt_pos = relative_to_absolute(gt[:, :2])
+        pred_pos = relative_to_absolute(pred)  # (8, 3) or (8, 2)
+        gt_pos = relative_to_absolute(gt)
 
         dists = np.linalg.norm(pred_pos - gt_pos, axis=1)  # (8,)
         ade_list.append(dists.mean())
