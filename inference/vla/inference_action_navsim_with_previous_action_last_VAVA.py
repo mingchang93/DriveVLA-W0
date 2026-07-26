@@ -83,10 +83,9 @@ def main():
         "train_meta_pkl": args.train_meta_pkl,
         
 
-        "vq_hub": "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu/pretrained_models/Emu3-Stage1",
-        "vision_hub": "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu/pretrained_models/Emu3-VisionTokenizer",
-        "fast_tokenizer": "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu/pretrained_models/fast",
-        # "fast_tokenizer": "/mnt/nvme0n1p1/yingyan.li/repo/OmniSim//pretrained_models/fast_navsim_s20",
+        "vq_hub": "/data/models/Emu3-Stage1",
+        "vision_hub": "/data/models/Emu3-VisionTokenizer",
+        "fast_tokenizer": "/data/models/physical-intelligence-fast",
         "norm_config": args.norm_config,
         "token_yaml": "inference/navsim/navsim/navsim/planning/script/config/common/train_test_split/scene_filter/navtest.yaml",
     }
@@ -167,8 +166,15 @@ def main():
         text = task_data['text']
         cur_idx = 3
 
-        # video_code = torch.tensor(np.load(image_list[cur_idx])).unsqueeze(0).to(device)  ✅修改
-        video_code = [torch.from_numpy(np.load(img.replace("/mnt/vdb1/yingyan.li/repo/VLA", "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu"))) for img in image_list[cur_idx-2*(num_frames-1):cur_idx+1:2]]
+        # If pickle paths differ from actual data location, set DATA_PATH_MAP="old_prefix|new_prefix"
+        _path_map = os.environ.get("DATA_PATH_MAP", "").split("|")
+        def _remap(p):
+            return p.replace(_path_map[0], _path_map[1]) if len(_path_map) >= 2 else p
+
+        video_code = [
+            torch.from_numpy(np.load(_remap(img)))
+            for img in image_list[cur_idx-2*(num_frames-1):cur_idx+1:2]
+        ]
         video_code = torch.stack(video_code, dim=1).to(device)
         input_text = text[cur_idx]
 
@@ -186,7 +192,10 @@ def main():
         pre_action_list = task_data['pre_1s_action']
         pre_text = task_data['pre_1s_text']
 
-        pre_video_code = [torch.from_numpy(np.load(img.replace("/mnt/vdb1/yingyan.li/repo/VLA", "/mnt/nvme0n1p1/yingyan.li/repo/VLA_Emu")).reshape(1,18,32)) for img in pre_image_list[cur_idx-2*(num_frames-1):cur_idx+1:2]]
+        pre_video_code = [
+            torch.from_numpy(np.load(_remap(img)).reshape(1, 18, 32))
+            for img in pre_image_list[cur_idx-2*(num_frames-1):cur_idx+1:2]
+        ]
         pre_video_code = torch.stack(pre_video_code, dim=1).to(device)
         pre_input_text = pre_text[cur_idx]
 
