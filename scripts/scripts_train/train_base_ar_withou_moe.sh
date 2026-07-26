@@ -354,7 +354,7 @@ if [ "$SKIP_INFERENCE" = false ]; then
     --output_dir "${OUTPUT_DIR}/${EXP_NAME}/json_output" \
     --train_meta_pkl "${TEST_DATA_PATH}" \
     --input_num_frame "${INPUT_NUM_FRAME}" \
-    --ngpus "${NGPUS}" \
+    --ngpus 1 \
     --device "${DEVICE}"
 
   echo "=== Inference done ==="
