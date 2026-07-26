@@ -135,3 +135,7 @@ torchrun \
 echo ""
 echo "=== Inference done ==="
 echo "Results at: $OUTPUT_DIR"
+
+echo ""
+echo "=== Evaluation ==="
+python "$ROOT/scripts/scripts_infer/eval_action_metrics.py" "$OUTPUT_DIR"
