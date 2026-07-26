@@ -35,7 +35,6 @@ bash "$TRAIN_SCRIPT" \
     --shuffle_train_data false \
     --eval_strategy no \
     --eval_steps 10000 \
-    --skip_inference \
     --constant_lr \
     --fp fp32 \
     --max_steps 500 \

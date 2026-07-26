@@ -333,17 +333,29 @@ torchrun \
 if [ "$SKIP_INFERENCE" = false ]; then
   echo ""
   echo "=== Running inference on test set ==="
-  echo "  checkpoint:   ${OUTPUT_DIR}/${EXP_NAME}"
   echo "  test_data:    ${TEST_DATA_PATH}"
   echo "  output:       ${OUTPUT_DIR}/${EXP_NAME}/json_output"
   echo ""
 
-  torchrun --nproc_per_node=${NGPUS} \
-    inference/vla/inference_action_navsim_with_previous_action_last_VAVA.py \
-    --emu_hub "${OUTPUT_DIR}/${EXP_NAME}" \
+  # Resolve last checkpoint (highest checkpoint-NNN subdirectory)
+  CKPT_BASE="${OUTPUT_DIR}/${EXP_NAME}"
+  LAST_CKPT=$(ls -d "$CKPT_BASE"/checkpoint-* 2>/dev/null | sort -t- -k2 -n | tail -1)
+  if [ -n "$LAST_CKPT" ]; then
+    EMU_HUB="$LAST_CKPT"
+    echo "  checkpoint:   $EMU_HUB"
+  else
+    EMU_HUB="$CKPT_BASE"
+    echo "  checkpoint:   $EMU_HUB (no checkpoint-* subdir, using base)"
+  fi
+  echo ""
+
+  bash "$ROOT/scripts/scripts_infer/infer_navsim_vava.sh" \
+    --emu_hub "$EMU_HUB" \
     --output_dir "${OUTPUT_DIR}/${EXP_NAME}/json_output" \
     --train_meta_pkl "${TEST_DATA_PATH}" \
-    --input_num_frame "${INPUT_NUM_FRAME}"
+    --input_num_frame "${INPUT_NUM_FRAME}" \
+    --ngpus "${NGPUS}" \
+    --device "${DEVICE}"
 
   echo "=== Inference done ==="
   echo "Results at: ${OUTPUT_DIR}/${EXP_NAME}/json_output"
