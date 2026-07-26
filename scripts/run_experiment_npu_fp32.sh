@@ -37,9 +37,9 @@ bash "$TRAIN_SCRIPT" \
     --eval_steps 10000 \
     --constant_lr \
     --fp fp32 \
-    --max_steps 500 \
-    --save_steps 250 \
-    --exp_name fp32_500steps
+    --max_steps 600 \
+    --save_steps 200 \
+    --exp_name fp32_600steps
 
 echo ""
 echo "NPU fp32 500 steps done. Results: $OUTPUT_DIR"
