@@ -17,7 +17,7 @@ DATA_PATH="/data/models/DriveVLA-W0/navsim_emu_vla_256_144_trainval_pre_1s_fixed
 TEST_DATA_PATH="/data/models/DriveVLA-W0/navsim_emu_vla_256_144_test_pre_1s_fixed.pkl"
 
 echo "============================================"
-echo "CUDA fp32 100 steps — output: $OUTPUT_DIR"
+echo "CUDA fp32 500 steps — output: $OUTPUT_DIR"
 echo "============================================"
 
 bash "$TRAIN_SCRIPT" \
@@ -38,9 +38,9 @@ bash "$TRAIN_SCRIPT" \
     --skip_inference \
     --constant_lr \
     --fp fp32 \
-    --max_steps 100 \
-    --save_steps 50 \
-    --exp_name fp32_100steps
+    --max_steps 500 \
+    --save_steps 250 \
+    --exp_name fp32_500steps
 
 echo ""
-echo "CUDA fp32 100 steps done. Results: $OUTPUT_DIR"
+echo "CUDA fp32 500 steps done. Results: $OUTPUT_DIR"
