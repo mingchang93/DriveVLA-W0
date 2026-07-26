@@ -17,6 +17,7 @@ def parse_args():
     parser.add_argument("--train_meta_pkl", required=True, type=str)
     parser.add_argument("--input_num_frame", type=int, default=1)
     parser.add_argument("--max_samples", type=int, default=None)
+    parser.add_argument("--min_action_tokens", type=int, default=15)
     parser.add_argument("--norm_config", type=str, default="configs/normalizer_navsim_trainval/norm_stats.json")
     return parser.parse_args()
 
@@ -53,6 +54,23 @@ class ActionIDConstraintLogitsProcessor(LogitsProcessor):
         else:
             mask[self.allowed_token_ids] = True
         scores[~mask] = -float("inf")
+        return scores
+
+
+class SuppressEOSForNStepsLogitsProcessor(LogitsProcessor):
+    """Suppress EOS token for the first `min_steps` generation steps."""
+    def __init__(self, eos_token_id, min_steps):
+        self.eos_token_id = eos_token_id
+        self.min_steps = min_steps
+        self._step = 0
+
+    def __call__(self, input_ids, scores):
+        if self._step < self.min_steps:
+            if scores.ndim == 2:
+                scores[:, self.eos_token_id] = -float("inf")
+            else:
+                scores[self.eos_token_id] = -float("inf")
+        self._step += 1
         return scores
 
 def wrap_action_sequence(tokenizer, action_ids) -> torch.Tensor:
@@ -150,7 +168,10 @@ def main():
 
     last_token_id = tokenizer.pad_token_id - 1
     allowed_token_ids = list(range(last_token_id - action_tokenizer.vocab_size, last_token_id + 1)) + [151845]
-    logits_processor = [ActionIDConstraintLogitsProcessor(allowed_token_ids)]
+    logits_processor = [
+        ActionIDConstraintLogitsProcessor(allowed_token_ids),
+        SuppressEOSForNStepsLogitsProcessor(eos_token_id=151845, min_steps=args.min_action_tokens),
+    ]
     kwargs = dict(mode='VLA', padding="longest")
     os.makedirs(CONFIG["output_dir"], exist_ok=True)
 
