@@ -32,57 +32,75 @@ pip install deepspeed scipy tensorboard wandb
 
 `flash-attn` in `requirements.txt` is CUDA-only — NPU falls back to SDPA automatically.
 
-## 3. Data Preparation
+## 3. Model & Data Download
 
 ```bash
-apt-get update && apt-get install -y unzip
-
 # Set these to match your layout
+MODEL_ROOT=/path/to/models
 DATA_ROOT=/path/to/datasets
-REPO_ROOT=/path/to/DriveVLA-W0
+PROJECT_ROOT=/path/to/DriveVLA-W0
 
-# Unpack VQ code zips
-cd "$DATA_ROOT"
-unzip train_vp_codes.zip
-unzip test_vq_codes.zip
-
-cd "$REPO_ROOT"
-
-# Fix pickle paths for the local machine
-python tools/fix_pickle_paths.py \
-    "$DATA_ROOT/navsim_emu_vla_256_144_trainval_pre_1s.pkl" \
-    --new_prefix "$DATA_ROOT/data/navsim/processed_data"
-
-python tools/fix_pickle_paths.py \
-    "$DATA_ROOT/navsim_emu_vla_256_144_test_pre_1s.pkl" \
-    --old_prefix /mnt/vdb1/yingyan.li/repo/VLA/data/navsim/processed_data \
-    --new_prefix "$DATA_ROOT/data/navsim/processed_data"
+pip install huggingface_hub
+export HF_ENDPOINT=https://hf-mirror.com
 ```
 
-Set `DATA_ROOT` and `REPO_ROOT` to match your machine. The fix is only needed once per download — it rewrites the data-root prefix stored inside each pickle.
-
-## 4. Launch Training
+### Pretrained Models
 
 ```bash
-# GPU (default)
-bash scripts/scripts_train/train_base_ar_withou_moe.sh
+mkdir -p "$MODEL_ROOT"
+
+# Base VLM
+huggingface-cli download --resume-download BAAI/Emu3-Stage1 \
+    --local-dir "$MODEL_ROOT/Emu3-Stage1"
+
+# Vision tokenizer
+huggingface-cli download --resume-download BAAI/Emu3-VisionTokenizer \
+    --local-dir "$MODEL_ROOT/Emu3-VisionTokenizer"
+
+# Action tokenizer (FAST)
+huggingface-cli download --resume-download physical-intelligence/fast \
+    --local-dir "$MODEL_ROOT/fast"
+```
+
+### Training Data
+
+Download from [Hugging Face](https://huggingface.co/liyingyan/DriveVLA-W0) into `$DATA_ROOT`:
+
+- `train_vq_codes.zip` — VQ code indices (train)
+- `test_vq_codes.zip` — VQ code indices (test)
+- `navsim_emu_vla_256_144_trainval_pre_1s.pkl` — train/val metadata pickle
+- `navsim_emu_vla_256_144_test_pre_1s.pkl` — test metadata pickle
+
+## 4. End-to-End Pipeline (One Command)
+
+For a fully automated run — data prep, training, and inference:
+
+```bash
+# GPU
+bash scripts/setup_and_run_cuda.sh \
+    --project_root /path/to/DriveVLA-W0 \
+    --data_root /path/to/datasets \
+    --model_root /path/to/models
 
 # NPU
-bash scripts/scripts_train/train_base_ar_withou_moe.sh --device npu
-
-# GPU with explicit device flag
-bash scripts/scripts_train/train_base_ar_withou_moe.sh --device cuda
+bash scripts/setup_and_run_npu.sh \
+    --project_root /path/to/DriveVLA-W0 \
+    --data_root /path/to/datasets \
+    --model_root /path/to/models
 ```
 
-### Example: NPU debug run
+### Custom flags
+
+Need to override specific training flags? Call the training launcher directly:
 
 ```bash
-MODEL_ROOT=/data/models
+MODEL_ROOT=/path/to/models
+DATA_ROOT=/path/to/datasets
 
 bash scripts/scripts_train/train_base_ar_withou_moe.sh \
     --model_name_or_path "$MODEL_ROOT/Emu3-Stage1" \
-    --data_path "$MODEL_ROOT/DriveVLA-W0/navsim_emu_vla_256_144_trainval_pre_1s_fixed.pkl" \
-    --test_data_path "$MODEL_ROOT/DriveVLA-W0/navsim_emu_vla_256_144_test_pre_1s_fixed.pkl" \
+    --data_path "$DATA_ROOT/navsim_emu_vla_256_144_trainval_pre_1s_fixed.pkl" \
+    --test_data_path "$DATA_ROOT/navsim_emu_vla_256_144_test_pre_1s_fixed.pkl" \
     --ngpus 8 \
     --batch_size 1 \
     --max_steps 200 \
