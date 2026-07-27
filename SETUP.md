@@ -114,7 +114,20 @@ bash scripts/scripts_train/train_base_ar_withou_moe.sh \
 
 See `scripts/scripts_train/train_base_ar_withou_moe.sh --help` for all options.
 
-## 5. Precision Alignment (NPU vs GPU)
+## 5. Compare CUDA vs NPU
+
+After running both pipelines, compare the training trajectories:
+
+```bash
+python scripts/plot_drivevla.py \
+    --cuda_json /path/to/cuda/logs/.../trainer_state.json \
+    --npu_json /path/to/npu/logs/.../trainer_state.json \
+    -o ./comparison_plots
+```
+
+Generates `loss_comparison.png`, `relative_error.png`, and `relative_error_after50.png` in the output directory, plus a summary stats block.
+
+## 6. Precision Alignment (NPU vs GPU)
 
 For deterministic reproducibility across platforms, follow the step-by-step guide:
 
