@@ -25,6 +25,7 @@ the device selector must be identical:
 | `--precision` / `--fp` | Use `fp32` for initial alignment; `bf16`/`fp16` only after fp32 passes |
 | `--gradient_accumulation_steps` | Same value on both platforms |
 | `--warmup_steps` / `--lr_scheduler` | Same scheduling on both platforms |
+| `--constant_lr` | Use constant LR for initial alignment — scheduler differences can mask or create divergence |
 | `--weight_decay`, `--adam_beta1`, `--adam_beta2`, `--adam_epsilon` | Same optimizer config |
 
 ### 1.2 Library Versions
@@ -102,6 +103,14 @@ def set_all_seeds(seed: int):
         pass
 ```
 
+> **Shell alternative:** set `PYTHONHASHSEED` in the launch script before invoking
+> Python. This is useful when the dataset is constructed before the training
+> entrypoint runs (e.g., in a data preprocessing step):
+> ```bash
+> export PYTHONHASHSEED=1234
+> ```
+> The codebase uses this approach in `train_base_ar_withou_moe.sh`.
+
 ### 2.2 Disable Dropout
 
 ```python
@@ -178,15 +187,72 @@ if torch.cuda.is_available():
 > **For single-device alignment, communication determinism is irrelevant.** Start
 > with 1 device per platform before scaling to multi-device.
 
-### 3.3 Non-Saturation Mode (NPU)
+Additional CUDA-specific environment variables for deterministic execution:
 
-```python
-# NPU by default may saturate overflow (clamp to max/min) instead of producing
-# Inf/NaN. This makes overflow invisible in loss curves.
-os.environ.setdefault("INF_NAN_MODE_ENABLE", "1")
+```bash
+# Limit CUDA stream concurrency — prevents nondeterministic stream scheduling
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+
+# Expandable segments reduces memory fragmentation, preventing OOM-induced
+# nondeterminism (different allocator decisions → different batch boundaries)
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ```
 
-This guarantees NPU matches GPU behavior: overflow → `Inf`/`NaN`.
+### 3.4 NPU float64 Incompatibility
+
+NPU does **not** support `float64` / `torch.double`. Using float64 silently
+produces incorrect results or falls back to CPU. All tensor creation must use
+`float32` (`torch.float`, `np.float32`).
+
+Audit for:
+- `torch.tensor(..., dtype=torch.double)` → change to `torch.float32`
+- `torch.float64` → change to `torch.float32`
+- `np.float64` → change to `np.float32`
+- `torch.set_default_dtype(torch.float64)` → must not be called
+
+The codebase fixed this in `action_tokenizer.py` and all `WeightedSamplerTrainer`
+implementations (`train_moe.py`, `train_ar.py`, `train_pi0.py`).
+
+These must be set in the shell before launching the training process. They are
+set in `train_base_ar_withou_moe.sh` and `infer_navsim_vava.sh` in the NPU
+device branch.
+
+```bash
+# Non-saturation mode: overflow → Inf/NaN (matches GPU default behavior)
+export INF_NAN_MODE_ENABLE=1
+
+# Deterministic MatMul — disable K-axis shuffle optimization
+export CLOSE_MATMUL_K_SHIFT=1
+
+# Disable ATB MatMul shuffle optimization (non-deterministic reordering)
+export ATB_MATMUL_SHUFFLE_K_ENABLE=0
+
+# Deterministic ACL (Ascend Compute Library) operations
+export ACL_OP_DETERMINISTIC=1
+
+# Disable task queue optimization (async dispatch → non-deterministic ordering)
+export TASK_QUEUE_ENABLE=0
+
+# Disable private storage format (internal layout differs from standard)
+export FLAGS_npu_storage_format=0
+
+# Synchronous execution — makes error stacks traceable to the exact op
+export ASCEND_LAUNCH_BLOCKING=1
+```
+
+| Variable | What it does | Why it matters |
+|----------|-------------|----------------|
+| `INF_NAN_MODE_ENABLE=1` | IEEE 754 compliance: overflow → Inf/NaN | NPU default clamps overflow to min/max, hiding precision bugs |
+| `CLOSE_MATMUL_K_SHIFT=1` | Disables K-axis shuffle in MatMul | Shuffled matmul produces different accumulation order → different results |
+| `ATB_MATMUL_SHUFFLE_K_ENABLE=0` | Disables ATB matmul shuffle optimization | Same as above, for ATB-based matmul backend |
+| `ACL_OP_DETERMINISTIC=1` | Enables deterministic mode in Ascend Compute Library | Non-deterministic ACL ops produce different results per run |
+| `TASK_QUEUE_ENABLE=0` | Disables async task queue | Async dispatch reorders operations non-deterministically |
+| `FLAGS_npu_storage_format=0` | Disables private/internal storage format | Private format changes tensor memory layout; not compatible with standard ops |
+| `ASCEND_LAUNCH_BLOCKING=1` | Synchronous kernel launch | Async launch makes error stacks point to the wrong op; blocking is needed for bisect debugging |
+
+> **Note:** `ASCEND_LAUNCH_BLOCKING=1` is on by default in the codebase. It has a
+> performance cost but is essential for reproducibility. Disable it only for
+> throughput benchmarking after alignment is confirmed.
 
 ---
 
@@ -223,6 +289,32 @@ for k in npu_batch:
 | `random.*` / `np.random.*` in `__getitem__` | Safe if seeds set before dataset creation | Verify Section 2.1 runs first |
 | Data augmentation (`torchvision.transforms`) with random params | Each platform's RNG may diverge | Disable augmentation for alignment |
 
+### 4.3 SHA256 Data Hash Verification
+
+A lighter-weight alternative to dumping the full first batch: log SHA256
+hashes of each batch's tensor content. This catches data corruption or
+platform-specific serialization bugs without transferring large files.
+
+The codebase implements this via `--log_data_hash`:
+
+```python
+import hashlib
+
+def hash_tensor_batch(batch: dict) -> str:
+    """Compute a deterministic SHA256 hash over all tensors in a batch."""
+    h = hashlib.sha256()
+    for k in sorted(batch.keys()):
+        t = batch[k]
+        if isinstance(t, torch.Tensor):
+            # Use .numpy() for platform-independent bytes
+            h.update(t.cpu().numpy().tobytes())
+    return h.hexdigest()
+```
+
+Run on both platforms with the same seed and same data, then diff the hash
+logs. Mismatch on step 0 → data pipeline problem. Mismatch after step N → the
+platforms received different data at that step.
+
 ---
 
 ## Phase 5 — First-Step Loss Comparison
@@ -257,6 +349,32 @@ This means the **backward pass** (gradient computation) differs.
 3. Check optimizer state — Adam moments can accumulate differently across platforms.
    - Temporarily switch to SGD (`momentum=0`) to isolate the optimizer.
    - Verify `beta1`, `beta2`, `epsilon` are identical on both platforms.
+
+---
+
+## Phase 5.5 — Device Stream Flushing for Gradient Accuracy
+
+DeepSpeed's `get_global_grad_norm()` reads gradient tensors from the device.
+On both CUDA and NPU, gradient allreduce is asynchronous — the reported norm
+may be 0.0 if the stream hasn't completed yet. This causes false divergence
+reports: CUDA might report 3 zero-grad-norm steps while NPU reports 2, purely
+due to timing differences in the async pipeline.
+
+**Fix:** flush the device stream before reading gradient norms in the trainer:
+
+```python
+# In LoggingTrainer.training_step(), after super().training_step():
+if self.state.global_step < 5:
+    device_synchronize()  # platform-agnostic: torch.cuda.synchronize or torch.npu.synchronize
+```
+
+The codebase implements this in `utils/train_moe.py` via a `device_synchronize()`
+wrapper. Only the first few steps need it — after that, the gradient norm
+magnitude is large enough that a stale read of 0.0 is self-evident.
+
+> **Without this:** gradient norm logs show spurious zeros on one or both
+> platforms, making it impossible to compare gradient norm curves for
+> divergence diagnosis.
 
 ---
 
@@ -330,6 +448,26 @@ def detect_nan_hook(module, input, output):
 | CPU offload disabled | Offload adds fp32 ↔ fp16 conversions that differ between platforms |
 | Overlap features disabled | `overlap_comm` and `overlap_optimizer` reorder operations non-deterministically |
 
+**DeepSpeed auto-init during model loading:** On NPU, ZeRO-3's batch-size
+assertion can fire prematurely during `from_pretrained()` — before the
+HuggingFace Trainer has a chance to set the actual batch size. The fix is to
+temporarily suppress the DeepSpeed environment variables during model loading:
+
+```python
+_ds_env = os.environ.pop("DS_CONFIG", None)
+_cf_env = os.environ.pop("CONFIG_FILE", None)
+try:
+    model = Emu3MoE.from_pretrained(...)
+finally:
+    if _ds_env is not None:
+        os.environ["DS_CONFIG"] = _ds_env
+    if _cf_env is not None:
+        os.environ["CONFIG_FILE"] = _cf_env
+```
+
+The codebase implements this in `utils/train_moe.py`'s `load_model()`.
+Without it, the training process crashes before the first step on NPU.
+
 ### 8.2 Optimizer Isolation
 
 Set LR=0 so forward and backward run but weights never change. If the loss matches
@@ -383,9 +521,11 @@ GPU_output vs CPU_ref:  euclidean_distance = 8.2e-7   (baseline)
     [ ] NPU CANN / driver / torch_npu up to date
     [ ] Model structure identical (print(model) diff)
     [ ] Weight init identical (same checkpoint or same seed)
+    [ ] LR scheduler identical (use constant LR for initial alignment)
+    [ ] fp32 for initial alignment; bf16/fp16 only after fp32 passes
 
 [ ] Phase 2: Fix Randomness
-    [ ] PYTHONHASHSEED set
+    [ ] PYTHONHASHSEED set (env var or os.environ in code)
     [ ] random.seed(seed) called
     [ ] np.random.seed(seed) called
     [ ] torch.manual_seed(seed) called
@@ -401,10 +541,20 @@ GPU_output vs CPU_ref:  euclidean_distance = 8.2e-7   (baseline)
     [ ] HCCL_DETERMINISTIC=TRUE (NPU)
     [ ] NCCL_DETERMINISTIC=TRUE (GPU)
     [ ] NCCL_CROSS_NIC=1 (GPU)
+    [ ] CUDA_DEVICE_MAX_CONNECTIONS=1 (GPU)
+    [ ] PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (GPU)
     [ ] INF_NAN_MODE_ENABLE=1 (NPU)
+    [ ] CLOSE_MATMUL_K_SHIFT=1 (NPU)
+    [ ] ATB_MATMUL_SHUFFLE_K_ENABLE=0 (NPU)
+    [ ] ACL_OP_DETERMINISTIC=1 (NPU)
+    [ ] TASK_QUEUE_ENABLE=0 (NPU)
+    [ ] FLAGS_npu_storage_format=0 (NPU)
+    [ ] ASCEND_LAUNCH_BLOCKING=1 (NPU)
+    [ ] All float64 / torch.double → float32 (NPU incompatibility)
 
 [ ] Phase 4: Data Pipeline
     [ ] First batch identical on both platforms (dump & diff)
+    [ ] SHA256 data hash logging enabled for cross-platform verification
     [ ] No platform-dependent file ordering (sorted() on os.listdir/glob)
     [ ] No unseeded RNG in Dataset.__getitem__
     [ ] Data augmentation disabled for alignment run
@@ -413,6 +563,10 @@ GPU_output vs CPU_ref:  euclidean_distance = 8.2e-7   (baseline)
     [ ] Step 0 loss matches (< 0.01% difference)
     [ ] If not: operator bisect to find first divergence
     [ ] If step 1+ diverges: backward pass bisect + optimizer isolation
+
+[ ] Phase 5.5: Gradient Accuracy
+    [ ] device_synchronize() called before get_global_grad_norm()
+    [ ] Gradient norm curves free of spurious zero values on both platforms
 
 [ ] Phase 6: Multi-Step
     [ ] Loss curve matches for 100 steps
@@ -429,6 +583,7 @@ GPU_output vs CPU_ref:  euclidean_distance = 8.2e-7   (baseline)
 [ ] Phase 8: Framework Isolation
     [ ] DeepSpeed overlap features disabled
     [ ] DeepSpeed bucket_size + zero stage identical
+    [ ] DeepSpeed env vars suppressed during from_pretrained() (NPU)
     [ ] Optimizer isolated (LR=0 test)
     [ ] Scale reduced (1 device, small batch, few steps)
 
