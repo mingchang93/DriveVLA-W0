@@ -40,8 +40,8 @@ DATA_ROOT="${DATA_ROOT:-/data/models/DriveVLA-W0}"
 MODEL_ROOT="${MODEL_ROOT:-/data/models}"
 
 MODEL_PATH="$MODEL_ROOT/Emu3-Stage1"
-TRAIN_PKL="$DATA_ROOT/navsim_emu_vla_256_144_trainval_pre_1s_fixed.pkl"
-TEST_PKL="$DATA_ROOT/navsim_emu_vla_256_144_test_pre_1s_fixed.pkl"
+TRAIN_PKL="$DATA_ROOT/navsim_emu_vla_256_144_trainval_pre_1s.pkl"
+TEST_PKL="$DATA_ROOT/navsim_emu_vla_256_144_test_pre_1s.pkl"
 TRAIN_PKL_FIXED="${TRAIN_PKL%.pkl}_fixed.pkl"
 TEST_PKL_FIXED="${TEST_PKL%.pkl}_fixed.pkl"
 
