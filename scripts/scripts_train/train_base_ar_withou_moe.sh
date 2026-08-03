@@ -62,6 +62,8 @@ LOGGING_STEPS=10
 WARMUP_STEPS=50
 ZERO_STAGE=3
 LEARNING_RATE=1e-5
+MAX_GRAD_NORM=5.0
+ADAM_EPSILON=1e-6
 CONSTANT_LR=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -94,6 +96,8 @@ while [[ $# -gt 0 ]]; do
     --skip_inference)         SKIP_INFERENCE=true;           shift ;;
     --constant_lr)            CONSTANT_LR=true;               shift ;;
     --learning_rate)          LEARNING_RATE="$2";             shift 2 ;;
+    --max_grad_norm)          MAX_GRAD_NORM="$2";             shift 2 ;;
+    --adam_epsilon)           ADAM_EPSILON="$2";              shift 2 ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
       echo ""
@@ -127,6 +131,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --skip_inference                   Skip inference after training"
       echo "  --constant_lr                      Use constant LR (no decay, no warmup)"
       echo "  --learning_rate            <float> (2e-5)"
+      echo "  --max_grad_norm            <float> (5.0)"
+      echo "  --adam_epsilon             <float> (1e-6)"
       exit 0
       ;;
     *)
@@ -290,10 +296,10 @@ torchrun \
     --null_prompt_prob 0.15 \
     --weight_decay 0.1 \
     --min_learning_rate 1e-6 \
-    --max_grad_norm 5.0 \
+    --max_grad_norm "$MAX_GRAD_NORM" \
     --adam_beta1 0.9 \
     --adam_beta2 0.95 \
-    --adam_epsilon 1e-6 \
+    --adam_epsilon "$ADAM_EPSILON" \
     --data_path "$DATA_PATH" \
     --max_steps "$MAX_STEPS" \
     --dataloader_num_workers 12 \
