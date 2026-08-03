@@ -42,6 +42,23 @@ MODEL_ROOT="${MODEL_ROOT:-/data/models}"
 MODEL_PATH="$MODEL_ROOT/Emu3-Stage1"
 TRAIN_PKL="$DATA_ROOT/navsim_emu_vla_256_144_trainval_pre_1s_fixed.pkl"
 TEST_PKL="$DATA_ROOT/navsim_emu_vla_256_144_test_pre_1s_fixed.pkl"
+TRAIN_PKL_FIXED="${TRAIN_PKL%.pkl}_fixed.pkl"
+TEST_PKL_FIXED="${TEST_PKL%.pkl}_fixed.pkl"
+
+# ── Fix pickle paths for the local machine ─────────────────────────
+echo "=== Fixing pickle paths ==="
+python "$ROOT/tools/fix_pickle_paths.py" \
+    "$TRAIN_PKL" \
+    --new_prefix "$DATA_ROOT/data/navsim/processed_data"
+
+python "$ROOT/tools/fix_pickle_paths.py" \
+    "$TEST_PKL" \
+    --new_prefix "$DATA_ROOT/data/navsim/processed_data"
+
+# Move fixed pickles into place (idempotent)
+[ -f "$TRAIN_PKL_FIXED" ] && mv "$TRAIN_PKL_FIXED" "$TRAIN_PKL"
+[ -f "$TEST_PKL_FIXED" ] && mv "$TEST_PKL_FIXED" "$TEST_PKL"
+echo "=== Pickle paths fixed ==="
 
 # ── Common flags (all experiments) ─────────────────────────────────
 COMMON=(
