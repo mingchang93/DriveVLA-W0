@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# Alignment experiments: 4 tiers × 2 devices = 8 runs
+# Alignment experiments: 5 tiers × 2 devices
 #
 # Usage:
 #   bash scripts/run_alignment_experiments.sh --device cuda
-#   bash scripts/run_alignment_experiments.sh --device npu \
+#   bash scripts/run_alignment_experiments.sh --device npu --tiers 0,2,4
+#   bash scripts/run_alignment_experiments.sh --device npu --tiers all \
 #       --project_root /path/to/project \
 #       --data_root /path/to/data \
 #       --model_root /path/to/models
@@ -19,19 +20,28 @@ DEVICE=""
 PROJECT_ROOT=""
 DATA_ROOT=""
 MODEL_ROOT=""
+TIERS="all"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device)       DEVICE="$2";       shift 2 ;;
     --project_root) PROJECT_ROOT="$2"; shift 2 ;;
     --data_root)    DATA_ROOT="$2";    shift 2 ;;
     --model_root)   MODEL_ROOT="$2";   shift 2 ;;
+    --tiers)        TIERS="$2";        shift 2 ;;
     *) echo "Unknown: $1"; exit 1 ;;
   esac
 done
 
 if [ "$DEVICE" != "cuda" ] && [ "$DEVICE" != "npu" ]; then
-  echo "Usage: $0 --device cuda|npu [--project_root <path>] [--data_root <path>] [--model_root <path>]"
+  echo "Usage: $0 --device cuda|npu [--tiers 0,1,2,3,4|all] [--project_root <path>] [--data_root <path>] [--model_root <path>]"
   exit 1
+fi
+
+# Resolve tiers to a space-separated list
+if [ "$TIERS" = "all" ]; then
+  SELECTED_TIERS="0 1 2 3 4 5"
+else
+  SELECTED_TIERS=$(echo "$TIERS" | tr ',' ' ')
 fi
 
 # ── Paths: use CLI args if given, otherwise defaults ───────────────
@@ -74,7 +84,7 @@ COMMON=(
   --eval_strategy no
   --eval_steps 10000
   --fp fp32
-  --save_steps 100
+  --save_steps 1000
   --skip_inference
 )
 
@@ -83,61 +93,106 @@ BASE_OUT="$ROOT/logs/alignment_${DEVICE}_${TIMESTAMP}"
 
 echo "============================================"
 echo "Alignment experiments — device: $DEVICE"
+echo "Selected tiers: $SELECTED_TIERS"
 echo "Output base: $BASE_OUT"
 echo "============================================"
 
-# ── Tier 0: warmup=200 only ────────────────────────────────────────
-echo ""
-echo "=== Tier 0: warmup=200, max_grad_norm=5.0, lr=1e-5, batch=1 ==="
-bash "$TRAIN_SCRIPT" \
-  "${COMMON[@]}" \
-  --output_dir "$BASE_OUT" \
-  --exp_name tier0_warmup200 \
-  --max_steps 300 \
-  --warmup_steps 200 \
-  --batch_size 1 \
-  --learning_rate 1e-5
+# ── Helper: check if a tier is selected ────────────────────────────
+selected() {
+  for t in $SELECTED_TIERS; do
+    [ "$t" = "$1" ] && return 0
+  done
+  return 1
+}
 
-# ── Tier 1: + symmetric clipping ───────────────────────────────────
-echo ""
-echo "=== Tier 1: + max_grad_norm=2.0, lr=2e-5 ==="
-bash "$TRAIN_SCRIPT" \
-  "${COMMON[@]}" \
-  --output_dir "$BASE_OUT" \
-  --exp_name tier1_clip2_lr2e5 \
-  --max_steps 300 \
-  --warmup_steps 200 \
-  --batch_size 1 \
-  --max_grad_norm 2.0 \
-  --learning_rate 2e-5
+# ── Tier 0: warmup=200, batch=1, lr=1e-5, max_grad_norm=5.0 ───────
+if selected 0; then
+  echo ""
+  echo "=== Tier 0: warmup=200, batch=1, lr=1e-5, max_grad_norm=5.0 ==="
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON[@]}" \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier0_warmup200 \
+    --max_steps 300 \
+    --warmup_steps 200 \
+    --batch_size 1 \
+    --learning_rate 1e-5
+fi
 
-# ── Tier 2: + larger batch ─────────────────────────────────────────
-echo ""
-echo "=== Tier 2: + batch_size=2 ==="
-bash "$TRAIN_SCRIPT" \
-  "${COMMON[@]}" \
-  --output_dir "$BASE_OUT" \
-  --exp_name tier2_batch2 \
-  --max_steps 150 \
-  --warmup_steps 100 \
-  --batch_size 2 \
-  --max_grad_norm 2.0 \
-  --learning_rate 2e-5
+# ── Tier 1: + symmetric clipping (lr=2e-5, clip=2.0) ──────────────
+if selected 1; then
+  echo ""
+  echo "=== Tier 1: warmup=200, batch=1, lr=2e-5, max_grad_norm=2.0 ==="
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON[@]}" \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier1_clip2_lr2e5 \
+    --max_steps 300 \
+    --warmup_steps 200 \
+    --batch_size 1 \
+    --max_grad_norm 2.0 \
+    --learning_rate 2e-5
+fi
 
-# ── Tier 3: + adam_epsilon ─────────────────────────────────────────
-echo ""
-echo "=== Tier 3: + adam_epsilon=1e-4 ==="
-bash "$TRAIN_SCRIPT" \
-  "${COMMON[@]}" \
-  --output_dir "$BASE_OUT" \
-  --exp_name tier3_eps1e4 \
-  --max_steps 150 \
-  --warmup_steps 100 \
-  --batch_size 2 \
-  --max_grad_norm 2.0 \
-  --learning_rate 2e-5 \
-  --adam_epsilon 1e-4
+# ── Tier 2: + larger batch (batch=2, lr=2e-5, clip=2.0) ──────────
+if selected 2; then
+  echo ""
+  echo "=== Tier 2: warmup=100, batch=2, lr=2e-5, max_grad_norm=2.0 ==="
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON[@]}" \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier2_batch2 \
+    --max_steps 150 \
+    --warmup_steps 100 \
+    --batch_size 2 \
+    --max_grad_norm 2.0 \
+    --learning_rate 2e-5
+fi
+
+# ── Tier 3: + adam_epsilon (batch=2, lr=2e-5, clip=2.0, eps=1e-4) ─
+if selected 3; then
+  echo ""
+  echo "=== Tier 3: warmup=100, batch=2, lr=2e-5, clip=2.0, eps=1e-4 ==="
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON[@]}" \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier3_eps1e4 \
+    --max_steps 150 \
+    --warmup_steps 100 \
+    --batch_size 2 \
+    --max_grad_norm 2.0 \
+    --learning_rate 2e-5 \
+    --adam_epsilon 1e-4
+fi
+
+# ── Tier 4: Tier 0 smoothness + Tier 2 batch (batch=2, lr=1e-5) ───
+if selected 4; then
+  echo ""
+  echo "=== Tier 4: warmup=100, batch=2, lr=1e-5, max_grad_norm=5.0 ==="
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON[@]}" \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier4_batch2_lr1e5 \
+    --max_steps 150 \
+    --warmup_steps 100 \
+    --batch_size 2 \
+    --learning_rate 1e-5
+fi
+
+# ── Tier 5: longer warmup (warmup=300, batch=1, lr=1e-5) ──────────
+if selected 5; then
+  echo ""
+  echo "=== Tier 5: warmup=300, batch=1, lr=1e-5, max_grad_norm=5.0 ==="
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON[@]}" \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier5_warmup300 \
+    --max_steps 400 \
+    --warmup_steps 300 \
+    --batch_size 1 \
+    --learning_rate 1e-5
+fi
 
 echo ""
-echo "=== All 4 tiers done for $DEVICE ==="
+echo "=== Done ($DEVICE) ==="
 echo "Results: $BASE_OUT"
