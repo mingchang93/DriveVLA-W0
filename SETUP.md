@@ -1,6 +1,13 @@
-<img width="412" height="66" alt="image" src="https://github.com/user-attachments/assets/6f69162e-7ae9-4914-a64f-4df76a2dede9" /># Setup: GPU / NPU
+# Setup: GPU / NPU
 
 ## 1. System Prerequisites
+
+Create conda venv
+
+```bash
+conda create -n drivevla python=3.10
+conda activate drivevla
+```
 
 <details open>
 <summary><b>GPU</b></summary>
