@@ -39,7 +39,7 @@ fi
 
 # Resolve tiers to a space-separated list
 if [ "$TIERS" = "all" ]; then
-  SELECTED_TIERS="0 1 2 3 4 5"
+  SELECTED_TIERS="0 1 2 3 4 5 6"
 else
   SELECTED_TIERS=$(echo "$TIERS" | tr ',' ' ')
 fi
@@ -191,6 +191,21 @@ if selected 5; then
     --warmup_steps 300 \
     --batch_size 1 \
     --learning_rate 1e-5
+fi
+
+# ── Tier 6: low LR + large epsilon (batch=2, lr=1e-5, eps=1e-4) ──
+if selected 6; then
+  echo ""
+  echo "=== Tier 6: warmup=100, batch=2, lr=1e-5, eps=1e-4 ==="
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON[@]}" \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier6_lr1e5_eps1e4 \
+    --max_steps 150 \
+    --warmup_steps 100 \
+    --batch_size 2 \
+    --learning_rate 1e-5 \
+    --adam_epsilon 1e-4
 fi
 
 echo ""
