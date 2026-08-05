@@ -33,7 +33,11 @@ pip install torch_npu==2.7.1.post4
 ## 2. Shared Dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install transformers[torch]==4.44.0
+pip install tiktoken==0.6.0
+pip install pillow
+pip install gradio==4.44.0
+pip install mindstudio-probe
 pip install deepspeed scipy tensorboard wandb
 ```
 
