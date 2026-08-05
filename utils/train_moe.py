@@ -357,11 +357,11 @@ def load_model(model_args, model_config, training_args):
         # On NPU, the HCCL broadcast inside _zero_init_param can fail with
         # error code 4, so we also clear the weak ref to prevent
         # is_deepspeed_zero3_enabled() from returning True.
-        import transformers.modeling_utils as _modeling_utils
+        import transformers.integrations.deepspeed as _ds_integration
         _ds_env = os.environ.pop("DS_CONFIG", None)
         _cf_env = os.environ.pop("CONFIG_FILE", None)
-        _ds_weak_ref = _modeling_utils._hf_deepspeed_config_weak_ref
-        _modeling_utils._hf_deepspeed_config_weak_ref = None
+        _ds_weak_ref = _ds_integration._hf_deepspeed_config_weak_ref
+        _ds_integration._hf_deepspeed_config_weak_ref = None
         try:
             model = Emu3MoE.from_pretrained(
                 model_args.model_name_or_path,
@@ -370,7 +370,7 @@ def load_model(model_args, model_config, training_args):
                 torch_dtype=torch.bfloat16 if training_args.bf16 else None,
             )
         finally:
-            _modeling_utils._hf_deepspeed_config_weak_ref = _ds_weak_ref
+            _ds_integration._hf_deepspeed_config_weak_ref = _ds_weak_ref
             if _ds_env is not None:
                 os.environ["DS_CONFIG"] = _ds_env
             if _cf_env is not None:
