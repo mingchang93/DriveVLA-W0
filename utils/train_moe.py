@@ -375,6 +375,10 @@ def load_model(model_args, model_config, training_args):
                 os.environ["DS_CONFIG"] = _ds_env
             if _cf_env is not None:
                 os.environ["CONFIG_FILE"] = _cf_env
+        # The Trainer checks this flag to confirm the model was loaded
+        # under a ZeRO-3-aware context. We bypassed zero.Init to avoid
+        # the HCCL broadcast on NPU, so set it manually.
+        model._transformers_zero3_init_used = True
 
     # Training best-practices:
     #   1. Disable KV cache — wasteful during training (no generation),
