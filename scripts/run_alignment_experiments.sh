@@ -215,6 +215,20 @@ if selected 6; then
     --adam_epsilon 1e-4
 fi
 
+# ── Tier 7: Tier 0 but warmup=100 (batch=1, lr=1e-5) ──────────────
+if selected 7; then
+  echo ""
+  echo "=== Tier 7: warmup=100, batch=1, lr=1e-5, max_grad_norm=5.0 ==="
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON[@]}" \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier7_warmup100 \
+    --max_steps 300 \
+    --warmup_steps 100 \
+    --batch_size 1 \
+    --learning_rate 1e-5
+fi
+
 echo ""
 echo "=== Done ($DEVICE) ==="
 echo "Results: $BASE_OUT"
