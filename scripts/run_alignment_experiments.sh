@@ -229,6 +229,20 @@ if selected 7; then
     --learning_rate 1e-5
 fi
 
+# ── Tier 8: Tier 7 but warmup=50 (batch=1, lr=1e-5) ──────────────
+if selected 8; then
+  echo ""
+  echo "=== Tier 8: warmup=50, batch=1, lr=1e-5, max_grad_norm=5.0 ==="
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON[@]}" \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier8_warmup50 \
+    --max_steps 300 \
+    --warmup_steps 50 \
+    --batch_size 1 \
+    --learning_rate 1e-5
+fi
+
 echo ""
 echo "=== Done ($DEVICE) ==="
 echo "Results: $BASE_OUT"
