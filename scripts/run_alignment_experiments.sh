@@ -21,6 +21,7 @@ PROJECT_ROOT=""
 DATA_ROOT=""
 MODEL_ROOT=""
 TIERS="all"
+FP="fp32"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device)       DEVICE="$2";       shift 2 ;;
@@ -28,12 +29,18 @@ while [[ $# -gt 0 ]]; do
     --data_root)    DATA_ROOT="$2";    shift 2 ;;
     --model_root)   MODEL_ROOT="$2";   shift 2 ;;
     --tiers)        TIERS="$2";        shift 2 ;;
+    --fp)           FP="$2";           shift 2 ;;
     *) echo "Unknown: $1"; exit 1 ;;
   esac
 done
 
 if [ "$DEVICE" != "cuda" ] && [ "$DEVICE" != "npu" ]; then
-  echo "Usage: $0 --device cuda|npu [--tiers 0,1,2,3,4|all] [--project_root <path>] [--data_root <path>] [--model_root <path>]"
+  echo "Usage: $0 --device cuda|npu [--tiers 0,1,2,3,4|all] [--fp fp32|bf16] [--project_root <path>] [--data_root <path>] [--model_root <path>]"
+  exit 1
+fi
+
+if [ "$FP" != "fp32" ] && [ "$FP" != "bf16" ]; then
+  echo "Invalid --fp value: $FP (must be fp32 or bf16)"
   exit 1
 fi
 
@@ -83,7 +90,7 @@ COMMON=(
   --shuffle_train_data false
   --eval_strategy no
   --eval_steps 10000
-  --fp fp32
+  --fp "$FP"
   --save_steps 1000
   --skip_inference
 )
@@ -92,7 +99,7 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BASE_OUT="$ROOT/logs/alignment_${DEVICE}_${TIMESTAMP}"
 
 echo "============================================"
-echo "Alignment experiments — device: $DEVICE"
+echo "Alignment experiments — device: $DEVICE, fp: $FP"
 echo "Selected tiers: $SELECTED_TIERS"
 echo "Output base: $BASE_OUT"
 echo "============================================"
