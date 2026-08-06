@@ -96,7 +96,7 @@ COMMON=(
 )
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BASE_OUT="$ROOT/logs/alignment_${DEVICE}_${TIMESTAMP}"
+BASE_OUT="$ROOT/logs/alignment_${DEVICE}_${FP}_${TIMESTAMP}"
 
 echo "============================================"
 echo "Alignment experiments — device: $DEVICE, fp: $FP"
