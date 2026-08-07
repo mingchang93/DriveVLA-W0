@@ -243,6 +243,27 @@ if selected 8; then
     --learning_rate 1e-5
 fi
 
+# ── Tier 9: Tier 7 + 600 steps + inference ─────────────────────────
+if selected 9; then
+  echo ""
+  echo "=== Tier 9: warmup=100, batch=1, lr=1e-5, max_grad_norm=5.0, 600 steps, inference ==="
+
+  # Filter out --skip_inference from COMMON
+  COMMON_INFER=()
+  for arg in "${COMMON[@]}"; do
+    [ "$arg" != "--skip_inference" ] && COMMON_INFER+=("$arg")
+  done
+
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON_INFER[@]}" \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier9_warmup100_600steps \
+    --max_steps 600 \
+    --warmup_steps 100 \
+    --batch_size 1 \
+    --learning_rate 1e-5
+fi
+
 echo ""
 echo "=== Done ($DEVICE) ==="
 echo "Results: $BASE_OUT"
