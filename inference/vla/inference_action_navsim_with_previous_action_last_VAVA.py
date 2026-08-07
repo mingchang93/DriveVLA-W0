@@ -52,6 +52,9 @@ def parse_args():
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--min_action_tokens", type=int, default=0)
     parser.add_argument("--norm_config", type=str, default="configs/normalizer_navsim_trainval/norm_stats.json")
+    parser.add_argument("--vq_hub", type=str, default="/data/models/Emu3-Stage1")
+    parser.add_argument("--vision_hub", type=str, default="/data/models/Emu3-VisionTokenizer")
+    parser.add_argument("--fast_tokenizer", type=str, default="/data/models/physical-intelligence-fast")
     return parser.parse_args()
 
 
@@ -133,11 +136,10 @@ def main():
         "emu_hub": args.emu_hub,
         "output_dir": args.output_dir,
         "train_meta_pkl": args.train_meta_pkl,
-        
 
-        "vq_hub": "/data/models/Emu3-Stage1",
-        "vision_hub": "/data/models/Emu3-VisionTokenizer",
-        "fast_tokenizer": "/data/models/physical-intelligence-fast",
+        "vq_hub": args.vq_hub,
+        "vision_hub": args.vision_hub,
+        "fast_tokenizer": args.fast_tokenizer,
         "norm_config": args.norm_config,
         "token_yaml": "inference/navsim/navsim/navsim/planning/script/config/common/train_test_split/scene_filter/navtest.yaml",
     }

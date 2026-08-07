@@ -25,6 +25,7 @@ DEFAULT_INPUT_NUM_FRAME="1"
 DEFAULT_NGPUS=1
 DEFAULT_MASTER_PORT=23458
 DEFAULT_DEVICE="auto"
+DEFAULT_MODEL_ROOT="/data/models"
 
 # ============================================================
 # Parse arguments
@@ -37,6 +38,7 @@ MAX_SAMPLES=""
 NGPUS="$DEFAULT_NGPUS"
 MASTER_PORT="$DEFAULT_MASTER_PORT"
 DEVICE="$DEFAULT_DEVICE"
+MODEL_ROOT="$DEFAULT_MODEL_ROOT"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -48,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --ngpus)             NGPUS="$2";             shift 2 ;;
     --master_port)       MASTER_PORT="$2";       shift 2 ;;
     --device)            DEVICE="$2";            shift 2 ;;
+    --model_root)        MODEL_ROOT="$2";        shift 2 ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
       echo ""
@@ -60,6 +63,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --ngpus             <int>   (1)"
       echo "  --master_port       <int>   (23458)"
       echo "  --device            <str>   (auto) — auto, cuda, or npu"
+      echo "  --model_root        <path>  ($DEFAULT_MODEL_ROOT) — base for vq/vision/fast_tokenizer"
       exit 0
       ;;
     *)
@@ -100,6 +104,7 @@ echo "  input_num_frame:   $INPUT_NUM_FRAME"
 echo "  ngpus:             $NGPUS"
 echo "  master_port:       $MASTER_PORT"
 echo "  device:            $DEVICE"
+echo "  model_root:        $MODEL_ROOT"
 echo ""
 
 for p in "$EMU_HUB" "$TRAIN_META_PKL"; do
@@ -114,6 +119,11 @@ done
 # ============================================================
 mkdir -p "$OUTPUT_DIR"
 
+# Resolve helper paths from model_root
+VQ_HUB="$MODEL_ROOT/Emu3-Stage1"
+VISION_HUB="$MODEL_ROOT/Emu3-VisionTokenizer"
+FAST_TOKENIZER="$MODEL_ROOT/physical-intelligence-fast"
+
 torchrun \
     --nproc_per_node=${NGPUS} \
     --nnodes=1 \
@@ -125,6 +135,9 @@ torchrun \
     --output_dir "$OUTPUT_DIR" \
     --train_meta_pkl "$TRAIN_META_PKL" \
     --input_num_frame "$INPUT_NUM_FRAME" \
+    --vq_hub "$VQ_HUB" \
+    --vision_hub "$VISION_HUB" \
+    --fast_tokenizer "$FAST_TOKENIZER" \
     $([ -n "$MAX_SAMPLES" ] && echo "--max_samples $MAX_SAMPLES")
 
 echo ""
