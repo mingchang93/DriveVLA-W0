@@ -19,6 +19,7 @@ import torch.distributed as dist
 from datetime import datetime
 import threading
 from queue import Queue
+import time
 
 # ---------------------------------------------------------------------------
 # Device detection: NPU > CUDA > CPU  (override via DEVICE env var)
@@ -104,6 +105,9 @@ class LoggingTrainer(tf.Trainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        # Wall-clock timestamp of the last log() call, for per-step time tracking
+        self._last_log_time = None
+
         # Data hash logging for cross-platform (NPU vs GPU) data-order verification
         self._hash_logfile = None
         if getattr(self.args, 'log_data_hash', False):
@@ -125,6 +129,16 @@ class LoggingTrainer(tf.Trainer):
             self.log_queue = Queue()
             self.logging_thread = threading.Thread(target=self._log_writer, daemon=True)
             self.logging_thread.start()
+
+    def log(self, logs: dict, start_time=None) -> None:
+        # Wall-clock seconds since the previous log() call, written into each
+        # trainer_state.json log_history entry as `time_elapsed`. With
+        # logging_steps=1 (alignment experiments) this is the time per step.
+        now = time.time()
+        if self._last_log_time is not None:
+            logs["time_elapsed"] = round(now - self._last_log_time, 3)
+        self._last_log_time = now
+        super().log(logs, start_time)
 
     def _get_train_sampler(self, train_dataset=None) -> Optional[torch.utils.data.Sampler]:
         if train_dataset is None:
