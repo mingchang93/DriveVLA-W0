@@ -27,10 +27,19 @@ from typing import List, Optional, Tuple, Union
 
 import torch, json
 import os
+import time
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+
+
+def _timing_sync() -> None:
+    """Device synchronize for accurate wall-clock timing of submodule regions."""
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    elif hasattr(torch, "npu") and torch.npu.is_available():
+        torch.npu.synchronize()
 
 
 def chunked_lm_head_cross_entropy(
@@ -834,6 +843,8 @@ EMU3_ATTENTION_CLASSES = {
 class Emu3DecoderLayer(nn.Module):
     def __init__(self, config: Emu3Config, layer_idx: int):
         super().__init__()
+        self.layer_idx = layer_idx
+        self.config = config
         self.hidden_size = config.hidden_size
         self.dropout = nn.Dropout(config.attention_dropout)
         self.self_attn = EMU3_ATTENTION_CLASSES[config._attn_implementation](config=config, layer_idx=layer_idx)
@@ -841,6 +852,9 @@ class Emu3DecoderLayer(nn.Module):
         self.mlp = Emu3MLP(config)
         self.input_layernorm = Emu3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Emu3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+        # ponytail: per-submodule timing accumulator, dict of str→float seconds
+        self._submodule_times = {}
 
     def forward(
         self,
@@ -871,11 +885,17 @@ class Emu3DecoderLayer(nn.Module):
                 "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
             )
 
+        _timing = getattr(self.config, 'log_submodule_time', False) and self.training
+        if _timing:
+            t_total = time.perf_counter(); _timing_sync()
+
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
+        if _timing:
+            t_attn = time.perf_counter(); _timing_sync()
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -886,12 +906,24 @@ class Emu3DecoderLayer(nn.Module):
             **kwargs,
         )
         hidden_states = residual + self.dropout(hidden_states)
+        if _timing:
+            _timing_sync()
+            self._submodule_times['self_attn'] = self._submodule_times.get('self_attn', 0.0) + (time.perf_counter() - t_attn)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
+        if _timing:
+            t_mlp = time.perf_counter(); _timing_sync()
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + self.dropout(hidden_states)
+        if _timing:
+            _timing_sync()
+            self._submodule_times['mlp'] = self._submodule_times.get('mlp', 0.0) + (time.perf_counter() - t_mlp)
+
+        if _timing:
+            _timing_sync()
+            self._submodule_times['total'] = self._submodule_times.get('total', 0.0) + (time.perf_counter() - t_total)
 
         outputs = (hidden_states,)
 
@@ -1047,6 +1079,9 @@ class Emu3Model(Emu3PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+        # ponytail: per-submodule timing accumulator
+        self._submodule_times = {}
+
     def get_input_embeddings(self):
         return self.embed_tokens
 
@@ -1073,6 +1108,8 @@ class Emu3Model(Emu3PreTrainedModel):
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        _timing = getattr(self.config, 'log_submodule_time', False) and self.training
 
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
@@ -1106,7 +1143,12 @@ class Emu3Model(Emu3PreTrainedModel):
             position_ids = position_ids.unsqueeze(0)
 
         if inputs_embeds is None:
+            if _timing:
+                t_embed = time.perf_counter(); _timing_sync()
             inputs_embeds = self.embed_tokens(input_ids)
+            if _timing:
+                _timing_sync()
+                self._submodule_times['embed'] = self._submodule_times.get('embed', 0.0) + (time.perf_counter() - t_embed)
 
         if self._use_flash_attention_2:
             # 2d mask is passed through the layers
@@ -1166,7 +1208,12 @@ class Emu3Model(Emu3PreTrainedModel):
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
+        if _timing:
+            t_norm = time.perf_counter(); _timing_sync()
         hidden_states = self.norm(hidden_states)
+        if _timing:
+            _timing_sync()
+            self._submodule_times['norm'] = self._submodule_times.get('norm', 0.0) + (time.perf_counter() - t_norm)
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
@@ -1536,9 +1583,12 @@ class Emu3MoE(Emu3PreTrainedModel):
         
         # Output head (same as Emu3ForCausalLM)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        
+
         # Initialize weights and apply final processing
         self.post_init()
+
+        # ponytail: per-submodule timing accumulator
+        self._submodule_times = {}
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
@@ -1589,7 +1639,9 @@ class Emu3MoE(Emu3PreTrainedModel):
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        
+
+        _timing = getattr(self.config, 'log_submodule_time', False) and self.training
+
         # Decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
@@ -1639,9 +1691,14 @@ class Emu3MoE(Emu3PreTrainedModel):
                 weight = torch.ones(self.config.vocab_size, device=hidden_states.device)
                 weight[self.bov_token_id : self.eov_token_id + 1] = self.vision_loss_weight
 
+            if _timing:
+                t_lm = time.perf_counter(); _timing_sync()
             loss = chunked_lm_head_cross_entropy(
                 hidden_shifted, self.lm_head.weight, shift_labels, weight=weight,
             )
+            if _timing:
+                _timing_sync()
+                self._submodule_times['lm_head+loss'] = self._submodule_times.get('lm_head+loss', 0.0) + (time.perf_counter() - t_lm)
             if action is not None and self.action_experts:
                 loss += loss_action * self.vision_loss_weight
 
@@ -1792,6 +1849,16 @@ class Emu3MoE(Emu3PreTrainedModel):
             z = z - dt * velo_pred
         
         return z
+
+    def reset_submodule_times(self) -> None:
+        """Clear all per-submodule timing accumulators across the module tree.
+
+        Called by the trainer after each logging interval so per-interval sums
+        don't bleed into the next interval.
+        """
+        for module in self.modules():
+            if hasattr(module, '_submodule_times'):
+                module._submodule_times = {}
 
 # ============================================================================
 # Emu3Pi0 Model - Pi0.5 style Action Expert Integration

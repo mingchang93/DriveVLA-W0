@@ -120,6 +120,16 @@ class LoggingTrainer(tf.Trainer):
             if self.state.is_world_process_zero:
                 print(f'[DataHash] Logging batch hashes to {hash_path}')
 
+        # Submodule timing logging for profiling per-component training time
+        self._submodule_logfile = None
+        self._submodule_last_step = 0
+        if getattr(self.args, 'log_submodule_time', False) and self.state.is_world_process_zero:
+            sub_dir = os.path.join(self.args.output_dir, 'submodule_times')
+            os.makedirs(sub_dir, exist_ok=True)
+            sub_path = os.path.join(sub_dir, 'rank0.jsonl')
+            self._submodule_logfile = open(sub_path, 'w')
+            print(f'[SubmoduleTime] Logging submodule times to {sub_path}')
+
         self.log_queue = None
         # Only the main process will handle file I/O and the logging thread.
         if self.state.is_world_process_zero:
@@ -144,6 +154,21 @@ class LoggingTrainer(tf.Trainer):
             super().log(logs, start_time)
         else:
             super().log(logs)
+
+        # Collect per-submodule forward times for profiling
+        if self._submodule_logfile is not None:
+            model = self.model.module if hasattr(self.model, 'module') else self.model
+            record = {'step': int(self.state.global_step),
+                      'steps': int(self.state.global_step - self._submodule_last_step)}
+            for name, module in model.named_modules():
+                st = getattr(module, '_submodule_times', None)
+                if st:
+                    for k, v in st.items():
+                        record[f'{name}.{k}'] = round(v, 6)
+            self._submodule_logfile.write(json.dumps(record) + '\n')
+            self._submodule_logfile.flush()
+            model.reset_submodule_times()
+            self._submodule_last_step = int(self.state.global_step)
 
     def _get_train_sampler(self, train_dataset=None) -> Optional[torch.utils.data.Sampler]:
         if train_dataset is None:
@@ -353,6 +378,7 @@ class TrainingArguments(tf.TrainingArguments):
     save_only_model: bool = field(default=False)
     deterministic: bool = field(default=False)  # enable strict reproducibility for NPU vs GPU debugging
     log_data_hash: bool = field(default=False)  # log SHA256 hash per batch for cross-platform data verification
+    log_submodule_time: bool = field(default=False)  # log per-submodule forward times for profiling
 
 def load_model(model_args, model_config, training_args):
     """
@@ -526,6 +552,7 @@ def train():
     # Load model configuration and tokenizer
     model_config = Emu3MoEConfig.from_pretrained(model_args.model_config_path)
     update_configs(model_config, training_args, ["image_area", "max_position_embeddings"])
+    model_config.log_submodule_time = training_args.log_submodule_time
     if training_args.min_learning_rate is not None:
         training_args.lr_scheduler_kwargs["min_lr"] = training_args.min_learning_rate
     tokenizer = Emu3Tokenizer.from_pretrained(
