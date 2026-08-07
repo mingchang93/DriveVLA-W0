@@ -20,6 +20,7 @@ from datetime import datetime
 import threading
 from queue import Queue
 import time
+import inspect
 
 # ---------------------------------------------------------------------------
 # Device detection: NPU > CUDA > CPU  (override via DEVICE env var)
@@ -138,7 +139,11 @@ class LoggingTrainer(tf.Trainer):
         if self._last_log_time is not None:
             logs["time_elapsed"] = round(now - self._last_log_time, 3)
         self._last_log_time = now
-        super().log(logs, start_time)
+        # Older installed transformers: Trainer.log(logs) only; 4.56+ also accepts start_time
+        if start_time is not None and "start_time" in inspect.signature(Trainer.log).parameters:
+            super().log(logs, start_time)
+        else:
+            super().log(logs)
 
     def _get_train_sampler(self, train_dataset=None) -> Optional[torch.utils.data.Sampler]:
         if train_dataset is None:
