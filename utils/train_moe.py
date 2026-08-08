@@ -168,8 +168,9 @@ class LoggingTrainer(tf.Trainer):
             for name, module in model.named_modules():
                 st = getattr(module, '_submodule_times', None)
                 if st:
+                    prefix = f'{name}.' if name else ''
                     for k, v in st.items():
-                        record[f'{name}.{k}'] = round(v, 6)
+                        record[f'{prefix}{k}'] = round(v, 6)
             self._submodule_logfile.write(json.dumps(record) + '\n')
             self._submodule_logfile.flush()
             self._submodule_last_step = int(self.state.global_step)

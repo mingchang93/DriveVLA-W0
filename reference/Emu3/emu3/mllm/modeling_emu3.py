@@ -34,12 +34,56 @@ from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 
-def _timing_sync() -> None:
-    """Device synchronize for accurate wall-clock timing of submodule regions."""
+_NPU_EVENT_OK = False
+if hasattr(torch, 'npu') and torch.npu.is_available():
+    try:
+        _test = torch.npu.Event(enable_timing=True)
+        del _test
+        _NPU_EVENT_OK = True
+    except (TypeError, RuntimeError, AttributeError):
+        pass
+
+
+def _timing_event_start():
+    """Start a GPU-accurate timer using CUDA/NPU events.
+
+    Returns an opaque handle for _timing_event_end(). Events record GPU
+    timestamps without CPU-GPU sync, eliminating the measurement artifact
+    that sync() introduces on microsecond-scale operations like embedding.
+
+    Falls back to CPU perf_counter on platforms without event support.
+    """
     if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    elif hasattr(torch, "npu") and torch.npu.is_available():
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        return ('cuda', start, end)
+    elif _NPU_EVENT_OK:
+        start = torch.npu.Event(enable_timing=True)
+        end = torch.npu.Event(enable_timing=True)
+        start.record()
+        return ('npu', start, end)
+    elif hasattr(torch, 'npu') and torch.npu.is_available():
+        # NPU available but events don't support enable_timing — fall back
+        # to sync-based wall-clock timing (stable, just slightly noisy on cheap ops).
         torch.npu.synchronize()
+        return ('sync', time.perf_counter(), None)
+    else:
+        return ('cpu', time.perf_counter(), None)
+
+
+def _timing_event_end(handle) -> float:
+    """End the timer and return elapsed seconds (GPU time, or wall-clock for sync fallback)."""
+    kind = handle[0]
+    if kind == 'cpu':
+        return time.perf_counter() - handle[1]
+    if kind == 'sync':
+        torch.npu.synchronize()
+        return time.perf_counter() - handle[1]
+    _, start, end = handle
+    end.record()
+    end.synchronize()
+    return start.elapsed_time(end) / 1000.0  # ms → s
 
 
 def chunked_lm_head_cross_entropy(
@@ -887,7 +931,7 @@ class Emu3DecoderLayer(nn.Module):
 
         _timing = getattr(self.config, 'log_submodule_time', False) and self.training
         if _timing:
-            t_total = time.perf_counter(); _timing_sync()
+            _ev_total = _timing_event_start()
 
         residual = hidden_states
 
@@ -895,7 +939,7 @@ class Emu3DecoderLayer(nn.Module):
 
         # Self Attention
         if _timing:
-            t_attn = time.perf_counter(); _timing_sync()
+            _ev_attn = _timing_event_start()
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -907,23 +951,20 @@ class Emu3DecoderLayer(nn.Module):
         )
         hidden_states = residual + self.dropout(hidden_states)
         if _timing:
-            _timing_sync()
-            self._submodule_times['self_attn'] = self._submodule_times.get('self_attn', 0.0) + (time.perf_counter() - t_attn)
+            self._submodule_times['self_attn'] = self._submodule_times.get('self_attn', 0.0) + _timing_event_end(_ev_attn)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         if _timing:
-            t_mlp = time.perf_counter(); _timing_sync()
+            _ev_mlp = _timing_event_start()
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + self.dropout(hidden_states)
         if _timing:
-            _timing_sync()
-            self._submodule_times['mlp'] = self._submodule_times.get('mlp', 0.0) + (time.perf_counter() - t_mlp)
+            self._submodule_times['mlp'] = self._submodule_times.get('mlp', 0.0) + _timing_event_end(_ev_mlp)
 
         if _timing:
-            _timing_sync()
-            self._submodule_times['total'] = self._submodule_times.get('total', 0.0) + (time.perf_counter() - t_total)
+            self._submodule_times['total'] = self._submodule_times.get('total', 0.0) + _timing_event_end(_ev_total)
 
         outputs = (hidden_states,)
 
@@ -1144,11 +1185,10 @@ class Emu3Model(Emu3PreTrainedModel):
 
         if inputs_embeds is None:
             if _timing:
-                t_embed = time.perf_counter(); _timing_sync()
+                _ev_embed = _timing_event_start()
             inputs_embeds = self.embed_tokens(input_ids)
             if _timing:
-                _timing_sync()
-                self._submodule_times['embed'] = self._submodule_times.get('embed', 0.0) + (time.perf_counter() - t_embed)
+                self._submodule_times['embed'] = self._submodule_times.get('embed', 0.0) + _timing_event_end(_ev_embed)
 
         if self._use_flash_attention_2:
             # 2d mask is passed through the layers
@@ -1209,11 +1249,10 @@ class Emu3Model(Emu3PreTrainedModel):
                 all_self_attns += (layer_outputs[1],)
 
         if _timing:
-            t_norm = time.perf_counter(); _timing_sync()
+            _ev_norm = _timing_event_start()
         hidden_states = self.norm(hidden_states)
         if _timing:
-            _timing_sync()
-            self._submodule_times['norm'] = self._submodule_times.get('norm', 0.0) + (time.perf_counter() - t_norm)
+            self._submodule_times['norm'] = self._submodule_times.get('norm', 0.0) + _timing_event_end(_ev_norm)
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
@@ -1692,13 +1731,12 @@ class Emu3MoE(Emu3PreTrainedModel):
                 weight[self.bov_token_id : self.eov_token_id + 1] = self.vision_loss_weight
 
             if _timing:
-                t_lm = time.perf_counter(); _timing_sync()
+                _ev_lm = _timing_event_start()
             loss = chunked_lm_head_cross_entropy(
                 hidden_shifted, self.lm_head.weight, shift_labels, weight=weight,
             )
             if _timing:
-                _timing_sync()
-                self._submodule_times['lm_head+loss'] = self._submodule_times.get('lm_head+loss', 0.0) + (time.perf_counter() - t_lm)
+                self._submodule_times['lm_head+loss'] = self._submodule_times.get('lm_head+loss', 0.0) + _timing_event_end(_ev_lm)
             if action is not None and self.action_experts:
                 loss += loss_action * self.vision_loss_weight
 
