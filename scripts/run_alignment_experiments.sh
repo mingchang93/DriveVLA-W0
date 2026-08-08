@@ -264,13 +264,12 @@ if selected 9; then
     --learning_rate 1e-5
 fi
 
-# ── Tier -1: quick profiling run with --log_submodule_time ────────────
+# ── Tier -1: quick profiling run with msprobe ────────────
 if selected -1; then
   echo ""
   echo "=== Tier -1: profiling run, batch=1, lr=1e-5, 100 steps ==="
   bash "$TRAIN_SCRIPT" \
     "${COMMON[@]}" \
-    --log_submodule_time \
     --output_dir "$BASE_OUT" \
     --exp_name tier_neg1_profile \
     --max_steps 100 \
