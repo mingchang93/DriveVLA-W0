@@ -120,15 +120,18 @@ class LoggingTrainer(tf.Trainer):
             if self.state.is_world_process_zero:
                 print(f'[DataHash] Logging batch hashes to {hash_path}')
 
-        # Submodule timing logging for profiling per-component training time
+        # Submodule timing logging for profiling per-component training time.
+        # All ranks record — ZeRO-3 all-gather times can differ per rank.
         self._submodule_logfile = None
         self._submodule_last_step = 0
-        if getattr(self.args, 'log_submodule_time', False) and self.state.is_world_process_zero:
+        if getattr(self.args, 'log_submodule_time', False):
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
             sub_dir = os.path.join(self.args.output_dir, 'submodule_times')
             os.makedirs(sub_dir, exist_ok=True)
-            sub_path = os.path.join(sub_dir, 'rank0.jsonl')
+            sub_path = os.path.join(sub_dir, f'rank{rank}.jsonl')
             self._submodule_logfile = open(sub_path, 'w')
-            print(f'[SubmoduleTime] Logging submodule times to {sub_path}')
+            if self.state.is_world_process_zero:
+                print(f'[SubmoduleTime] Logging submodule times to {sub_dir}/rank*.jsonl')
 
         self.log_queue = None
         # Only the main process will handle file I/O and the logging thread.
@@ -155,8 +158,10 @@ class LoggingTrainer(tf.Trainer):
         else:
             super().log(logs)
 
-        # Collect per-submodule forward times for profiling
-        if self._submodule_logfile is not None:
+        # Collect per-submodule forward times for profiling.
+        # All ranks record independently — ZeRO-3 all-gather and rank-0
+        # overhead (logging, callbacks) can cause per-rank timing variance.
+        if getattr(self.args, 'log_submodule_time', False):
             model = self.model.module if hasattr(self.model, 'module') else self.model
             record = {'step': int(self.state.global_step),
                       'steps': int(self.state.global_step - self._submodule_last_step)}
@@ -167,8 +172,8 @@ class LoggingTrainer(tf.Trainer):
                         record[f'{name}.{k}'] = round(v, 6)
             self._submodule_logfile.write(json.dumps(record) + '\n')
             self._submodule_logfile.flush()
-            model.reset_submodule_times()
             self._submodule_last_step = int(self.state.global_step)
+            model.reset_submodule_times()
 
     def _get_train_sampler(self, train_dataset=None) -> Optional[torch.utils.data.Sampler]:
         if train_dataset is None:

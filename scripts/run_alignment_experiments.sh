@@ -277,6 +277,16 @@ if selected -1; then
     --warmup_steps 0 \
     --batch_size 1 \
     --learning_rate 1e-5
+
+  # Summarize submodule timing with cross-rank variance analysis
+  echo ""
+  echo "=== Tier -1: summarizing submodule times ==="
+  SUBMODULE_DIR="$BASE_OUT/tier_neg1_profile/submodule_times"
+  COMBINED="$BASE_OUT/tier_neg1_profile/submodule_times_combined.jsonl"
+  python3 "$ROOT/scripts/summarize_submodule_times.py" \
+    --submodule_dir "$SUBMODULE_DIR" \
+    --combine "$COMBINED"
+  echo "Combined data: $COMBINED"
 fi
 
 echo ""
