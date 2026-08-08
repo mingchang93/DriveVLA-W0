@@ -93,7 +93,7 @@ while [[ $# -gt 0 ]]; do
     --shuffle_train_data)     SHUFFLE_TRAIN_DATA="$2";       shift 2 ;;
     --deterministic)          DETERMINISTIC=true;            shift ;;
     --log_data_hash)         LOG_DATA_HASH=true;            shift ;;
-	    --log_submodule_time)    LOG_SUBMODULE_TIME=true;       shift ;;
+	  --log_submodule_time)    LOG_SUBMODULE_TIME=true;       shift ;;
     --logging_steps)          LOGGING_STEPS="$2";            shift 2 ;;
     --warmup_steps)           WARMUP_STEPS="$2";             shift 2 ;;
     --skip_inference)         SKIP_INFERENCE=true;           shift ;;
@@ -129,7 +129,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --shuffle_train_data      <bool>  (true) — true=shuffle, false=deterministic (NPU/GPU alignment)"
       echo "  --deterministic                   Strict reproducibility (NPU vs GPU debug)"
       echo "  --log_data_hash                   Log SHA256 hash per batch for cross-platform data verification"
-	      echo "  --log_submodule_time              Log per-submodule forward times for profiling"
+	    echo "  --log_submodule_time              Log per-submodule forward times for profiling"
       echo "  --logging_steps            <int>   (10)"
       echo "  --warmup_steps             <int>   (50)"
       echo "  --skip_inference                   Skip inference after training"
