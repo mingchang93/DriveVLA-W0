@@ -46,7 +46,7 @@ fi
 
 # Resolve tiers to a space-separated list
 if [ "$TIERS" = "all" ]; then
-  SELECTED_TIERS="0 1 2 3 4 5 6"
+  SELECTED_TIERS="-1 0 1 2 3 4 5 6"
 else
   SELECTED_TIERS=$(echo "$TIERS" | tr ',' ' ')
 fi
@@ -260,6 +260,21 @@ if selected 9; then
     --exp_name tier9_warmup100_600steps \
     --max_steps 600 \
     --warmup_steps 100 \
+    --batch_size 1 \
+    --learning_rate 1e-5
+fi
+
+# ── Tier -1: quick profiling run with --log_submodule_time ────────────
+if selected -1; then
+  echo ""
+  echo "=== Tier -1: profiling run, batch=1, lr=1e-5, 100 steps ==="
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON[@]}" \
+    --log_submodule_time \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier_neg1_profile \
+    --max_steps 100 \
+    --warmup_steps 0 \
     --batch_size 1 \
     --learning_rate 1e-5
 fi
