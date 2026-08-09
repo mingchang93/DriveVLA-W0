@@ -79,7 +79,7 @@ parent_dir = os.path.dirname(current_dir)
 # 添加reference/Emu3路径到sys.path
 sys.path.append(os.path.join(parent_dir, "reference", "Emu3"))
 from emu3.mllm import Emu3Config, Emu3Tokenizer, Emu3ForCausalLM, Emu3MoE, Emu3MoEConfig
-from transformers import AutoModel,Trainer
+from transformers import AutoModel, Trainer, TrainerCallback
 from datasets import Emu3DrivingDataset
 from datasets import Emu3DrivingVAVADataset
 from datasets import Emu3DrivingNuplan6VADataset
@@ -134,6 +134,48 @@ def _install_grad_clip_hook():
 
     torch.nn.utils.clip_grad_norm_ = _hook
     _CLIP_PATCHED = True
+
+
+class _RawGradNormCallback(TrainerCallback):
+    """Report the raw pre-clip global grad norm when --max_grad_norm is disabled.
+
+    HF Trainer only computes `grad_norm` inside the clipping branch, so when
+    --max_grad_norm is 0 (clipping off) it logs nothing. This callback measures
+    the norm every sync step instead, and _inject_grad_clip_logs writes it under
+    the same `grad_norm` key as clipped runs → no-clip tiers stay comparable.
+
+    DeepSpeed computes the true global norm via the engine's collective
+    (get_global_grad_norm); non-DeepSpeed falls back to a local L2 over grads.
+    """
+    def __init__(self, trainer):
+        self._trainer = trainer
+        self.value = None
+
+    def on_pre_optimizer_step(self, args, state, control):
+        if args.max_grad_norm is not None and args.max_grad_norm > 0:
+            return  # HF already logs pre-clip grad_norm in the clipping branch
+        self.value = self._global_grad_norm()
+
+    def on_log(self, args, state, control, logs):
+        # Consume the value so a later eval log entry can't reuse it.
+        self.value = None
+
+    def _global_grad_norm(self):
+        model = self._trainer.model
+        get_global = getattr(model, "get_global_grad_norm", None)
+        if get_global is None and hasattr(model, "module"):
+            get_global = getattr(model.module, "get_global_grad_norm", None)
+        if get_global is not None:
+            try:
+                v = get_global()
+                return float(v) if v is not None else None
+            except Exception:
+                return None
+        params = [p for p in model.parameters() if p.grad is not None]
+        if not params:
+            return None
+        with torch.no_grad():
+            return float(sum(p.grad.float().norm().item() ** 2 for p in params) ** 0.5)
 
 
 class MemoryEfficientTrainer(tf.Trainer):
@@ -196,8 +238,12 @@ class LoggingTrainer(tf.Trainer):
 
         # Gradient-clip verification (--log_grad_clip): measure pre/post clip
         # norms so trainer_state.json can confirm --max_grad_norm takes effect.
+        # The callback also reports the raw pre-clip norm when clipping is
+        # disabled (HF skips grad_norm entirely when max_grad_norm <= 0).
         if getattr(self.args, 'log_grad_clip', False):
             _install_grad_clip_hook()
+            self._raw_grad_norm_cb = _RawGradNormCallback(self)
+            self.add_callback(self._raw_grad_norm_cb)
 
     def log(self, logs: dict, start_time=None) -> None:
         self._inject_grad_clip_logs(logs)
@@ -244,9 +290,17 @@ class LoggingTrainer(tf.Trainer):
         """
         if not getattr(self.args, 'log_grad_clip', False):
             return
-        pre = logs.get("grad_norm")
         max_norm = getattr(self.args, "max_grad_norm", None)
-        if pre is None or max_norm is None or max_norm <= 0:
+        if max_norm is None or max_norm <= 0:
+            # Clipping disabled: HF won't log grad_norm at all. Inject the raw
+            # pre-clip norm captured by _RawGradNormCallback, under the same
+            # `grad_norm` key as clipped runs so tiers stay comparable.
+            cb = getattr(self, "_raw_grad_norm_cb", None)
+            if cb is not None and cb.value is not None:
+                logs["grad_norm"] = round(float(cb.value), 4)
+            return
+        pre = logs.get("grad_norm")
+        if pre is None:
             return
         pre = float(pre)
         max_f = float(max_norm)

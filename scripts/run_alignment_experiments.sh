@@ -288,16 +288,16 @@ if selected -1; then
   echo "Combined data: $COMBINED"
 fi
 
-# ── Tier -2: no gradient clipping (batch=1, lr=1e-5, 100 steps) ───
+# ── Tier -2: no gradient clipping, constant LR (batch=1, lr=1e-5, 100 steps) ───
 if selected -2; then
   echo ""
-  echo "=== Tier -2: gradient clipping disabled, batch=1, lr=1e-5, 100 steps ==="
+  echo "=== Tier -2: gradient clipping disabled, constant LR, batch=1, lr=1e-5, 100 steps ==="
   bash "$TRAIN_SCRIPT" \
     "${COMMON[@]}" \
     --output_dir "$BASE_OUT" \
     --exp_name tier_neg2_noclip \
     --max_steps 100 \
-    --warmup_steps 0 \
+    --constant_lr \
     --batch_size 1 \
     --max_grad_norm 0 \
     --learning_rate 1e-5
