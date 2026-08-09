@@ -46,7 +46,7 @@ fi
 
 # Resolve tiers to a space-separated list
 if [ "$TIERS" = "all" ]; then
-  SELECTED_TIERS="-1 0 1 2 3 4 5 6"
+  SELECTED_TIERS="-2 -1 0 1 2 3 4 5 6"
 else
   SELECTED_TIERS=$(echo "$TIERS" | tr ',' ' ')
 fi
@@ -286,6 +286,21 @@ if selected -1; then
     --submodule_dir "$SUBMODULE_DIR" \
     --combine "$COMBINED"
   echo "Combined data: $COMBINED"
+fi
+
+# ── Tier -2: no gradient clipping (batch=1, lr=1e-5, 100 steps) ───
+if selected -2; then
+  echo ""
+  echo "=== Tier -2: gradient clipping disabled, batch=1, lr=1e-5, 100 steps ==="
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON[@]}" \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier_neg2_noclip \
+    --max_steps 100 \
+    --warmup_steps 0 \
+    --batch_size 1 \
+    --max_grad_norm 0 \
+    --learning_rate 1e-5
 fi
 
 echo ""
