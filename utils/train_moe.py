@@ -161,17 +161,22 @@ class _RawGradNormCallback(TrainerCallback):
         self.value = None
 
     def _global_grad_norm(self):
-        model = self._trainer.model
-        get_global = getattr(model, "get_global_grad_norm", None)
-        if get_global is None and hasattr(model, "module"):
-            get_global = getattr(model.module, "get_global_grad_norm", None)
-        if get_global is not None:
-            try:
-                v = get_global()
-                return float(v) if v is not None else None
-            except Exception:
-                return None
-        params = [p for p in model.parameters() if p.grad is not None]
+        # With DeepSpeed, self.model is the raw model; the engine (which owns
+        # get_global_grad_norm) is self.model_wrapped / self.deepspeed.
+        models = (
+            getattr(self._trainer, "model_wrapped", None),
+            getattr(self._trainer, "deepspeed", None),
+            self._trainer.model,
+        )
+        for m in models:
+            get_global = getattr(m, "get_global_grad_norm", None)
+            if get_global is not None:
+                try:
+                    v = get_global()
+                    return float(v) if v is not None else None
+                except Exception:
+                    return None
+        params = [p for p in self._trainer.model.parameters() if p.grad is not None]
         if not params:
             return None
         with torch.no_grad():
