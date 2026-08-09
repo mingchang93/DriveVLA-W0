@@ -151,12 +151,12 @@ class _RawGradNormCallback(TrainerCallback):
         self._trainer = trainer
         self.value = None
 
-    def on_pre_optimizer_step(self, args, state, control):
+    def on_pre_optimizer_step(self, args, state, control, **kwargs):
         if args.max_grad_norm is not None and args.max_grad_norm > 0:
             return  # HF already logs pre-clip grad_norm in the clipping branch
         self.value = self._global_grad_norm()
 
-    def on_log(self, args, state, control, logs):
+    def on_log(self, args, state, control, logs, **kwargs):
         # Consume the value so a later eval log entry can't reuse it.
         self.value = None
 
