@@ -302,6 +302,7 @@ torchrun \
     --weight_decay 0.1 \
     --min_learning_rate 1e-6 \
     --max_grad_norm "$MAX_GRAD_NORM" \
+    --log_grad_clip \
     --adam_beta1 0.9 \
     --adam_beta2 0.95 \
     --adam_epsilon "$ADAM_EPSILON" \

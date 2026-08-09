@@ -86,6 +86,56 @@ from datasets import Emu3DrivingNuplan6VADataset
 from torch.utils.data import WeightedRandomSampler, DataLoader, RandomSampler, SequentialSampler
 from transformers.trainer_utils import has_length
 
+# ---------------------------------------------------------------------------
+# Gradient-clip verification (--log_grad_clip)
+#
+# HF Trainer already writes `grad_norm` (the PRE-clip global gradient norm) into
+# each train log entry — for both the plain-torch and DeepSpeed paths. To double
+# check that --max_grad_norm actually clamps, we additionally measure the
+# POST-clip norm:
+#   * torch path: wrap torch.nn.utils.clip_grad_norm_ and re-measure the norm of
+#     the clipped grads right after it runs (a real measurement).
+#   * DeepSpeed: clipping happens inside the engine's optimizer.step(), which is
+#     not readable afterwards, so post = min(pre, max) — exact for global-norm
+#     clipping — and grad_clip_measured=False flags it as derived.
+# ---------------------------------------------------------------------------
+_GCLIP = {}            # most recent clip event: {pre, post, clipped, max}
+_CLIP_PATCHED = False
+
+
+def _install_grad_clip_hook():
+    """Wrap torch.nn.utils.clip_grad_norm_ once per process (idempotent).
+
+    Records the pre-clip norm (the function's return value) and, only when
+    clipping actually triggered, re-measures the global norm of the clipped
+    grads. Stored in module-level _GCLIP, read by LoggingTrainer.log().
+    """
+    global _CLIP_PATCHED
+    if _CLIP_PATCHED:
+        return
+    _orig = torch.nn.utils.clip_grad_norm_
+
+    def _hook(parameters, max_norm, norm_type=2.0):
+        pre = _orig(parameters, max_norm, norm_type=norm_type)
+        if not (max_norm and max_norm > 0):
+            return pre
+        pre_f = float(pre)
+        clipped = pre_f > float(max_norm)
+        post = None
+        if clipped:
+            grads = [p.grad.detach() for p in parameters if p.grad is not None]
+            if grads:
+                with torch.no_grad():
+                    post = float((sum(g.float().abs().pow(norm_type).sum() for g in grads)) ** (1.0 / norm_type))
+        else:
+            post = pre_f  # no clipping applied → post == pre
+        _GCLIP.update(pre=pre_f, post=post, clipped=clipped, max=float(max_norm))
+        return pre
+
+    torch.nn.utils.clip_grad_norm_ = _hook
+    _CLIP_PATCHED = True
+
+
 class MemoryEfficientTrainer(tf.Trainer):
     """最简单的显存回收Trainer"""
     def evaluation_loop(self, dataloader, description, prediction_loss_only=None, ignore_keys=None, metric_key_prefix="eval"):
@@ -144,7 +194,13 @@ class LoggingTrainer(tf.Trainer):
             self.logging_thread = threading.Thread(target=self._log_writer, daemon=True)
             self.logging_thread.start()
 
+        # Gradient-clip verification (--log_grad_clip): measure pre/post clip
+        # norms so trainer_state.json can confirm --max_grad_norm takes effect.
+        if getattr(self.args, 'log_grad_clip', False):
+            _install_grad_clip_hook()
+
     def log(self, logs: dict, start_time=None) -> None:
+        self._inject_grad_clip_logs(logs)
         # Wall-clock seconds since the previous log() call, written into each
         # trainer_state.json log_history entry as `time_elapsed`. With
         # logging_steps=1 (alignment experiments) this is the time per step.
@@ -175,6 +231,32 @@ class LoggingTrainer(tf.Trainer):
             self._submodule_logfile.flush()
             self._submodule_last_step = int(self.state.global_step)
             model.reset_submodule_times()
+
+    def _inject_grad_clip_logs(self, logs: dict) -> None:
+        """Add pre/post gradient-clip norms to a train log entry (--log_grad_clip).
+
+        Only fires on steps where HF logged a `grad_norm` (i.e. train steps with
+        max_grad_norm > 0 — eval/val log entries have none and are left alone).
+        HF's `grad_norm` is the pre-clip global norm in both the torch and
+        DeepSpeed paths. The post-clip value is measured by the clip hook when it
+        fired for this step (pre matches); DeepSpeed clips inside optimizer.step()
+        so its post value is min(pre, max), flagged via grad_clip_measured=False.
+        """
+        if not getattr(self.args, 'log_grad_clip', False):
+            return
+        pre = logs.get("grad_norm")
+        max_norm = getattr(self.args, "max_grad_norm", None)
+        if pre is None or max_norm is None or max_norm <= 0:
+            return
+        pre = float(pre)
+        max_f = float(max_norm)
+        # The hook's post value only belongs to this step if its pre matches HF's.
+        measured = _GCLIP.get("pre") is not None and abs(_GCLIP["pre"] - pre) < 1e-3
+        post = _GCLIP.get("post") if measured and _GCLIP.get("post") is not None else min(pre, max_f)
+        logs["grad_norm_before_clip"] = round(pre, 4)
+        logs["grad_norm_after_clip"] = round(float(post), 4)
+        logs["grad_clipped"] = bool(pre > max_f)
+        logs["grad_clip_measured"] = measured
 
     def _get_train_sampler(self, train_dataset=None) -> Optional[torch.utils.data.Sampler]:
         if train_dataset is None:
@@ -385,6 +467,7 @@ class TrainingArguments(tf.TrainingArguments):
     deterministic: bool = field(default=False)  # enable strict reproducibility for NPU vs GPU debugging
     log_data_hash: bool = field(default=False)  # log SHA256 hash per batch for cross-platform data verification
     log_submodule_time: bool = field(default=False)  # log per-submodule forward times for profiling
+    log_grad_clip: bool = field(default=False)  # log pre/post gradient-clip norms to verify --max_grad_norm takes effect
 
 def load_model(model_args, model_config, training_args):
     """
