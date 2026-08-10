@@ -25,7 +25,8 @@ pip install flash-attn==2.5.7
 
 ```bash
 # CANN 8.5.1 + torch_npu
-pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1
+pip install torch==2.7.1+cpu torchvision==0.22.1 torchaudio==2.7.1 \
+  --index-url https://download.pytorch.org/whl/cpu
 pip install torch_npu==2.7.1.post4
 ```
 </details>
