@@ -814,4 +814,5 @@ def train():
     trainer.save_model(training_args.output_dir)
 
 if __name__ == "__main__":
+    gc.disable()  # kill GC-pause jitter in step timings; refcounting still frees memory
     train()
