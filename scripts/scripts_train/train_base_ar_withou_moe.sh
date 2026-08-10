@@ -68,6 +68,7 @@ MAX_GRAD_NORM=5.0
 ADAM_EPSILON=1e-6
 CONSTANT_LR=false
 NPU_PROFILING=false
+NPU_PROFILER_LEVEL=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model_name_or_path)     MODEL_NAME_OR_PATH="$2";       shift 2 ;;
@@ -100,6 +101,7 @@ while [[ $# -gt 0 ]]; do
     --skip_inference)         SKIP_INFERENCE=true;           shift ;;
     --constant_lr)            CONSTANT_LR=true;               shift ;;
     --npu_profiling)          NPU_PROFILING=true;             shift ;;
+    --npu_profiler_level)     NPU_PROFILER_LEVEL="$2";        shift 2 ;;
     --learning_rate)          LEARNING_RATE="$2";             shift 2 ;;
     --max_grad_norm)          MAX_GRAD_NORM="$2";             shift 2 ;;
     --adam_epsilon)           ADAM_EPSILON="$2";              shift 2 ;;
@@ -137,6 +139,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --skip_inference                   Skip inference after training"
       echo "  --constant_lr                      Use constant LR (no decay, no warmup)"
       echo "  --npu_profiling                    Wrap train loop with torch_npu.profiler (NPU only; traces → <output_dir>/npu_profile)"
+      echo "  --npu_profiler_level <int>         (0) — 0=NPU only, 1=CPU+NPU + record_shapes + ProfilerLevel.Level1"
       echo "  --learning_rate            <float> (2e-5)"
       echo "  --max_grad_norm            <float> (5.0)"
       echo "  --adam_epsilon             <float> (1e-6)"
@@ -154,7 +157,7 @@ done
 [ "$DETERMINISTIC" = true ] && DET_FLAG="--deterministic"
 [ "$LOG_DATA_HASH" = true ] && HASH_FLAG="--log_data_hash"
 [ "$LOG_SUBMODULE_TIME" = true ] && SUBMODULE_FLAG="--log_submodule_time"
-[ "$NPU_PROFILING" = true ] && NPU_PROFILING_FLAG="--npu_profiling"
+[ "$NPU_PROFILING" = true ] && NPU_PROFILING_FLAG="--npu_profiling --npu_profiler_level $NPU_PROFILER_LEVEL"
 # Data shuffling: true → shuffle (default), false → deterministic order (NPU/GPU alignment)
 SHUFFLE_FLAG="--dataloader_shuffle $SHUFFLE_TRAIN_DATA"
 
@@ -250,6 +253,7 @@ echo "  logging_steps:           $LOGGING_STEPS"
 echo "  warmup_steps:            $WARMUP_STEPS"
 echo "  skip_inference:          $SKIP_INFERENCE"
 echo "  npu_profiling:           $NPU_PROFILING"
+echo "  npu_profiler_level:      $NPU_PROFILER_LEVEL"
 echo ""
 
 for p in "$MODEL_NAME_OR_PATH" "$MODEL_CONFIG_PATH" "$ACTION_TOKENIZER_PATH" "$DEEPSPEED_CONFIG" "$DATA_PATH"; do

@@ -46,7 +46,7 @@ fi
 
 # Resolve tiers to a space-separated list
 if [ "$TIERS" = "all" ]; then
-  SELECTED_TIERS="-3 -2 -1 0 1 2 3 4 5 6"
+  SELECTED_TIERS="-4 -3 -2 -1 0 1 2 3 4 5 6"
 else
   SELECTED_TIERS=$(echo "$TIERS" | tr ',' ' ')
 fi
@@ -303,20 +303,38 @@ if selected -2; then
     --learning_rate 1e-5
 fi
 
-# ── Tier -3: NPU-only torch_npu.profiler trace ──────────────────────
+# ── Tier -3: NPU-only torch_npu.profiler trace (level 0) ─────────────
 if [ "$DEVICE" = "npu" ] && selected -3; then
   echo ""
-  echo "=== Tier -3: NPU profiler trace, batch=1, lr=1e-5, 100 steps ==="
+  echo "=== Tier -3: NPU profiler trace (level 0), batch=1, lr=1e-5, 50 steps ==="
   bash "$TRAIN_SCRIPT" \
     "${COMMON[@]}" \
     --output_dir "$BASE_OUT" \
     --exp_name tier_neg3_npu_profile \
-    --max_steps 100 \
+    --max_steps 50 \
     --warmup_steps 0 \
     --batch_size 1 \
     --learning_rate 1e-5 \
-    --npu_profiling
+    --npu_profiling \
+    --npu_profiler_level 0
   echo "Trace: $BASE_OUT/tier_neg3_npu_profile/npu_profile"
+fi
+
+# ── Tier -4: NPU-only torch_npu.profiler trace (level 1, CPU+NPU) ────
+if [ "$DEVICE" = "npu" ] && selected -4; then
+  echo ""
+  echo "=== Tier -4: NPU profiler trace (level 1, CPU+NPU + record_shapes), batch=1, lr=1e-5, 50 steps ==="
+  bash "$TRAIN_SCRIPT" \
+    "${COMMON[@]}" \
+    --output_dir "$BASE_OUT" \
+    --exp_name tier_neg4_npu_profile_level1 \
+    --max_steps 50 \
+    --warmup_steps 0 \
+    --batch_size 1 \
+    --learning_rate 1e-5 \
+    --npu_profiling \
+    --npu_profiler_level 1
+  echo "Trace: $BASE_OUT/tier_neg4_npu_profile_level1/npu_profile_level1"
 fi
 
 echo ""

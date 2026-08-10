@@ -189,19 +189,42 @@ class NpuProfilerCallback(TrainerCallback):
     Mirrors a manual `with torch_npu.profiler.profile(...) as prof:` +
     `prof.step()` per train_dataloader batch: start on_train_begin, step once
     per micro-batch (on_step_end), stop on_train_end. Schedule is the
-    low-overhead one from the profile request — skip 20 steps, then one
-    wait/warmup/active window → a single fully-warmed NPU trace.
+    low-overhead one — skip N steps, then one wait/warmup/active window →
+    a single fully-warmed trace.
+
+    level 0 (default): NPU activity only, minimal overhead.
+    level 1: CPU+NPU activities, record_shapes=True, profiler_level=Level1 —
+    richer trace (op shapes), higher overhead.
     """
-    def __init__(self, trace_dir: str):
+    def __init__(self, trace_dir: str, level: int = 0):
         self._trace_dir = trace_dir
+        self._level = level
         self._prof = None
 
-    def on_train_begin(self, args, state, control, **kwargs):
-        self._prof = torch_npu.profiler.profile(
+    def _build(self):
+        if self._level == 1:
+            return torch_npu.profiler.profile(
+                activities=[
+                    torch_npu.profiler.ProfilerActivity.CPU,
+                    torch_npu.profiler.ProfilerActivity.NPU,
+                ],
+                with_stack=False,
+                record_shapes=True,
+                profile_memory=False,
+                schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=20),
+                experimental_config=torch_npu.profiler._ExperimentalConfig(
+                    profiler_level=torch_npu.profiler.ProfilerLevel.Level1
+                ),
+                on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(self._trace_dir),
+            )
+        return torch_npu.profiler.profile(
             activities=[torch_npu.profiler.ProfilerActivity.NPU],
-            schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=50),
+            schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=20),
             on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(self._trace_dir),
         )
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        self._prof = self._build()
         self._prof.start()
 
     def on_step_end(self, args, state, control, **kwargs):
@@ -556,6 +579,7 @@ class TrainingArguments(tf.TrainingArguments):
     log_submodule_time: bool = field(default=False)  # log per-submodule forward times for profiling
     log_grad_clip: bool = field(default=False)  # log pre/post gradient-clip norms to verify --max_grad_norm takes effect
     npu_profiling: bool = field(default=False)  # wrap the train loop with torch_npu.profiler (NPU only)
+    npu_profiler_level: int = field(default=0)  # 0=NPU only, 1=CPU+NPU + record_shapes + ProfilerLevel.Level1
 
 def load_model(model_args, model_config, training_args):
     """
@@ -770,9 +794,10 @@ def train():
     # output_dir so a run's traces live with the run.
     if training_args.npu_profiling:
         if _device_type == "npu":
-            trace_dir = osp.join(training_args.output_dir, "npu_profile")
-            trainer.add_callback(NpuProfilerCallback(trace_dir))
-            print(f"[NpuProfiler] torch_npu profiler active — traces → {trace_dir}")
+            lvl = training_args.npu_profiler_level
+            trace_dir = osp.join(training_args.output_dir, "npu_profile" if lvl == 0 else f"npu_profile_level{lvl}")
+            trainer.add_callback(NpuProfilerCallback(trace_dir, lvl))
+            print(f"[NpuProfiler] torch_npu profiler level {lvl} active — traces → {trace_dir}")
         else:
             print(f"[NpuProfiler] --npu_profiling requires NPU (got {_device_type}) — ignored")
 
