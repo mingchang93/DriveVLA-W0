@@ -562,7 +562,7 @@ class TrainingArguments(tf.TrainingArguments):
     report_to: List[str] = field(default_factory=list)
     remove_unused_columns: bool = field(default=False)
     min_learning_rate: Optional[float] = field(default=None)
-    attn_type: Optional[str] = field(default="fa2")
+    attn_type: Optional[str] = field(default=None)  # None → auto: fa2 on CUDA (fallback sdpa), sdpa on NPU/CPU
     image_area: Optional[int] = field(default=None)
     max_position_embeddings: Optional[int] = field(default=None)
     from_scratch: bool = field(default=False)
@@ -585,12 +585,26 @@ def load_model(model_args, model_config, training_args):
     """
     Load model based on whether to train from scratch or fine-tune from a pre-trained model.
     """
-    # FA2 is CUDA-only; fall back to sdpa on NPU / other devices.
-    if training_args.attn_type == "fa2" and _device_type != "cuda":
-        attn_impl = "sdpa"
-        print(f"[Device] FA2 not available on {_device_type}, falling back to sdpa")
-    else:
-        attn_impl = training_args.attn_type
+    # FA2 is CUDA-only and must be explicitly requested. On non-CUDA an explicit
+    # fa2 is an error (no silent fallback); on CUDA we fall back to sdpa if
+    # flash-attn isn't installed.
+    attn_impl = training_args.attn_type
+    if attn_impl == "fa2":
+        if _device_type != "cuda":
+            raise ValueError(
+                f"attn_type='fa2' is CUDA-only (got device={_device_type}); "
+                f"use attn_type='sdpa' (the NPU/CPU default)."
+            )
+        try:
+            import flash_attn  # noqa: F401
+        except ImportError:
+            attn_impl = "sdpa"
+            print("[Device] flash-attn not installed — falling back to sdpa")
+
+    # Map CLI shorthand to the HF/model implementation name — Emu3's attention
+    # classes key on "flash_attention_2", not "fa2".
+    attn_impl = {"fa2": "flash_attention_2"}.get(attn_impl, attn_impl)
+    print(f"[Device] attention implementation: {attn_impl}")
 
     if training_args.from_scratch:
         model_config.torch_dtype = torch.bfloat16 if training_args.bf16 else None
@@ -735,6 +749,14 @@ def train():
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     print(f"[Device] detected: {_device_type}")
+
+    # Auto-resolve attention implementation: FA2 on CUDA (fallback to sdpa in
+    # load_model if flash-attn is missing), SDPA on NPU/CPU. An explicit fa2 on
+    # NPU errors loudly — no silent fallback. "auto" covers DEVICE=auto shells
+    # that defer resolution to the real device.
+    if training_args.attn_type in (None, "auto"):
+        training_args.attn_type = "fa2" if _device_type == "cuda" else "sdpa"
+        print(f"[Device] attn_type auto → {training_args.attn_type}")
 
     # Strict reproducibility for cross-platform (NPU vs GPU) comparison
     if training_args.deterministic:

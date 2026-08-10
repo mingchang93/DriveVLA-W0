@@ -46,7 +46,7 @@ EXP_NAME="train_base_ar"
 INPUT_NUM_FRAME="$DEFAULT_INPUT_NUM_FRAME"
 SKIP_INFERENCE=false
 FP="bf16"
-ATTN_TYPE="sdpa"
+ATTN_TYPE="auto"
 DEVICE="auto"
 MAX_STEPS=4000
 SAVE_STEPS=2000
@@ -123,7 +123,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --exp_name                 <str>   (train_base_ar)"
       echo "  --input_num_frame          <int>   (1)"
       echo "  --fp                       <str>   (bf16) — bf16, fp16, or fp32"
-      echo "  --attn_type                <str>   (sdpa) — sdpa, fa2, or eager"
+      echo "  --attn_type                <str>   (auto) — auto=fa2 on CUDA (fallback sdpa) / sdpa on NPU; or explicit fa2, sdpa, eager"
       echo "  --device                  <str>   (auto) — auto, cuda, or npu"
       echo "  --max_steps                <int>   (4000)"
       echo "  --save_steps               <int>   (2000)"
@@ -170,10 +170,21 @@ export NCCL_DETERMINISTIC=TRUE
 export HCCL_DETERMINISTIC=TRUE
 
 # Resolve device type for NPU vs GPU  ────  sets DEVICE env for Python
-if [ "$DEVICE" = "npu" ]; then
-  # FA2 is CUDA-only; force sdpa on NPU
-  [ "$ATTN_TYPE" = "fa2" ] && ATTN_TYPE="sdpa"
+# FA2 is CUDA-only: auto → fa2 on CUDA, sdpa on NPU. An explicit fa2 on NPU
+# is an error — no silent fallback. (CUDA fa2 falls back to sdpa in Python if
+# flash-attn isn't installed.)
+if [ "$ATTN_TYPE" = "auto" ]; then
+  case "$DEVICE" in
+    npu)  ATTN_TYPE="sdpa" ;;
+    cuda) ATTN_TYPE="fa2" ;;
+    *)    ATTN_TYPE="auto" ;;  # auto device — Python resolves against the real device
+  esac
+elif [ "$DEVICE" = "npu" ] && [ "$ATTN_TYPE" = "fa2" ]; then
+  echo "ERROR: --attn_type fa2 is CUDA-only. On NPU use --attn_type sdpa (default)."
+  exit 1
+fi
 
+if [ "$DEVICE" = "npu" ]; then
   # NPU precision alignment
   export INF_NAN_MODE_ENABLE=1            # IEEE 754 (overflow → Inf/NaN)
   export CLOSE_MATMUL_K_SHIFT=1           # deterministic MatMul
