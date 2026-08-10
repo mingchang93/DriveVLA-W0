@@ -183,6 +183,34 @@ class _RawGradNormCallback(TrainerCallback):
             return float(sum(p.grad.float().norm().item() ** 2 for p in params) ** 0.5)
 
 
+class NpuProfilerCallback(TrainerCallback):
+    """Wrap the HF Trainer loop with torch_npu.profiler (NPU-only, opt-in).
+
+    Mirrors a manual `with torch_npu.profiler.profile(...) as prof:` +
+    `prof.step()` per train_dataloader batch: start on_train_begin, step once
+    per micro-batch (on_step_end), stop on_train_end. Schedule is the
+    low-overhead one from the profile request — skip 20 steps, then one
+    wait/warmup/active window → a single fully-warmed NPU trace.
+    """
+    def __init__(self, trace_dir: str):
+        self._trace_dir = trace_dir
+        self._prof = None
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        self._prof = torch_npu.profiler.profile(
+            activities=[torch_npu.profiler.ProfilerActivity.NPU],
+            schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=50),
+            on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(self._trace_dir),
+        )
+        self._prof.start()
+
+    def on_step_end(self, args, state, control, **kwargs):
+        self._prof.step()
+
+    def on_train_end(self, args, state, control, **kwargs):
+        self._prof.stop()
+
+
 class MemoryEfficientTrainer(tf.Trainer):
     """最简单的显存回收Trainer"""
     def evaluation_loop(self, dataloader, description, prediction_loss_only=None, ignore_keys=None, metric_key_prefix="eval"):
@@ -527,6 +555,7 @@ class TrainingArguments(tf.TrainingArguments):
     log_data_hash: bool = field(default=False)  # log SHA256 hash per batch for cross-platform data verification
     log_submodule_time: bool = field(default=False)  # log per-submodule forward times for profiling
     log_grad_clip: bool = field(default=False)  # log pre/post gradient-clip norms to verify --max_grad_norm takes effect
+    npu_profiling: bool = field(default=False)  # wrap the train loop with torch_npu.profiler (NPU only)
 
 def load_model(model_args, model_config, training_args):
     """
@@ -736,6 +765,16 @@ def train():
             eval_dataset=eval_dataset,  # ✅ 加上这个
             tokenizer=tokenizer,
         )
+
+    # NPU-only profiling (opt-in via --npu_profiling). Trace dir under
+    # output_dir so a run's traces live with the run.
+    if training_args.npu_profiling:
+        if _device_type == "npu":
+            trace_dir = osp.join(training_args.output_dir, "npu_profile")
+            trainer.add_callback(NpuProfilerCallback(trace_dir))
+            print(f"[NpuProfiler] torch_npu profiler active — traces → {trace_dir}")
+        else:
+            print(f"[NpuProfiler] --npu_profiling requires NPU (got {_device_type}) — ignored")
 
 
     # Check if resuming from checkpoint
