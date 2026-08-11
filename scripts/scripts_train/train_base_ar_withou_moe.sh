@@ -345,7 +345,7 @@ torchrun \
     --logging_steps "$LOGGING_STEPS" \
     --gradient_checkpointing True \
     --gradient_accumulation_steps 1 \
-    --save_strategy steps \
+    --save_strategy "$([ "$SKIP_INFERENCE" = true ] && echo "no" || echo "steps")" \
     --save_steps "$SAVE_STEPS" \
     --eval_strategy "$EVAL_STRATEGY" \
     --apply_loss_on_only_vision True \
