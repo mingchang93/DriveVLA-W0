@@ -22,6 +22,7 @@ DATA_ROOT=""
 MODEL_ROOT=""
 TIERS="all"
 FP="fp32"
+ATTN=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device)       DEVICE="$2";       shift 2 ;;
@@ -30,6 +31,7 @@ while [[ $# -gt 0 ]]; do
     --model_root)   MODEL_ROOT="$2";   shift 2 ;;
     --tiers)        TIERS="$2";        shift 2 ;;
     --fp)           FP="$2";           shift 2 ;;
+    --attn)         ATTN="$2";         shift 2 ;;
     *) echo "Unknown: $1"; exit 1 ;;
   esac
 done
@@ -93,6 +95,7 @@ COMMON=(
   --fp "$FP"
   --save_steps 1000
   --skip_inference
+$([ -n "$ATTN" ] && echo "--attn_type $ATTN")
 )
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
