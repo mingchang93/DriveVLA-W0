@@ -272,24 +272,16 @@ fi
 # final checkpoint on termination), then inference on that final checkpoint.
 if selected 10; then
   echo ""
-  echo "=== Tier 10: constant_lr, no warmup, batch=1, lr=1e-5, 300 steps, inference ==="
-
-  # Filter out --skip_inference from COMMON so inference runs on the final weights
-  COMMON_INFER=()
-  for arg in "${COMMON[@]}"; do
-    [ "$arg" != "--skip_inference" ] && COMMON_INFER+=("$arg")
-  done
-
+  echo "=== Tier 10: constant_lr, no warmup, batch=1, lr=1e-5, 300 steps ==="
   bash "$TRAIN_SCRIPT" \
-    "${COMMON_INFER[@]}" \
+    "${COMMON[@]}" \
     --output_dir "$BASE_OUT" \
     --exp_name tier10_constlr_nwarmup_300steps \
     --max_steps 300 \
     --constant_lr \
     --warmup_steps 0 \
     --batch_size 1 \
-    --learning_rate 1e-5 \
-    --save_steps 1000000
+    --learning_rate 1e-5
 fi
 
 # ── Tier -1: quick profiling run with msprobe ────────────
