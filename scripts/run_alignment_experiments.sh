@@ -41,8 +41,8 @@ if [ "$DEVICE" != "cuda" ] && [ "$DEVICE" != "npu" ]; then
   exit 1
 fi
 
-if [ "$FP" != "fp32" ] && [ "$FP" != "bf16" ]; then
-  echo "Invalid --fp value: $FP (must be fp32 or bf16)"
+if [ "$FP" != "fp32" ] && [ "$FP" != "bf16" ] && [ "$FP" != "fp16" ]; then
+  echo "Invalid --fp value: $FP (must be fp32, bf16, or fp16)"
   exit 1
 fi
 

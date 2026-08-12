@@ -589,10 +589,10 @@ def load_model(model_args, model_config, training_args):
     # fa2 is an error (no silent fallback); on CUDA we fall back to sdpa if
     # flash-attn isn't installed.
     attn_impl = training_args.attn_type
-    if attn_impl == "fa2":
+    if attn_impl in ("fa2", "flash_attention_2"):
         if _device_type != "cuda":
             raise ValueError(
-                f"attn_type='fa2' is CUDA-only (got device={_device_type}); "
+                f"attn_type='{attn_impl}' is CUDA-only (got device={_device_type}); "
                 f"use attn_type='sdpa' (the NPU/CPU default)."
             )
         try:
