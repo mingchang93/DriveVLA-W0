@@ -95,7 +95,7 @@ COMMON=(
   --fp "$FP"
   --save_steps 1000
   --skip_inference
-$([ -n "$ATTN" ] && echo "--attn_type $ATTN")
+$([ -n "$ATTN" ] && echo "--attn_type $ATTN" || true)
 )
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
