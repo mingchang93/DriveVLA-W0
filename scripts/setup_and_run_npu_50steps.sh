@@ -96,6 +96,7 @@ bash "$TRAIN_SCRIPT" \
     --max_steps 50 \
     --save_steps 200 \
     --skip_inference \
+    --no_save_weights \
     --exp_name bf16_50steps
 
 echo ""

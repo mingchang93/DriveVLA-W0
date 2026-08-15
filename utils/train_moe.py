@@ -580,6 +580,7 @@ class TrainingArguments(tf.TrainingArguments):
     log_grad_clip: bool = field(default=False)  # log pre/post gradient-clip norms to verify --max_grad_norm takes effect
     npu_profiling: bool = field(default=False)  # wrap the train loop with torch_npu.profiler (NPU only)
     npu_profiler_level: int = field(default=0)  # 0=NPU only, 1=CPU+NPU + record_shapes + ProfilerLevel.Level1
+    no_save_weights: bool = field(default=False)  # skip final save_state/save_model (smoke runs) — save_strategy=no must also be set
 
 def load_model(model_args, model_config, training_args):
     """
@@ -830,10 +831,11 @@ def train():
     else:
         trainer.train()
 
-    # Save model and training state
-    trainer.save_state()
-    device_synchronize()
-    trainer.save_model(training_args.output_dir)
+    # Save model and training state (skipped for smoke runs)
+    if not training_args.no_save_weights:
+        trainer.save_state()
+        device_synchronize()
+        trainer.save_model(training_args.output_dir)
 
 if __name__ == "__main__":
     gc.disable()  # kill GC-pause jitter in step timings; refcounting still frees memory

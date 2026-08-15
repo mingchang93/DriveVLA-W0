@@ -60,6 +60,7 @@ DET_FLAG=""
 HASH_FLAG=""
 LOG_SUBMODULE_TIME=false
 SUBMODULE_FLAG=""
+NO_SAVE_FLAG=""
 LOGGING_STEPS=10
 WARMUP_STEPS=50
 ZERO_STAGE=3
@@ -68,6 +69,7 @@ MAX_GRAD_NORM=5.0
 ADAM_EPSILON=1e-6
 CONSTANT_LR=false
 NPU_PROFILING=false
+NO_SAVE_WEIGHTS=false
 NPU_PROFILER_LEVEL=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -105,6 +107,7 @@ while [[ $# -gt 0 ]]; do
     --learning_rate)          LEARNING_RATE="$2";             shift 2 ;;
     --max_grad_norm)          MAX_GRAD_NORM="$2";             shift 2 ;;
     --adam_epsilon)           ADAM_EPSILON="$2";              shift 2 ;;
+    --no_save_weights)        NO_SAVE_WEIGHTS=true;           shift ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
       echo ""
@@ -143,6 +146,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --learning_rate            <float> (2e-5)"
       echo "  --max_grad_norm            <float> (5.0)"
       echo "  --adam_epsilon             <float> (1e-6)"
+      echo "  --no_save_weights                  Skip final save_state/save_model (smoke runs; pair with --skip_inference)"
       exit 0
       ;;
     *)
@@ -158,6 +162,7 @@ done
 [ "$LOG_DATA_HASH" = true ] && HASH_FLAG="--log_data_hash"
 [ "$LOG_SUBMODULE_TIME" = true ] && SUBMODULE_FLAG="--log_submodule_time"
 [ "$NPU_PROFILING" = true ] && NPU_PROFILING_FLAG="--npu_profiling --npu_profiler_level $NPU_PROFILER_LEVEL"
+[ "$NO_SAVE_WEIGHTS" = true ] && NO_SAVE_FLAG="--no_save_weights"
 # Data shuffling: true → shuffle (default), false → deterministic order (NPU/GPU alignment)
 SHUFFLE_FLAG="--dataloader_shuffle $SHUFFLE_TRAIN_DATA"
 
@@ -341,6 +346,7 @@ torchrun \
     $HASH_FLAG \
     $SUBMODULE_FLAG \
     $NPU_PROFILING_FLAG \
+    $NO_SAVE_FLAG \
     --attn_type "$ATTN_TYPE" \
     --logging_steps "$LOGGING_STEPS" \
     --gradient_checkpointing True \
