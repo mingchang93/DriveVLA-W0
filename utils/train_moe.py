@@ -831,10 +831,10 @@ def train():
     else:
         trainer.train()
 
-    # Save model and training state (skipped for smoke runs)
+    # Save training state (always) and model weights (skipped for smoke runs)
+    trainer.save_state()
+    device_synchronize()
     if not training_args.no_save_weights:
-        trainer.save_state()
-        device_synchronize()
         trainer.save_model(training_args.output_dir)
 
 if __name__ == "__main__":
