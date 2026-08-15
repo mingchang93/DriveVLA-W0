@@ -17,16 +17,16 @@ set -e
 PROJECT_ROOT=""
 DATA_ROOT=""
 MODEL_ROOT=""
-BATCH_SIZE="1"
+BATCH_SIZES="1"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project_root) PROJECT_ROOT="$2"; shift 2 ;;
     --data_root)    DATA_ROOT="$2";    shift 2 ;;
     --model_root)   MODEL_ROOT="$2";   shift 2 ;;
-    --batch_size)   BATCH_SIZE="$2";   shift 2 ;;
+    --batch_sizes)  BATCH_SIZES="$2";  shift 2 ;;
     --help|-h)
-      echo "Usage: $0 --project_root <path> --data_root <path> --model_root <path> [--batch_size <int>]"
+      echo "Usage: $0 --project_root <path> --data_root <path> --model_root <path> [--batch_sizes <int,int,...>]"
       echo ""
       echo "Required:"
       echo "  --project_root   Path to the DriveVLA-W0 repo"
@@ -34,9 +34,9 @@ while [[ $# -gt 0 ]]; do
       echo "  --model_root     Path to pretrained models (Emu3-Stage1, etc.)"
       echo ""
       echo "Optional:"
-      echo "  --batch_size     Per-GPU train batch size (default 1)"
+      echo "  --batch_sizes    Comma-separated list of per-GPU batch sizes (default 1)"
       echo ""
-      echo "Note: runs 50 steps only; no data prep, no inference."
+      echo "Note: runs 50 steps per batch size; no data prep, no inference."
       exit 0
       ;;
     *)
@@ -55,6 +55,9 @@ fi
 
 cd "$PROJECT_ROOT"
 
+# NPU memory allocator: avoid pre-caching large blocks
+export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+
 # ============================================================
 # Derived paths
 # ============================================================
@@ -70,36 +73,40 @@ echo "============================================"
 echo "  PROJECT_ROOT: $PROJECT_ROOT"
 echo "  DATA_ROOT:    $DATA_ROOT"
 echo "  MODEL_ROOT:   $MODEL_ROOT"
+echo "  batch_sizes:  $BATCH_SIZES"
 echo "  output:       $OUTPUT_DIR"
 echo ""
 
 # ============================================================
-# Train (50 steps only)
+# Train (50 steps per batch size)
 # ============================================================
-echo "=== Training (50 steps) ==="
+IFS=',' read -ra BS_ARRAY <<< "$BATCH_SIZES"
+for bs in "${BS_ARRAY[@]}"; do
+  echo "=== Training (batch_size=$bs) ==="
 
-bash "$TRAIN_SCRIPT" \
-    --model_name_or_path "$MODEL_PATH" \
-    --data_path "$TRAIN_PKL" \
-    --output_dir "$OUTPUT_DIR" \
-    --ngpus 8 \
-    --batch_size "$BATCH_SIZE" \
-    --warmup_steps 100 \
-    --logging_steps 1 \
-    --device npu \
-    --log_data_hash \
-    --deterministic \
-    --shuffle_train_data false \
-    --eval_strategy no \
-    --eval_steps 10000 \
-    --fp bf16 \
-    --max_steps 50 \
-    --save_steps 200 \
-    --skip_inference \
-    --no_save_weights \
-    --exp_name bf16_50steps
+  bash "$TRAIN_SCRIPT" \
+      --model_name_or_path "$MODEL_PATH" \
+      --data_path "$TRAIN_PKL" \
+      --output_dir "$OUTPUT_DIR" \
+      --ngpus 8 \
+      --batch_size "$bs" \
+      --warmup_steps 100 \
+      --logging_steps 1 \
+      --device npu \
+      --log_data_hash \
+      --deterministic \
+      --shuffle_train_data false \
+      --eval_strategy no \
+      --eval_steps 10000 \
+      --fp bf16 \
+      --max_steps 50 \
+      --save_steps 200 \
+      --skip_inference \
+      --no_save_weights \
+      --exp_name "bf16_50steps_bs${bs}"
 
-echo ""
+  echo ""
+done
 echo "============================================"
 echo "NPU quick train complete."
 echo "  Output: $OUTPUT_DIR"
