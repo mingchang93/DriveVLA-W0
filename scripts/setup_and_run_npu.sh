@@ -112,7 +112,7 @@ bash "$TRAIN_SCRIPT" \
     --output_dir "$OUTPUT_DIR" \
     --ngpus 8 \
     --batch_size 1 \
-    --warmup_steps 0 \
+    --warmup_steps 100 \
     --logging_steps 1 \
     --device npu \
     --log_data_hash \
@@ -120,11 +120,10 @@ bash "$TRAIN_SCRIPT" \
     --shuffle_train_data false \
     --eval_strategy no \
     --eval_steps 10000 \
-    --constant_lr \
-    --fp fp32 \
+    --fp bf16 \
     --max_steps 600 \
     --save_steps 200 \
-    --exp_name fp32_600steps
+    --exp_name bf16_600steps
 
 echo ""
 
@@ -134,7 +133,7 @@ echo ""
 echo "=== [3/3] Inference ==="
 
 # Resolve last checkpoint
-CKPT_BASE="$OUTPUT_DIR/fp32_600steps"
+CKPT_BASE="$OUTPUT_DIR/bf16_600steps"
 LAST_CKPT=$(ls -d "$CKPT_BASE"/checkpoint-* 2>/dev/null | sort -t- -k2 -n | tail -1)
 EMU_HUB="${LAST_CKPT:-$CKPT_BASE}"
 
