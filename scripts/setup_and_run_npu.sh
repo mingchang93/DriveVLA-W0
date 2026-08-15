@@ -18,19 +18,24 @@ set -e
 PROJECT_ROOT=""
 DATA_ROOT=""
 MODEL_ROOT=""
+BATCH_SIZE="1"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project_root) PROJECT_ROOT="$2"; shift 2 ;;
     --data_root)    DATA_ROOT="$2";    shift 2 ;;
     --model_root)   MODEL_ROOT="$2";   shift 2 ;;
+    --batch_size)   BATCH_SIZE="$2";   shift 2 ;;
     --help|-h)
-      echo "Usage: $0 --project_root <path> --data_root <path> --model_root <path>"
+      echo "Usage: $0 --project_root <path> --data_root <path> --model_root <path> [--batch_size <int>]"
       echo ""
       echo "Required:"
       echo "  --project_root   Path to the DriveVLA-W0 repo"
       echo "  --data_root      Path to datasets (pickles + VQ code zips)"
       echo "  --model_root     Path to pretrained models (Emu3-Stage1, etc.)"
+      echo ""
+      echo "Optional:"
+      echo "  --batch_size     Per-GPU train batch size (default 1)"
       exit 0
       ;;
     *)
@@ -111,7 +116,7 @@ bash "$TRAIN_SCRIPT" \
     --test_data_path "$TEST_PKL" \
     --output_dir "$OUTPUT_DIR" \
     --ngpus 8 \
-    --batch_size 1 \
+    --batch_size "$BATCH_SIZE" \
     --warmup_steps 100 \
     --logging_steps 1 \
     --device npu \
