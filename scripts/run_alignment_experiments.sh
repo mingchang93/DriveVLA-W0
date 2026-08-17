@@ -55,6 +55,15 @@ else
   SELECTED_TIERS=$(echo "$TIERS" | tr ',' ' ')
 fi
 
+# One rank per visible NPU when --ascend_devices restricts the device set
+# (ASCEND_RT_VISIBLE_DEVICES remaps physical ids to logical 0..N-1, so a
+# 8-rank launch on fewer visible devices dies with "Invalid device ID").
+if [ -n "$ASCEND_DEVICES" ]; then
+  NGPUS=$(($(echo "$ASCEND_DEVICES" | tr -cd ',' | wc -c) + 1))
+else
+  NGPUS=8
+fi
+
 # ── Paths: use CLI args if given, otherwise defaults ───────────────
 PROJECT_ROOT="${PROJECT_ROOT:-/data/models/DriveVLA-W0}"
 DATA_ROOT="${DATA_ROOT:-/data/models/DriveVLA-W0}"
@@ -86,7 +95,7 @@ COMMON=(
   --model_name_or_path "$MODEL_PATH"
   --data_path "$TRAIN_PKL"
   --test_data_path "$TEST_PKL"
-  --ngpus 8
+  --ngpus "$NGPUS"
   --logging_steps 1
   --device "$DEVICE"
   --log_data_hash
