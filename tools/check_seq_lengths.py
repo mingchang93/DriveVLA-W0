@@ -68,6 +68,8 @@ def main():
         if i >= args.max_samples:
             break
         prompt = scene.get("text", "")
+        if isinstance(prompt, list):
+            prompt = " ".join(str(p) for p in prompt)
         bos = tokenizer.bos_token
         if isinstance(bos, list):
             bos = bos[0] if bos else ""
