@@ -18,23 +18,26 @@ PROJECT_ROOT=""
 DATA_ROOT=""
 MODEL_ROOT=""
 BATCH_SIZES="1"
+ASCEND_DEVICES=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --project_root) PROJECT_ROOT="$2"; shift 2 ;;
-    --data_root)    DATA_ROOT="$2";    shift 2 ;;
-    --model_root)   MODEL_ROOT="$2";   shift 2 ;;
-    --batch_sizes)  BATCH_SIZES="$2";  shift 2 ;;
+    --project_root)    PROJECT_ROOT="$2";    shift 2 ;;
+    --data_root)       DATA_ROOT="$2";       shift 2 ;;
+    --model_root)      MODEL_ROOT="$2";      shift 2 ;;
+    --batch_sizes)     BATCH_SIZES="$2";     shift 2 ;;
+    --ascend_devices)  ASCEND_DEVICES="$2";  shift 2 ;;
     --help|-h)
-      echo "Usage: $0 --project_root <path> --data_root <path> --model_root <path> [--batch_sizes <int,int,...>]"
+      echo "Usage: $0 --project_root <path> --data_root <path> --model_root <path> [--batch_sizes <int,int,...>] [--ascend_devices <dev_list>]"
       echo ""
       echo "Required:"
-      echo "  --project_root   Path to the DriveVLA-W0 repo"
-      echo "  --data_root      Path to datasets (pickles + VQ code zips)"
-      echo "  --model_root     Path to pretrained models (Emu3-Stage1, etc.)"
+      echo "  --project_root    Path to the DriveVLA-W0 repo"
+      echo "  --data_root       Path to datasets (pickles + VQ code zips)"
+      echo "  --model_root      Path to pretrained models (Emu3-Stage1, etc.)"
       echo ""
       echo "Optional:"
-      echo "  --batch_sizes    Comma-separated list of per-GPU batch sizes (default 1)"
+      echo "  --batch_sizes     Comma-separated list of per-GPU batch sizes (default 1)"
+      echo "  --ascend_devices  Comma-separated NPU device list, e.g. 0,1,2,3 (default: all 8)"
       echo ""
       echo "Note: runs 50 steps per batch size; no data prep, no inference."
       exit 0
@@ -55,6 +58,16 @@ fi
 
 cd "$PROJECT_ROOT"
 
+# One rank per visible NPU when --ascend_devices restricts the device set
+# (ASCEND_RT_VISIBLE_DEVICES remaps physical ids to logical 0..N-1, so a
+# 8-rank launch on fewer visible devices dies with "Invalid device ID").
+if [ -n "$ASCEND_DEVICES" ]; then
+  NGPUS=$(($(echo "$ASCEND_DEVICES" | tr -cd ',' | wc -c) + 1))
+  export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_DEVICES"
+else
+  NGPUS=8
+fi
+
 # NPU memory allocator: avoid pre-caching large blocks
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 
@@ -70,11 +83,13 @@ OUTPUT_DIR="$PROJECT_ROOT/logs/npu_50steps_${TIMESTAMP}"
 echo "============================================"
 echo "DriveVLA-W0 — NPU Quick Train (50 steps)"
 echo "============================================"
-echo "  PROJECT_ROOT: $PROJECT_ROOT"
-echo "  DATA_ROOT:    $DATA_ROOT"
-echo "  MODEL_ROOT:   $MODEL_ROOT"
-echo "  batch_sizes:  $BATCH_SIZES"
-echo "  output:       $OUTPUT_DIR"
+echo "  PROJECT_ROOT:   $PROJECT_ROOT"
+echo "  DATA_ROOT:      $DATA_ROOT"
+echo "  MODEL_ROOT:     $MODEL_ROOT"
+echo "  batch_sizes:    $BATCH_SIZES"
+echo "  ascend_devices: ${ASCEND_DEVICES:-all 8}"
+echo "  ngpus:          $NGPUS"
+echo "  output:         $OUTPUT_DIR"
 echo ""
 
 # ============================================================
@@ -88,7 +103,7 @@ for bs in "${BS_ARRAY[@]}"; do
       --model_name_or_path "$MODEL_PATH" \
       --data_path "$TRAIN_PKL" \
       --output_dir "$OUTPUT_DIR" \
-      --ngpus 8 \
+      --ngpus "$NGPUS" \
       --batch_size "$bs" \
       --warmup_steps 100 \
       --logging_steps 1 \
