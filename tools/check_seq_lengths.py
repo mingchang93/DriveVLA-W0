@@ -68,7 +68,10 @@ def main():
         if i >= args.max_samples:
             break
         prompt = scene.get("text", "")
-        text_input = tokenizer.bos_token + prompt
+        bos = tokenizer.bos_token
+        if isinstance(bos, list):
+            bos = bos[0] if bos else ""
+        text_input = bos + prompt
         ids = tokenizer(text_input, padding=False, return_tensors="pt")["input_ids"][0]
         text_lengths.append(len(ids))
 
