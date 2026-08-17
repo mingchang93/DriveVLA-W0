@@ -339,7 +339,7 @@ torchrun \
     --per_device_train_batch_size ${BATCH_SIZE} \
     --frames 1 \
     --action_frames 8 \
-    --max_position_embeddings 640 \
+    --max_position_embeddings 1280 \
     --seed "$SEED" \
     $SHUFFLE_FLAG \
     $DET_FLAG \
