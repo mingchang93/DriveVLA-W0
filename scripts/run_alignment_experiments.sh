@@ -329,8 +329,7 @@ fi
 if [ "$DEVICE" = "npu" ] && selected -3; then
   echo ""
   echo "=== Tier -3: NPU profiler trace (level 0), batch=1, lr=1e-5, 50 steps ==="
-  [ -n "$ASCEND_DEVICES" ] && export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_DEVICES"
-  echo "  ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
+  export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_DEVICES"
   bash "$TRAIN_SCRIPT" \
     "${COMMON[@]}" \
     --output_dir "$BASE_OUT" \
@@ -348,8 +347,7 @@ fi
 if [ "$DEVICE" = "npu" ] && selected -4; then
   echo ""
   echo "=== Tier -4: NPU profiler trace (level 1, CPU+NPU + record_shapes), batch=1, lr=1e-5, 50 steps ==="
-  [ -n "$ASCEND_DEVICES" ] && export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_DEVICES"
-  echo "  ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
+  export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_DEVICES"
   bash "$TRAIN_SCRIPT" \
     "${COMMON[@]}" \
     --output_dir "$BASE_OUT" \
