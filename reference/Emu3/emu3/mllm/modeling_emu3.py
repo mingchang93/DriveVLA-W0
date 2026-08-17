@@ -90,7 +90,7 @@ def chunked_lm_head_cross_entropy(
     hidden_states: torch.Tensor,
     lm_head_weight: torch.Tensor,
     labels: torch.Tensor,
-    chunk_size: int = 16384,
+    chunk_size: int = 8192,
     ignore_index: int = -100,
     weight: torch.Tensor = None,
 ) -> torch.Tensor:
@@ -101,20 +101,34 @@ def chunked_lm_head_cross_entropy(
     on-the-fly for each chunk.  Peak intermediate is [N, chunk_size]
     instead of [N, V] (~335 MiB vs ~3.8 GiB for a 5120-long sequence).
 
+    Accepts both 2-D [N, H] and 3-D [B, S, H] hidden_states.  For 3-D
+    input, F.linear handles non-contiguous strides natively, and we flatten
+    its contiguous output instead of the input — avoiding the redundant
+    copy that .reshape(-1, H) would force on a non-contiguous slice.
+
     A two-pass strategy avoids numerical-precision pitfalls:
       1. Find the global maximum over every vocab entry.
       2. Compute logsumexp (using the stable max from pass 1) and
          gather the logit at each label's position.
 
     Args:
-        hidden_states: [N, H] input to the lm_head (already shifted).
+        hidden_states: [N, H] or [B, S, H] input to the lm_head (already shifted).
         lm_head_weight: [V, H] weight matrix of the output projection.
         labels: [N] target indices or ignore_index.
         chunk_size: vocab-dimension chunk size.
         ignore_index: index to mask out.
         weight: optional [V] class-weight vector.
     """
-    N, H = hidden_states.shape
+    # Accept 3-D input (e.g. hidden_states[:, :-1, :]) without forcing a
+    # contiguous copy.  F.linear handles non-contiguous strides; we flatten
+    # its contiguous output instead.
+    if hidden_states.ndim == 3:
+        B, S, H = hidden_states.shape
+        # Leave hidden_states as-is (non-contiguous view is fine for F.linear).
+        # We'll flatten the F.linear output below.
+        N = B * S
+    else:
+        N, H = hidden_states.shape
     V = lm_head_weight.shape[0]
     device = hidden_states.device
 
@@ -125,7 +139,9 @@ def chunked_lm_head_cross_entropy(
     running_max = torch.full((N,), -float("inf"), device=device, dtype=comp_dtype)
     for i in range(0, V, chunk_size):
         chunk_w = lm_head_weight[i : i + chunk_size]
-        chunk_l = F.linear(hidden_states, chunk_w)  # [N, chunk] — already in comp_dtype
+        chunk_l = F.linear(hidden_states, chunk_w)  # [B, S, chunk] or [N, chunk]
+        if hidden_states.ndim == 3:
+            chunk_l = chunk_l.reshape(-1, chunk_l.size(-1))  # view, not copy (F.linear output is contiguous)
         running_max = torch.maximum(running_max, chunk_l.max(dim=-1, keepdim=False)[0])
 
     lse = torch.zeros(N, device=device, dtype=comp_dtype)
@@ -133,7 +149,9 @@ def chunked_lm_head_cross_entropy(
 
     for i in range(0, V, chunk_size):
         chunk_w = lm_head_weight[i : i + chunk_size]
-        chunk_l = F.linear(hidden_states, chunk_w)  # [N, chunk]
+        chunk_l = F.linear(hidden_states, chunk_w)  # [B, S, chunk] or [N, chunk]
+        if hidden_states.ndim == 3:
+            chunk_l = chunk_l.reshape(-1, chunk_l.size(-1))  # view, not copy
         lse += (chunk_l - running_max.unsqueeze(-1)).exp().sum(dim=-1)
 
         in_chunk = (labels >= i) & (labels < i + chunk_size)
@@ -1722,8 +1740,12 @@ class Emu3MoE(Emu3PreTrainedModel):
             # Chunked lm-head + loss — never materialises [N, V] logits.
             # The full logits tensor for vocab_size=184k is ~3.8 GiB per
             # copy; this replaces both that and the log-softmax with a
-            # chunked scan over the vocab dimension (peak ~335 MiB).
-            hidden_shifted = hidden_states[:, :-1, :].reshape(-1, hidden_states.size(-1))
+            # chunked scan over the vocab dimension (peak ~170 MiB with
+            # chunk_size=8192).
+            # Pass 3-D [B, S-1, H] directly — the non-contiguous slice
+            # is free (no copy), and chunked_lm_head_cross_entropy
+            # flattens F.linear's contiguous output instead.
+            hidden_shifted = hidden_states[:, :-1, :]
 
             weight = None
             if self.use_weight:
