@@ -23,6 +23,7 @@ MODEL_ROOT=""
 TIERS="all"
 FP="fp32"
 ATTN=""
+ASCEND_DEVICES=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device)       DEVICE="$2";       shift 2 ;;
@@ -32,12 +33,13 @@ while [[ $# -gt 0 ]]; do
     --tiers)        TIERS="$2";        shift 2 ;;
     --fp)           FP="$2";           shift 2 ;;
     --attn)         ATTN="$2";         shift 2 ;;
+    --ascend_devices) ASCEND_DEVICES="$2"; shift 2 ;;
     *) echo "Unknown: $1"; exit 1 ;;
   esac
 done
 
 if [ "$DEVICE" != "cuda" ] && [ "$DEVICE" != "npu" ]; then
-  echo "Usage: $0 --device cuda|npu [--tiers 0,1,2,3,4|all] [--fp fp32|bf16] [--project_root <path>] [--data_root <path>] [--model_root <path>]"
+  echo "Usage: $0 --device cuda|npu [--tiers 0,1,2,3,4|all] [--fp fp32|bf16] [--ascend_devices <dev_list>] [--project_root <path>] [--data_root <path>] [--model_root <path>]"
   exit 1
 fi
 
@@ -327,6 +329,8 @@ fi
 if [ "$DEVICE" = "npu" ] && selected -3; then
   echo ""
   echo "=== Tier -3: NPU profiler trace (level 0), batch=1, lr=1e-5, 50 steps ==="
+  [ -n "$ASCEND_DEVICES" ] && export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_DEVICES"
+  echo "  ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
   bash "$TRAIN_SCRIPT" \
     "${COMMON[@]}" \
     --output_dir "$BASE_OUT" \
@@ -344,6 +348,8 @@ fi
 if [ "$DEVICE" = "npu" ] && selected -4; then
   echo ""
   echo "=== Tier -4: NPU profiler trace (level 1, CPU+NPU + record_shapes), batch=1, lr=1e-5, 50 steps ==="
+  [ -n "$ASCEND_DEVICES" ] && export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_DEVICES"
+  echo "  ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
   bash "$TRAIN_SCRIPT" \
     "${COMMON[@]}" \
     --output_dir "$BASE_OUT" \
