@@ -309,6 +309,12 @@ class LoggingTrainer(tf.Trainer):
         now = time.time()
         if self._last_log_time is not None:
             logs["time_elapsed"] = round(now - self._last_log_time, 3)
+            # tokens/sec = (per_device_bs × num_gpus × seq_len) / time_elapsed
+            bs = getattr(self.args, "per_device_train_batch_size", None)
+            ws = getattr(self.args, "world_size", 1)
+            sl = getattr(self.args, "max_position_embeddings", None)
+            if bs and sl and logs["time_elapsed"] > 0:
+                logs["tokens_per_sec"] = round(bs * ws * sl / logs["time_elapsed"], 1)
         self._last_log_time = now
         # Older installed transformers: Trainer.log(logs) only; 4.56+ also accepts start_time
         if start_time is not None and "start_time" in inspect.signature(Trainer.log).parameters:
