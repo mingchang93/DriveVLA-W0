@@ -24,7 +24,7 @@ TIERS="all"
 FP="fp32"
 ATTN=""
 ASCEND_DEVICES=""
-PROFILE_BATCH_SIZE="1"  # tier -4 batch size, tunable for large-batch profiling
+BATCH_SIZE="1"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device)       DEVICE="$2";       shift 2 ;;
@@ -35,7 +35,7 @@ while [[ $# -gt 0 ]]; do
     --fp)           FP="$2";           shift 2 ;;
     --attn)         ATTN="$2";         shift 2 ;;
     --ascend_devices) ASCEND_DEVICES="$2"; shift 2 ;;
-    --profile_batch_size) PROFILE_BATCH_SIZE="$2"; shift 2 ;;
+    --batch_size)   BATCH_SIZE="$2";    shift 2 ;;  # only used by tier -4 profiling
     *) echo "Unknown: $1"; exit 1 ;;
   esac
 done
@@ -357,9 +357,9 @@ fi
 # ── Tier -4: NPU-only torch_npu.profiler trace (level 1, CPU+NPU) ────
 if [ "$DEVICE" = "npu" ] && selected -4; then
   echo ""
-  echo "=== Tier -4: NPU profiler trace (level 1, CPU+NPU + record_shapes), batches=${PROFILE_BATCH_SIZE}, lr=1e-5, 50 steps ==="
+  echo "=== Tier -4: NPU profiler trace (level 1, CPU+NPU + record_shapes), batches=${BATCH_SIZE}, lr=1e-5, 50 steps ==="
   export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_DEVICES"
-  IFS=',' read -ra BS_ARRAY <<< "$PROFILE_BATCH_SIZE"
+  IFS=',' read -ra BS_ARRAY <<< "$BATCH_SIZE"
   for bs in "${BS_ARRAY[@]}"; do
     echo "--- Tier -4 batch_size=$bs ---"
     bash "$TRAIN_SCRIPT" \
