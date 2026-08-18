@@ -112,7 +112,6 @@ for bs in "${BS_ARRAY[@]}"; do
       --deterministic \
       --shuffle_train_data false \
       --eval_strategy no \
-      --save_strategy no \
       --eval_steps 10000 \
       --fp bf16 \
       --max_steps 50 \
