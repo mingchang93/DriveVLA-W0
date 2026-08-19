@@ -367,7 +367,7 @@ if [ "$DEVICE" = "npu" ] && selected -4; then
       "${COMMON[@]}" \
       --output_dir "$BASE_OUT" \
       --exp_name "tier_neg4_npu_profile_level1_bs${bs}" \
-      --max_steps 50 \
+      --max_steps 30 \
       --warmup_steps 0 \
       --batch_size "$bs" \
       --learning_rate 1e-5 \
