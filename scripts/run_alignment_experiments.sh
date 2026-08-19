@@ -35,7 +35,8 @@ while [[ $# -gt 0 ]]; do
     --fp)           FP="$2";           shift 2 ;;
     --attn)         ATTN="$2";         shift 2 ;;
     --ascend_devices) ASCEND_DEVICES="$2"; shift 2 ;;
-    --batch_size)   BATCH_SIZE="$2";    shift 2 ;;  # only used by tier -4 profiling
+    --batch_size|--batch_sizes)
+                           BATCH_SIZE="$2";    shift 2 ;;  # tier -4 profiling; comma-separated
     *) echo "Unknown: $1"; exit 1 ;;
   esac
 done
