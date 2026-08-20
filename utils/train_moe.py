@@ -211,7 +211,7 @@ class NpuProfilerCallback(TrainerCallback):
                 with_stack=False,
                 record_shapes=True,
                 profile_memory=False,
-                schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=20),
+                schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=26),
                 experimental_config=torch_npu.profiler._ExperimentalConfig(
                     profiler_level=torch_npu.profiler.ProfilerLevel.Level1
                 ),
@@ -219,7 +219,7 @@ class NpuProfilerCallback(TrainerCallback):
             )
         return torch_npu.profiler.profile(
             activities=[torch_npu.profiler.ProfilerActivity.NPU],
-            schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=20),
+            schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=26),
             on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(self._trace_dir),
         )
 
