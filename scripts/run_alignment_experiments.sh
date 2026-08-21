@@ -360,6 +360,7 @@ if [ "$DEVICE" = "npu" ] && selected -4; then
   echo ""
   echo "=== Tier -4: NPU profiler trace (level 1, CPU+NPU + record_shapes), batches=${BATCH_SIZE}, lr=1e-5, 50 steps ==="
   export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_DEVICES"
+  export ASCEND_LAUNCH_BLOCKING=0
   IFS=',' read -ra BS_ARRAY <<< "$BATCH_SIZE"
   for bs in "${BS_ARRAY[@]}"; do
     echo "--- Tier -4 batch_size=$bs ---"
