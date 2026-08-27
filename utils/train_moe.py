@@ -443,10 +443,12 @@ class LoggingTrainer(tf.Trainer):
         self._strip_non_model_keys(inputs)
 
         # Count non-padding tokens in this batch for TPS logging.
-        # attention_mask is 1 for real tokens, 0 for padding.
-        mask = inputs.get("attention_mask")
-        if mask is not None:
-            self._tokens_since_last_log += int(mask.sum().item())
+        # Use input_ids.numel() rather than attention_mask.sum() because TPS
+        # is a compute-cost metric: padding tokens still consume FLOPs and
+        # memory even though they're masked from the loss.
+        ids = inputs.get("input_ids")
+        if ids is not None:
+            self._tokens_since_last_log += int(ids.numel())
 
         loss = super().training_step(model, inputs)
 
