@@ -312,6 +312,7 @@ class LoggingTrainer(tf.Trainer):
         now = time.time()
         if self._last_log_time is not None:
             logs["time_elapsed"] = round(now - self._last_log_time, 3)
+            logs["tokens_per_step"] = self._tokens_since_last_log
             # tokens/sec = actual non-padding tokens (from attention_mask) / time_elapsed
             # Multiply by world_size for global throughput, consistent with the
             # old bs × ws × sl formula.
