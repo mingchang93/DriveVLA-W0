@@ -313,8 +313,11 @@ class LoggingTrainer(tf.Trainer):
         if self._last_log_time is not None:
             logs["time_elapsed"] = round(now - self._last_log_time, 3)
             # tokens/sec = actual non-padding tokens (from attention_mask) / time_elapsed
+            # Multiply by world_size for global throughput, consistent with the
+            # old bs × ws × sl formula.
             if self._tokens_since_last_log > 0 and logs["time_elapsed"] > 0:
-                logs["tokens_per_sec"] = round(self._tokens_since_last_log / logs["time_elapsed"], 1)
+                ws = getattr(self.args, "world_size", 1)
+                logs["tokens_per_sec"] = round(self._tokens_since_last_log * ws / logs["time_elapsed"], 1)
         self._last_log_time = now
         self._tokens_since_last_log = 0
         # Older installed transformers: Trainer.log(logs) only; 4.56+ also accepts start_time
