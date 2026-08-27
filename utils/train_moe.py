@@ -256,6 +256,9 @@ class LoggingTrainer(tf.Trainer):
 
         # Wall-clock timestamp of the last log() call, for per-step time tracking
         self._last_log_time = None
+        # Accumulated token count (non-padding) since last log() call — populated
+        # by training_step() from attention_mask.sum() and consumed by log().
+        self._tokens_since_last_log = 0
 
         # Data hash logging for cross-platform (NPU vs GPU) data-order verification
         self._hash_logfile = None
@@ -309,13 +312,11 @@ class LoggingTrainer(tf.Trainer):
         now = time.time()
         if self._last_log_time is not None:
             logs["time_elapsed"] = round(now - self._last_log_time, 3)
-            # tokens/sec = (per_device_bs × num_gpus × seq_len) / time_elapsed
-            bs = getattr(self.args, "per_device_train_batch_size", None)
-            ws = getattr(self.args, "world_size", 1)
-            sl = getattr(self.args, "max_position_embeddings", None)
-            if bs and sl and logs["time_elapsed"] > 0:
-                logs["tokens_per_sec"] = round(bs * ws * sl / logs["time_elapsed"], 1)
+            # tokens/sec = actual non-padding tokens (from attention_mask) / time_elapsed
+            if self._tokens_since_last_log > 0 and logs["time_elapsed"] > 0:
+                logs["tokens_per_sec"] = round(self._tokens_since_last_log / logs["time_elapsed"], 1)
         self._last_log_time = now
+        self._tokens_since_last_log = 0
         # Older installed transformers: Trainer.log(logs) only; 4.56+ also accepts start_time
         if start_time is not None and "start_time" in inspect.signature(Trainer.log).parameters:
             super().log(logs, start_time)
@@ -436,6 +437,12 @@ class LoggingTrainer(tf.Trainer):
         indices = inputs.pop("index", None)
         # Pop VAVA-only keys that the model forward doesn't accept
         self._strip_non_model_keys(inputs)
+
+        # Count non-padding tokens in this batch for TPS logging.
+        # attention_mask is 1 for real tokens, 0 for padding.
+        mask = inputs.get("attention_mask")
+        if mask is not None:
+            self._tokens_since_last_log += int(mask.sum().item())
 
         loss = super().training_step(model, inputs)
 
