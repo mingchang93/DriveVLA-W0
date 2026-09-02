@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Quick NPU training smoke test: train only, 50 steps.
-# Skips data prep (pickles must already be fixed) and inference.
+# Quick CUDA training smoke test: train only, 50 steps.
+# Counterpart of scripts/setup_and_run_npu_50steps.sh for GPU.
 #
 # Usage:
-#   bash scripts/setup_and_run_npu_50steps.sh \
+#   bash scripts/setup_and_run_cuda_50steps.sh \
 #       --project_root /path/to/DriveVLA-W0 \
 #       --data_root /path/to/datasets \
 #       --model_root /path/to/models
@@ -18,7 +18,7 @@ PROJECT_ROOT=""
 DATA_ROOT=""
 MODEL_ROOT=""
 BATCH_SIZES="1"
-ASCEND_DEVICES=""
+CUDA_DEVICES=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -26,9 +26,9 @@ while [[ $# -gt 0 ]]; do
     --data_root)       DATA_ROOT="$2";       shift 2 ;;
     --model_root)      MODEL_ROOT="$2";      shift 2 ;;
     --batch_sizes)     BATCH_SIZES="$2";     shift 2 ;;
-    --ascend_devices)  ASCEND_DEVICES="$2";  shift 2 ;;
+    --cuda_devices)    CUDA_DEVICES="$2";    shift 2 ;;
     --help|-h)
-      echo "Usage: $0 --project_root <path> --data_root <path> --model_root <path> [--batch_sizes <int,int,...>] [--ascend_devices <dev_list>]"
+      echo "Usage: $0 --project_root <path> --data_root <path> --model_root <path> [--batch_sizes <int,int,...>] [--cuda_devices <dev_list>]"
       echo ""
       echo "Required:"
       echo "  --project_root    Path to the DriveVLA-W0 repo"
@@ -37,7 +37,7 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Optional:"
       echo "  --batch_sizes     Comma-separated list of per-GPU batch sizes (default 1)"
-      echo "  --ascend_devices  Comma-separated NPU device list, e.g. 0,1,2,3 (default: all 8)"
+      echo "  --cuda_devices    Comma-separated CUDA device list, e.g. 0,1,2,3 (default: all 8)"
       echo ""
       echo "Note: runs 50 steps per batch size; no data prep, no inference."
       exit 0
@@ -58,18 +58,15 @@ fi
 
 cd "$PROJECT_ROOT"
 
-# One rank per visible NPU when --ascend_devices restricts the device set
-# (ASCEND_RT_VISIBLE_DEVICES remaps physical ids to logical 0..N-1, so a
-# 8-rank launch on fewer visible devices dies with "Invalid device ID").
-if [ -n "$ASCEND_DEVICES" ]; then
-  NGPUS=$(($(echo "$ASCEND_DEVICES" | tr -cd ',' | wc -c) + 1))
-  export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_DEVICES"
+if [ -n "$CUDA_DEVICES" ]; then
+  NGPUS=$(($(echo "$CUDA_DEVICES" | tr -cd ',' | wc -c) + 1))
+  export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
 else
   NGPUS=8
 fi
 
-# NPU memory allocator: avoid pre-caching large blocks
-export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+# CUDA memory allocator: avoid pre-caching large blocks
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ============================================================
 # Derived paths
@@ -78,16 +75,16 @@ TRAIN_SCRIPT="$PROJECT_ROOT/scripts/scripts_train/train_base_ar_withou_moe.sh"
 MODEL_PATH="$MODEL_ROOT/Emu3-Stage1"
 TRAIN_PKL="$DATA_ROOT/navsim_emu_vla_256_144_trainval_pre_1s.pkl"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTPUT_DIR="$PROJECT_ROOT/logs/npu_50steps_${TIMESTAMP}"
+OUTPUT_DIR="$PROJECT_ROOT/logs/cuda_50steps_${TIMESTAMP}"
 
 echo "============================================"
-echo "DriveVLA-W0 — NPU Quick Train (50 steps)"
+echo "DriveVLA-W0 — CUDA Quick Train (50 steps)"
 echo "============================================"
 echo "  PROJECT_ROOT:   $PROJECT_ROOT"
 echo "  DATA_ROOT:      $DATA_ROOT"
 echo "  MODEL_ROOT:     $MODEL_ROOT"
 echo "  batch_sizes:    $BATCH_SIZES"
-echo "  ascend_devices: ${ASCEND_DEVICES:-all 8}"
+echo "  cuda_devices:   ${CUDA_DEVICES:-all 8}"
 echo "  ngpus:          $NGPUS"
 echo "  output:         $OUTPUT_DIR"
 echo ""
@@ -107,7 +104,7 @@ for bs in "${BS_ARRAY[@]}"; do
       --batch_size "$bs" \
       --warmup_steps 100 \
       --logging_steps 1 \
-      --device npu \
+      --device cuda \
       --log_data_hash \
       --deterministic \
       --shuffle_train_data false \
@@ -123,6 +120,6 @@ for bs in "${BS_ARRAY[@]}"; do
   echo ""
 done
 echo "============================================"
-echo "NPU quick train complete."
+echo "CUDA quick train complete."
 echo "  Output: $OUTPUT_DIR"
 echo "============================================"

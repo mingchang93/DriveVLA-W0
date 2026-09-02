@@ -211,7 +211,7 @@ class NpuProfilerCallback(TrainerCallback):
                 with_stack=False,
                 record_shapes=True,
                 profile_memory=False,
-                schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=20),
+                schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=26),
                 experimental_config=torch_npu.profiler._ExperimentalConfig(
                     profiler_level=torch_npu.profiler.ProfilerLevel.Level1
                 ),
@@ -219,7 +219,7 @@ class NpuProfilerCallback(TrainerCallback):
             )
         return torch_npu.profiler.profile(
             activities=[torch_npu.profiler.ProfilerActivity.NPU],
-            schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=20),
+            schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=26),
             on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(self._trace_dir),
         )
 
@@ -256,6 +256,9 @@ class LoggingTrainer(tf.Trainer):
 
         # Wall-clock timestamp of the last log() call, for per-step time tracking
         self._last_log_time = None
+        # Accumulated token count (non-padding) since last log() call — populated
+        # by training_step() from attention_mask.sum() and consumed by log().
+        self._tokens_since_last_log = 0
 
         # Data hash logging for cross-platform (NPU vs GPU) data-order verification
         self._hash_logfile = None
@@ -309,13 +312,15 @@ class LoggingTrainer(tf.Trainer):
         now = time.time()
         if self._last_log_time is not None:
             logs["time_elapsed"] = round(now - self._last_log_time, 3)
-            # tokens/sec = (per_device_bs × num_gpus × seq_len) / time_elapsed
-            bs = getattr(self.args, "per_device_train_batch_size", None)
-            ws = getattr(self.args, "world_size", 1)
-            sl = getattr(self.args, "max_position_embeddings", None)
-            if bs and sl and logs["time_elapsed"] > 0:
-                logs["tokens_per_sec"] = round(bs * ws * sl / logs["time_elapsed"], 1)
+            logs["tokens_per_step"] = self._tokens_since_last_log
+            # tokens/sec = actual non-padding tokens (from attention_mask) / time_elapsed
+            # Multiply by world_size for global throughput, consistent with the
+            # old bs × ws × sl formula.
+            if self._tokens_since_last_log > 0 and logs["time_elapsed"] > 0:
+                ws = getattr(self.args, "world_size", 1)
+                logs["tokens_per_sec"] = round(self._tokens_since_last_log * ws / logs["time_elapsed"], 1)
         self._last_log_time = now
+        self._tokens_since_last_log = 0
         # Older installed transformers: Trainer.log(logs) only; 4.56+ also accepts start_time
         if start_time is not None and "start_time" in inspect.signature(Trainer.log).parameters:
             super().log(logs, start_time)
@@ -436,6 +441,14 @@ class LoggingTrainer(tf.Trainer):
         indices = inputs.pop("index", None)
         # Pop VAVA-only keys that the model forward doesn't accept
         self._strip_non_model_keys(inputs)
+
+        # Count non-padding tokens in this batch for TPS logging.
+        # Use input_ids.numel() rather than attention_mask.sum() because TPS
+        # is a compute-cost metric: padding tokens still consume FLOPs and
+        # memory even though they're masked from the loss.
+        ids = inputs.get("input_ids")
+        if ids is not None:
+            self._tokens_since_last_log += int(ids.numel())
 
         loss = super().training_step(model, inputs)
 

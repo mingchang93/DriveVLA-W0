@@ -339,7 +339,7 @@ torchrun \
     --per_device_train_batch_size ${BATCH_SIZE} \
     --frames 1 \
     --action_frames 8 \
-    --max_position_embeddings 1400 \
+    --max_position_embeddings 1280 \
     --seed "$SEED" \
     $SHUFFLE_FLAG \
     $DET_FLAG \
@@ -351,6 +351,7 @@ torchrun \
     --logging_steps "$LOGGING_STEPS" \
     --gradient_checkpointing True \
     --gradient_accumulation_steps 1 \
+    --torch_empty_cache_steps 1 \
     --save_strategy "$([ "$SKIP_INFERENCE" = true ] && echo "no" || echo "steps")" \
     --save_steps "$SAVE_STEPS" \
     --eval_strategy "$EVAL_STRATEGY" \

@@ -24,6 +24,7 @@ TIERS="all"
 FP="fp32"
 ATTN=""
 ASCEND_DEVICES=""
+BATCH_SIZE="1"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device)       DEVICE="$2";       shift 2 ;;
@@ -34,6 +35,8 @@ while [[ $# -gt 0 ]]; do
     --fp)           FP="$2";           shift 2 ;;
     --attn)         ATTN="$2";         shift 2 ;;
     --ascend_devices) ASCEND_DEVICES="$2"; shift 2 ;;
+    --batch_size|--batch_sizes)
+                           BATCH_SIZE="$2";    shift 2 ;;  # tier -4 profiling; comma-separated
     *) echo "Unknown: $1"; exit 1 ;;
   esac
 done
@@ -355,19 +358,25 @@ fi
 # ── Tier -4: NPU-only torch_npu.profiler trace (level 1, CPU+NPU) ────
 if [ "$DEVICE" = "npu" ] && selected -4; then
   echo ""
-  echo "=== Tier -4: NPU profiler trace (level 1, CPU+NPU + record_shapes), batch=1, lr=1e-5, 50 steps ==="
+  echo "=== Tier -4: NPU profiler trace (level 1, CPU+NPU + record_shapes), batches=${BATCH_SIZE}, lr=1e-5, 50 steps ==="
   export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_DEVICES"
-  bash "$TRAIN_SCRIPT" \
-    "${COMMON[@]}" \
-    --output_dir "$BASE_OUT" \
-    --exp_name tier_neg4_npu_profile_level1 \
-    --max_steps 50 \
-    --warmup_steps 0 \
-    --batch_size 1 \
-    --learning_rate 1e-5 \
-    --npu_profiling \
-    --npu_profiler_level 1
-  echo "Trace: $BASE_OUT/tier_neg4_npu_profile_level1/npu_profile_level1"
+  export ASCEND_LAUNCH_BLOCKING=0
+  IFS=',' read -ra BS_ARRAY <<< "$BATCH_SIZE"
+  for bs in "${BS_ARRAY[@]}"; do
+    echo "--- Tier -4 batch_size=$bs ---"
+    bash "$TRAIN_SCRIPT" \
+      "${COMMON[@]}" \
+      --output_dir "$BASE_OUT" \
+      --exp_name "tier_neg4_npu_profile_level1_bs${bs}" \
+      --max_steps 30 \
+      --warmup_steps 0 \
+      --batch_size "$bs" \
+      --learning_rate 1e-5 \
+      --npu_profiling \
+      --npu_profiler_level 1
+    echo "Trace: $BASE_OUT/tier_neg4_npu_profile_level1_bs${bs}/npu_profile_level1"
+    echo ""
+  done
 fi
 
 echo ""
