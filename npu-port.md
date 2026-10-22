@@ -742,6 +742,105 @@ batches are not stable: bs=42 OOMs at step 42, bs=48 at step 2.
 
 ---
 
+## Step 15 — L1 profiling collector
+
+Ported the emu3 `NpuProfilerCallback` to the Qwen path. Opt-in via
+`--npu_profiling`, with `--npu_profiler_level` selecting:
+
+- level 0: NPU activity only;
+- level 1 (L1): CPU + NPU activities, `record_shapes=True`,
+  `ProfilerLevel.Level1`.
+
+The callback starts on `on_train_begin`, calls `prof.step()` on `on_step_end`
+and stops on `on_train_end`. Schedule: `wait=1, warmup=1, active=1, repeat=1,
+skip_first=26`, so a trace is emitted after ~step 29. Traces land in
+`<output_dir>/npu_profile_level1/`.
+
+Run `logs/profile_l1_20261021` (fa2, bs=40, 32 steps, `save_strategy no`):
+8 rank directories, 2.6 GB, each `ASCEND_PROFILER_OUTPUT/` containing
+`trace_view.json` (~159 MB), `op_statistic.csv`, `operator_details.csv`,
+`kernel_details.csv`, `api_statistic.csv`, `step_trace_time.csv`,
+`communication.json` and the msprof databases.
+
+Traced step 28 (`step_trace_time.csv`):
+
+| metric | time |
+|---|---|
+| Computing | 6.239 s |
+| Communication (not overlapped) | 0.373 s |
+| Overlapped | 0.000 s |
+| Free | 0.322 s |
+| total | 6.933 s |
+
+Per-kernel breakdown (rank 0, step 28, 6.98 s kernel time):
+
+| category | time | share |
+|---|---|---|
+| MatMul (LLM + ViT + UNet) | 3.80 s | 54% |
+| Elementwise/layout (Mul, Add, Cast, Transpose, ReduceSum, Square, Concat) | ~1.06 s | 15% |
+| Communication (`HcclLaunch` 0.370, allReduce 0.088, allGather 0.056) | 0.74 s | 11% |
+| FlashAttention fwd+bwd | 0.44 s | 6% |
+| Conv (UNet/VAE/ViT) | 0.40 s | 6% |
+| LM head matmuls | 0.13 s | 2% |
+| LogSoftmax + NLL fwd/bwd | 0.02 s | 0.3% |
+
+Findings:
+
+- FA2 cut attention to ~6%; matmuls dominate, so the remaining compute is the
+  LLM/ViT/UNet body, not the head.
+- The 151k-vocab head is ~133 ms/step (forward + two backward matmuls) and the
+  CE kernels ~21 ms. Valid-token CE is therefore **a memory lever** (it removes
+  the `[16920, 152064]` fp32 `logits.float()` transient, ~10.3 GB per rank),
+  not a large compute lever.
+- Communication: 389 collectives during backward (0.1–1.7 ms each) plus
+  `HcclLaunch` ~0.370 s. The step tail is 7.8 + 1.0 + 22.8 + 17.4 ms of
+  allreduce followed by a 56.0 ms all-gather. Overlap is zero.
+- The tail all-gather is ZeRO-2's reassembly of updated parameter shards. It is
+  a step-boundary operation and cannot be overlapped in ZeRO-2.
+- Rank-to-rank differences in collective duration are arrival-time skew
+  (stragglers), not uneven gradient volume: this is pure data parallelism with
+  replicated parameters, not DDP and not model parallelism. The 56 ms
+  all-gather is 0.8% of the step, not a redesign target.
+
+Profiler overhead: the run averaged 19.5 s/step while profiling was active;
+only the active window (step ~28) is traced, and the per-kernel timings above
+come from that step.
+
+Commits: `c01713b` (callback + launcher flags).
+
+---
+
+## Step 16 — Ascend runtime env A/B
+
+Env-only variants on the Step 14 baseline (fa2, bs=40, ZeRO-2, 50 steps,
+`ASCEND_LAUNCH_BLOCKING=0`). Metric: per-step `samples_per_s` median after
+dropping the first 5 steps. Runs: `logs/env_ab_20261022`,
+`logs/env_ab2_20261022`.
+
+| tag | env | samples/s | vs base |
+|---|---|---|---|
+| base | `HCCL_DETERMINISTIC=TRUE` | 47.94 | — |
+| comb | + `COMBINED_ENABLE=1` | 48.02 | +0.2% |
+| msr | + `MULTI_STREAM_MEMORY_REUSE=2` | 48.20 | +0.6% |
+| tq1 | + `TASK_QUEUE_ENABLE=1` | 48.14 | +0.4% |
+| detoff | no `HCCL_DETERMINISTIC` | 48.16 | +0.5% |
+| nodet | no determinism + `COMBINED_ENABLE` + `MULTI_STREAM_MEMORY_REUSE` + `expandable_segments` | 48.00 | +0.1% |
+| base2 | anchor | 48.14 | +0.4% |
+| tq2 | `TASK_QUEUE_ENABLE=2` | — | failed before training (empty run dir) |
+
+Conclusion: none of these runtime knobs changes throughput beyond the 0.4%
+anchor drift. `TASK_QUEUE_ENABLE=2` is unusable on this build — it fails before
+model load, leaving an empty run directory; value 1 works but is neutral.
+Determinism-off is also neutral, so `HCCL_DETERMINISTIC` can stay on for
+correctness runs at no measurable cost.
+
+The remaining communication cost is structural (Step 15: 389 collectives plus
+`HcclLaunch` overhead), which these env switches do not reduce. Reducing the
+collective count requires bucket tuning (`reduce_bucket_size`), and the larger
+win remains the memory/batch levers.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -772,6 +871,10 @@ file's commit and the box `HEAD` are noted.
 | `fused_ab2_20261021/{base2,fa2_32,fa2_40,fa2_48}` | 14 | `9fed329` | 50 (48 OOM at step 2) |
 | `fa2_fine_20261021/fa2_42` | 14 | `9fed329` | OOM at step 42 |
 | `fa2_stab_20261021/fa2_40_200` | 14 | `9fed329` | 200 |
+| `profile_l1_20261021/navsim` | 15 | `c01713b` | 32 (L1 trace, step 28) |
+| `env_ab_20261022/{base,comb,msr,base2}` | 16 | `c01713b` | 50 |
+| `env_ab_20261022/{tq2,all3,all3_perf}` | 16 | `c01713b` | failed before training |
+| `env_ab2_20261022/{tq1,detoff,nodet}` | 16 | `c01713b` | 50 |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
