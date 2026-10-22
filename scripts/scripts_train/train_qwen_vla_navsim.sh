@@ -85,6 +85,7 @@ DETERMINISTIC=false
 LOG_DATA_HASH=false
 NPU_PROFILING=false
 NPU_PROFILER_LEVEL=0
+VALID_TOKEN_CE=false
 
 usage() {
   cat <<EOF
@@ -148,6 +149,8 @@ Misc:
                                traces -> <run>/npu_profile[_level<N>])
   --npu_profiler_level <n>     (0) 0=NPU only; 1=CPU+NPU + record_shapes +
                                ProfilerLevel.Level1 (L1 collector)
+  --valid_token_ce             project only the labeled tokens in the LM loss
+                               (most positions are ignore_index)
   -h, --help                   this message
 EOF
 }
@@ -204,6 +207,7 @@ while [[ $# -gt 0 ]]; do
     --log_data_hash)         LOG_DATA_HASH=true;           shift ;;
     --npu_profiling)         NPU_PROFILING=true;           shift ;;
     --npu_profiler_level)    NPU_PROFILER_LEVEL="$2";      shift 2 ;;
+    --valid_token_ce)        VALID_TOKEN_CE=true;          shift ;;
     --help|-h)               usage; exit 0 ;;
     *) die "unknown option: $1 (see --help)" ;;
   esac
@@ -278,6 +282,8 @@ fi
 
 # train_qwen_vla.py reads DEVICE from the environment
 export DEVICE
+export ROSS_VALID_CE=0
+[ "$VALID_TOKEN_CE" = true ] && export ROSS_VALID_CE=1
 
 # `reference.transformers...` needs the repo root; qwenvl needs the finetune root.
 export PYTHONPATH="$ROOT:$ROOT/reference/Qwen2.5-VL/qwen-vl-finetune${PYTHONPATH:+:$PYTHONPATH}"
@@ -342,6 +348,7 @@ echo "  max_pixels:            $MAX_PIXELS  (target grid 10x18 = 180 tokens)"
 echo "  cur_frame_idx / fut:   $CUR_FRAME_IDX / $FUTURE_NUMS"
 echo "  deepspeed:             $DEEPSPEED_CONFIG (zero stage $ZERO_STAGE)"
 echo "  npu profiling:         $NPU_PROFILING (level $NPU_PROFILER_LEVEL)"
+echo "  valid_token_ce:        $VALID_TOKEN_CE"
 echo ""
 
 # ============================================================
