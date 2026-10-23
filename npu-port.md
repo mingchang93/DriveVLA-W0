@@ -714,7 +714,7 @@ noise. **FA2 is the win: +83% at bs=40.**
 → **48.22 samples/s** (per-step median over a 200-step run, 6.64 s/step, no
 OOM), versus 26.58 for the sdpa baseline. The same config measured 48.05 over
 50 steps. These are now the launcher defaults (`ATTN_TYPE=fa2`,
-`BATCH_SIZE=40`). The leaf-op flags (`ROSS_NPU_RMSNORM`, `ROSS_NPU_SWIGLU`,
+`BATCH_SIZE=40`; Step 17 raises the batch to 64 and enables valid-token CE). The leaf-op flags (`ROSS_NPU_RMSNORM`, `ROSS_NPU_SWIGLU`,
 `ROSS_NPU_ROPE`) are left off; they did not pay for themselves.
 
 Implementation:
@@ -841,6 +841,59 @@ win remains the memory/batch levers.
 
 ---
 
+## Step 17 — Valid-token CE compaction (C1a)
+
+Implemented behind `ROSS_VALID_CE=1` (launcher `--valid_token_ce`). The LM loss
+projects only the labeled positions instead of the full `[N, vocab]` matrix and
+returns `logits=None` on that path. It falls back to the original path for
+`logits_to_keep > 0`, a supplied `shift_labels`, or a batch with no valid
+labels.
+
+Why: measured on a real batch, only **5.35 %** of positions are labeled
+(181 / 3384 in an 8-sample batch; 22–24 per ~421-token sample). Everything else
+is system/user prompt, the two 180-token image blocks, the assistant role
+prefix and the turn terminator. The fp32 `logits.float()` transient drops from
+`[16920, 152064] × 4 B ≈ 10.3 GB` to `[~914, 152064] × 4 B ≈ 0.55 GB` per rank.
+
+Throughput (per-step `samples_per_s` median, first 5 steps dropped):
+
+| run | bs | steps | samples/s | step median |
+|---|---|---|---|---|
+| base20 (C1a off) | 40 | 20 | 48.11 | 6.65 s |
+| c1a | 40 | 50 | 49.38 | 6.48 s |
+| c1a | 48 | 50 | 50.10 | 7.67 s |
+| c1a | 56 | 50 | 50.23 | 8.92 s |
+| c1a | 64 | 50 | 50.84 | 10.07 s |
+| c1a | 72 | 50 | 50.88 | 11.32 s |
+| **c1a** | **64** | **200** | **50.91** | **10.06 s** |
+
+Findings:
+
+- C1a at bs=40: +2.6 %. The profile predicted this — the LM head is ~2 % of
+  the step, so the saving is memory, not compute.
+- The batch ceiling moves from 40 to at least 72 for 50 steps (bs=42 previously
+  OOM'd at step 42).
+- Throughput is flat above 64: step time scales almost linearly with batch
+  (6.48 → 11.32 s for 40 → 72). The run is now compute-bound.
+- bs=72 is not stable over 200 steps: that run died at the first logging HCCL
+  `all_gather` on rank 3 (error 207001) while the same config passed 50 steps.
+  bs=64 completed 200/200.
+- **New best: C1a + bs=64 → 50.91 samples/s** (+5.6 % over the 48.22 Step 14
+  baseline). These are now the launcher defaults: `ATTN_TYPE=fa2`,
+  `BATCH_SIZE=64`, `VALID_TOKEN_CE=true` (export `ROSS_VALID_CE=0` to disable).
+
+Parity (20 steps, unshuffled, identical start):
+
+- losses are bit-identical at steps 0–1 and diverge to ~1 % by step 19 (max
+  7.4e-2 at one step);
+- weights after 20 steps: relL2 2.5e-4 (UNet `conv_in`) to 6.6e-3 (layer0
+  `q_proj`), max abs ~1e-3 (bf16 ulp); gate scalars max abs 6e-4. No structural
+  difference — bf16 reduction-order noise amplified by the optimizer.
+
+Commits: `5f163a6`.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -875,6 +928,9 @@ file's commit and the box `HEAD` are noted.
 | `env_ab_20261022/{base,comb,msr,base2}` | 16 | `c01713b` | 50 |
 | `env_ab_20261022/{tq2,all3,all3_perf}` | 16 | `c01713b` | failed before training |
 | `env_ab2_20261022/{tq1,detoff,nodet}` | 16 | `c01713b` | 50 |
+| `c1a_20261022/{base20,c1a20,c1a40,c1a48,c1a56,c1a64,c1a72}` | 17 | `5f163a6` | 20 / 50 |
+| `c1a_stab_20261022/c1a64_stab` | 17 | `5f163a6` | 200 |
+| `c1a_stab_20261022/c1a72_stab` | 17 | `5f163a6` | failed (HCCL gather, rank 3) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.

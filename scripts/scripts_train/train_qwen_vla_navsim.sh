@@ -39,7 +39,7 @@ EXP_NAME="navsim"
 
 NGPUS=8
 MASTER_PORT=23458
-BATCH_SIZE=40
+BATCH_SIZE=64
 GRAD_ACCUM=1
 NUM_WORKERS=24
 FP="bf16"
@@ -85,7 +85,7 @@ DETERMINISTIC=false
 LOG_DATA_HASH=false
 NPU_PROFILING=false
 NPU_PROFILER_LEVEL=0
-VALID_TOKEN_CE=false
+VALID_TOKEN_CE=true
 
 usage() {
   cat <<EOF
@@ -104,7 +104,7 @@ Model:
 
 Training:
   --ngpus <n>                  (8)
-  --batch_size <n>             per-device batch, must be >= 2 (default: 40)
+  --batch_size <n>             per-device batch, must be >= 2 (default: 64)
   --grad_accum <n>             (1)
   --num_workers <n>            (24)
   --fp <bf16|fp16|fp32>        (bf16)
@@ -150,7 +150,7 @@ Misc:
   --npu_profiler_level <n>     (0) 0=NPU only; 1=CPU+NPU + record_shapes +
                                ProfilerLevel.Level1 (L1 collector)
   --valid_token_ce             project only the labeled tokens in the LM loss
-                               (most positions are ignore_index)
+                               (default: on; export ROSS_VALID_CE=0 to disable)
   -h, --help                   this message
 EOF
 }
