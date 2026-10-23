@@ -1015,6 +1015,31 @@ SwiGLU −3.2%, RoPE −6.6%, so none is enabled by default.
 
 ---
 
+## Step 19 — Batch-size stability sweep
+
+Step-time outliers (one 12–19 s step per 50) motivated a stability sweep.
+Protocol: 50 steps, same config as Step 17; per-step `step_time_s` over steps
+6–50; mean/std/CV plus the count of steps > 1.5× the median.
+
+| bs | mean (s) | std | CV | median | max | outliers |
+|---|---|---|---|---|---|---|
+| 64 | 10.462 | 1.029 | 9.84% | 10.054 | 14.24 | 0 |
+| **62** | 9.887 | 0.564 | **5.71%** | 9.749 | 13.20 | 0 |
+| 60 | 9.770 | 1.145 | 11.72% | 9.481 | 16.50 | 1 |
+| 58 | 9.633 | 1.440 | 14.95% | 9.204 | 16.93 | 1 |
+| 56 | 9.166 | 0.907 | 9.89% | 8.877 | 12.52 | 0 |
+| **62 (repeat)** | 9.845 | 0.397 | **4.03%** | 9.745 | 12.04 | 0 |
+
+**bs=62 is the most stable** (CV 4.0–5.7% across two runs) and its throughput
+median (50.88–50.90 samples/s) is tied with bs=64 (50.93). bs=56 has the
+lowest median step time (8.88 s) but roughly twice the variance. Use bs=62 for
+long runs that care about step-time stability; bs=64 remains fine for peak
+throughput (the difference is noise).
+
+Runs: `logs/bs_stab_20261023/bs{64,62,60,58,56}` and `bs62_rep`.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1055,6 +1080,8 @@ file's commit and the box `HEAD` are noted.
 | `env_ab_c1a_20261023/nodet` | 16 | `b91ddd6` | 50 |
 | `oldbox_torch211_50step_20261023/navsim` | 18 | `5a7c11a` | 50 (torch 2.11 re-run, 50.85 samples/s) |
 | `oldbox_torch211_adamwfused_20261023/navsim` | 18 | `9573d02` | 50 (`adamw_torch_fused`, 50.60 samples/s) |
+| `bs_stab_20261023/bs{64,62,60,58,56}` | 19 | `c49bfb1` | 50 each (stability sweep) |
+| `bs_stab_20261023/bs62_rep` | 19 | `c49bfb1` | 50 (bs=62 repeat) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
