@@ -132,11 +132,17 @@ def main():
             gw = torch.randn(32, device=dev, dtype=torch.bfloat16)
             gb = torch.randn(32, device=dev, dtype=torch.bfloat16)
             out = torch_npu.npu_group_norm_silu(xg2, gw, gb, 8, 1e-5)
+            out = out[0] if isinstance(out, (tuple, list)) else out
             ref = F.silu(F.group_norm(xg2.float(), 8, gw.float(), gb.float(), 1e-5))
             check("group_norm_silu bf16", out, ref, TOL_BF16)
             xg3 = xg2.clone().requires_grad_(True)
-            torch_npu.npu_group_norm_silu(xg3, gw, gb, 8, 1e-5).float().pow(2).mean().backward()
-            print(f"{'PASS' if torch.isfinite(xg3.grad).all() else 'FAIL'} group_norm_silu backward finite")
+            y3 = torch_npu.npu_group_norm_silu(xg3, gw, gb, 8, 1e-5)
+            y3 = y3[0] if isinstance(y3, (tuple, list)) else y3
+            y3.float().pow(2).mean().backward()
+            finite = xg3.grad is not None and bool(torch.isfinite(xg3.grad).all())
+            print(f"{'PASS' if finite else 'FAIL'} group_norm_silu backward finite")
+            if not finite:
+                failures.append("group_norm_silu backward")
         except Exception as e:
             print("SKIP group_norm_silu:", type(e).__name__, str(e).splitlines()[0][:160])
             failures.append("group_norm_silu")

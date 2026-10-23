@@ -86,9 +86,15 @@ def probe_backward_support(device_index: int = 0) -> dict:
         try:
             x = torch.randn(2, 8, 64, device=device, dtype=torch.bfloat16, requires_grad=True)
             out = fn(x)
-            if isinstance(out, tuple):
+            if isinstance(out, (tuple, list)):
                 out = out[0]
             out.float().sum().backward()
+            # Some ops register no autograd kernel: backward() succeeds but
+            # leaves grad=None (group_norm_silu on this build). Treat that as
+            # unusable, not as success.
+            if x.grad is None or not bool(torch.isfinite(x.grad).all()):
+                print(f"[fused] {name} backward unavailable: no gradient written")
+                return False
             return True
         except Exception as exc:  # any failure means "not usable for training"
             print(f"[fused] {name} backward unavailable: "
@@ -180,10 +186,12 @@ def fused_group_norm_silu(x, weight, bias, num_groups: int, eps: float = 1e-5):
     if not (_ENABLE_GN_SILU and _HAS_GN_SILU and _BACKWARD_OK.get("group_norm_silu", False)):
         return None
     try:
-        return torch_npu.npu_group_norm_silu(x, weight, bias, num_groups, eps)
+        out = torch_npu.npu_group_norm_silu(x, weight, bias, num_groups, eps)
     except Exception as exc:
         _warn_once("group_norm_silu", exc)
         return None
+    # The op returns (y, mean, rstd); call sites expect the activation only.
+    return out[0] if isinstance(out, (tuple, list)) else out
 
 
 def fuse_unet_group_norm_silu(root) -> int:

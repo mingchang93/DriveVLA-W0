@@ -988,8 +988,30 @@ first 5 steps.
 | all | all three |
 | adamw_fused | `--optim adamw_torch_fused` on the best of the above |
 
-Runs pending: the box is down for a driver upgrade (2026-10-23). Fill the
-results table and add the run rows to the index when the box returns.
+### Feasibility result (2026-10-23, torch_npu 2.11 / CANN 9.1.0)
+
+`tools/ascend_parity/check_fused_ops.py` on the old box:
+
+| op | forward | backward |
+|---|---|---|
+| `npu_add_rms_norm` | PASS (rel 4.4e-3) | **unavailable** — `derivative for npu::npu_add_rms_norm is not implemented` |
+| `npu_group_norm_silu` | returns `(y, mean, rstd)` | **unavailable** — no autograd kernel; backward leaves `grad=None` |
+| `npu_silu` | **unavailable** — `Current device only support aclnn operator, but ... npu_silu do not have aclnn implementation` | — |
+| `npu_rms_norm` / `npu_swiglu` / `npu_rotary_mul` | PASS | PASS |
+
+All three new gates therefore stay disabled at runtime; the probe treats
+`grad is None` as failure, and the helpers fall back to the reference path.
+No A/B runs were launched for them: the flagged code would be identical to the
+base run.
+
+The only remaining lever from the profile analysis was the optimizer.
+`--optim adamw_torch_fused` measured **50.60 samples/s / 10.13 s** median
+(steps 6–50) versus **50.85 / 10.08 s** for `adamw_torch` — −0.5%, within
+run-to-run noise. No win; the launcher default stays `adamw_torch`.
+Run: `logs/oldbox_torch211_adamwfused_20261023`.
+
+The existing fused ops keep their Step 14 verdicts: RMSNorm neutral (+0.8%),
+SwiGLU −3.2%, RoPE −6.6%, so none is enabled by default.
 
 ---
 
@@ -1031,6 +1053,8 @@ file's commit and the box `HEAD` are noted.
 | `c1a_stab_20261022/c1a64_stab` | 17 | `5f163a6` | 200 |
 | `c1a_stab_20261022/c1a72_stab` | 17 | `5f163a6` | failed (HCCL gather, rank 3) |
 | `env_ab_c1a_20261023/nodet` | 16 | `b91ddd6` | 50 |
+| `oldbox_torch211_50step_20261023/navsim` | 18 | `5a7c11a` | 50 (torch 2.11 re-run, 50.85 samples/s) |
+| `oldbox_torch211_adamwfused_20261023/navsim` | 18 | `9573d02` | 50 (`adamw_torch_fused`, 50.60 samples/s) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
