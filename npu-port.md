@@ -839,6 +839,11 @@ The remaining communication cost is structural (Step 15: 389 collectives plus
 collective count requires bucket tuning (`reduce_bucket_size`), and the larger
 win remains the memory/batch levers.
 
+Re-checked at the current best config (`fa2`, bs=64, `ROSS_VALID_CE=1`): the
+combined-knobs + determinism-off run measured **50.84 samples/s**, identical to
+the baseline's 50.84 (−0.01 %, step 10.07 s both). The conclusion is unchanged
+at the new operating point; no further env tuning was done.
+
 ---
 
 ## Step 17 — Valid-token CE compaction (C1a)
@@ -931,6 +936,7 @@ file's commit and the box `HEAD` are noted.
 | `c1a_20261022/{base20,c1a20,c1a40,c1a48,c1a56,c1a64,c1a72}` | 17 | `5f163a6` | 20 / 50 |
 | `c1a_stab_20261022/c1a64_stab` | 17 | `5f163a6` | 200 |
 | `c1a_stab_20261022/c1a72_stab` | 17 | `5f163a6` | failed (HCCL gather, rank 3) |
+| `env_ab_c1a_20261023/nodet` | 16 | `b91ddd6` | 50 |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
