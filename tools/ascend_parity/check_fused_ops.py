@@ -53,7 +53,8 @@ def main():
     torch.manual_seed(0)
     print(f"torch={torch.__version__} torch_npu={getattr(torch_npu, '__version__', '?')}")
 
-    for n in ("npu_rms_norm", "npu_swiglu", "npu_rotary_mul", "npu_gelu", "npu_fusion_attention"):
+    for n in ("npu_rms_norm", "npu_swiglu", "npu_rotary_mul", "npu_gelu", "npu_fusion_attention",
+              "npu_add_rms_norm", "npu_group_norm_silu", "npu_silu"):
         print("available", n, hasattr(torch_npu, n))
 
     # --- RMSNorm ---
@@ -102,6 +103,56 @@ def main():
     refg = F.gelu(xg.float(), approximate="none")
     outg = torch_npu.npu_gelu(xg, approximate="none")
     check("gelu exact bf16", outg, refg, TOL_BF16)
+
+    # --- residual add + RMSNorm ---
+    if hasattr(torch_npu, "npu_add_rms_norm"):
+        try:
+            xa = torch.randn(24, 421, 3584, device=dev, dtype=torch.bfloat16)
+            xb = torch.randn_like(xa)
+            wa = torch.randn(3584, device=dev, dtype=torch.bfloat16)
+            y, rstd, summed = torch_npu.npu_add_rms_norm(xa, xb, wa, 1e-6)
+            check("add_rms_norm residual", summed, xa.float() + xb.float(), TOL_BF16)
+            check("add_rms_norm y", y, reference_rms_norm(xa + xb, wa, 1e-6), TOL_BF16)
+            xb2, wa2 = xb.clone().requires_grad_(True), wa.clone().requires_grad_(True)
+            torch_npu.npu_add_rms_norm(xa, xb2, wa2, 1e-6)[0].float().pow(2).mean().backward()
+            finite = bool(torch.isfinite(xb2.grad).all()) and bool(torch.isfinite(wa2.grad).all())
+            print(f"{'PASS' if finite else 'FAIL'} add_rms_norm backward finite")
+            if not finite:
+                failures.append("add_rms_norm backward")
+        except Exception as e:
+            print("SKIP add_rms_norm:", type(e).__name__, str(e).splitlines()[0][:160])
+            failures.append("add_rms_norm")
+    else:
+        print("unavailable npu_add_rms_norm")
+
+    # --- GroupNorm + SiLU ---
+    if hasattr(torch_npu, "npu_group_norm_silu"):
+        try:
+            xg2 = torch.randn(2, 32, 16, 16, device=dev, dtype=torch.bfloat16)
+            gw = torch.randn(32, device=dev, dtype=torch.bfloat16)
+            gb = torch.randn(32, device=dev, dtype=torch.bfloat16)
+            out = torch_npu.npu_group_norm_silu(xg2, gw, gb, 8, 1e-5)
+            ref = F.silu(F.group_norm(xg2.float(), 8, gw.float(), gb.float(), 1e-5))
+            check("group_norm_silu bf16", out, ref, TOL_BF16)
+            xg3 = xg2.clone().requires_grad_(True)
+            torch_npu.npu_group_norm_silu(xg3, gw, gb, 8, 1e-5).float().pow(2).mean().backward()
+            print(f"{'PASS' if torch.isfinite(xg3.grad).all() else 'FAIL'} group_norm_silu backward finite")
+        except Exception as e:
+            print("SKIP group_norm_silu:", type(e).__name__, str(e).splitlines()[0][:160])
+            failures.append("group_norm_silu")
+    else:
+        print("unavailable npu_group_norm_silu")
+
+    # --- SiLU ---
+    if hasattr(torch_npu, "npu_silu"):
+        try:
+            xs = torch.randn(24, 421, 18944, device=dev, dtype=torch.bfloat16)
+            check("silu bf16", torch_npu.npu_silu(xs), F.silu(xs.float()), TOL_BF16)
+        except Exception as e:
+            print("SKIP silu:", type(e).__name__, str(e).splitlines()[0][:160])
+            failures.append("silu")
+    else:
+        print("unavailable npu_silu")
 
     # --- FA2 vs SDPA (causal, GQA 28/4, BSND) ---
     # NOTE: this CANN/Ascend 950 build requires a mask of at least 2048x2048

@@ -46,7 +46,7 @@ from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, is_to
 from ...utils.deprecation import deprecate_kwarg
 from ..qwen2.modeling_qwen2 import Qwen2RMSNorm
 from .configuration_qwen2_5_vl import Qwen2_5_VLConfig, Qwen2_5_VLTextConfig, Qwen2_5_VLVisionConfig
-from .npu_fused_ops import fused_rotary_mul, fused_swiglu
+from .npu_fused_ops import fused_add_rms_norm, fused_rotary_mul, fused_silu, fused_swiglu
 
 # Optional: project only labeled tokens in the LM loss. In this dataset ~95% of
 # positions are ignore_index (prompts + image tokens), so the full [N, vocab]
@@ -73,7 +73,10 @@ class Qwen2_5_VLMLP(nn.Module):
         fused = fused_swiglu(gate, up)
         if fused is not None:
             return self.down_proj(fused)
-        return self.down_proj(self.act_fn(gate) * up)
+        act = fused_silu(gate)
+        if act is None:
+            act = self.act_fn(gate)
+        return self.down_proj(act * up)
 
 
 class Qwen2_5_VisionPatchEmbed(nn.Module):
@@ -572,7 +575,10 @@ class Qwen2MLP(nn.Module):
         fused = fused_swiglu(gate, up)
         if fused is not None:
             return self.down_proj(fused)
-        return self.down_proj(self.act_fn(gate) * up)
+        act = fused_silu(gate)
+        if act is None:
+            act = self.act_fn(gate)
+        return self.down_proj(act * up)
 
 
 def apply_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
@@ -786,13 +792,26 @@ class Qwen2_5_VLDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             **kwargs,
         )
-        hidden_states = residual + hidden_states
+        # Fused residual-add + post-attention RMSNorm when the NPU op and its
+        # backward are available (ROSS_NPU_ADD_RMSNORM=1).
+        fused = fused_add_rms_norm(
+            residual,
+            hidden_states,
+            self.post_attention_layernorm.weight,
+            self.post_attention_layernorm.variance_epsilon,
+        )
+        if fused is not None:
+            hidden_states, residual = fused
+            hidden_states = self.mlp(hidden_states)
+            hidden_states = residual + hidden_states
+        else:
+            hidden_states = residual + hidden_states
 
-        # Fully Connected
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
+            # Fully Connected
+            residual = hidden_states
+            hidden_states = self.post_attention_layernorm(hidden_states)
+            hidden_states = self.mlp(hidden_states)
+            hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
 

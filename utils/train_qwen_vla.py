@@ -430,6 +430,14 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
     model.denoiser.unet = UNet2DConditionModel.from_pretrained(model_args.sd_model_path, torch_dtype=model.dtype)
     model.denoiser.unet.train()
     model.denoiser.unet.requires_grad_(True)
+
+    # Optional Ascend fused ops (npu-port.md Step 18). Probe each op's backward
+    # first: some torch_npu fused ops are inference-only and must stay off.
+    from reference.transformers.src.transformers.models.qwen2_5_vl import npu_fused_ops
+    npu_fused_ops.probe_backward_support(int(os.environ.get("LOCAL_RANK", 0)))
+    fused_blocks = npu_fused_ops.fuse_unet_group_norm_silu(model.denoiser.unet)
+    rank0_print(f"[fused] backward support: {npu_fused_ops.backward_status()}")
+    rank0_print(f"[fused] ResNet GN+SiLU blocks fused: {fused_blocks}")
     rank0_print(f"[GATE] after vae/unet assignment: factor={model.denoiser.factor.item():.6g} "
                 f"factor_a={model.denoiser.factor_a.item():.6g}")
 

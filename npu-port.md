@@ -899,6 +899,100 @@ Commits: `5f163a6`.
 
 ---
 
+## Step 18 — Elementwise-op fusion plan (add+RMSNorm, GN+SiLU, SiLU)
+
+Profile hot spots (per rank per step, supplied in-session; same shape as the
+Step 15 L1 trace):
+
+| # | op | core | calls | ms | share |
+|---|---|---|---|---|---|
+| 1 | MatMulV3 | AI_CORE | 2,000 | 3,200.5 | 48.43% |
+| 2 | MatMulV3 | MIX_AIC | 1,835 | 596.3 | 9.02% |
+| 3 | Mul | AI_VECTOR | 2,840 | 428.4 | 6.48% |
+| 4 | HcclLaunch | AI_CPU | 389 | 370.8 | 5.61% |
+| 5 | FlashAttentionScoreGrad | MIX_AIC | 92 | 228.7 | 3.46% |
+| 6 | FlashAttentionScore | MIX_AIC | 185 | 193.1 | 2.92% |
+| 7 | Cast | AI_VECTOR | 4,988 | 220.8 | 3.34% |
+| 8 | Add | AI_VECTOR | 2,096 | 216.3 | 3.27% |
+| 9 | Conv2DV2 | AI_CORE | 112 | 169.3 | 2.56% |
+| 10 | Transpose | AI_VECTOR | 1,035 | 119.0 | 1.80% |
+
+Compute is 66% (MatMul 57.5% + FA 6.4% + Conv 2.6%); elementwise/layout is
+14.9%; communication 5.6%. **Ceiling:** removing every elementwise op is ~15%;
+realistically 3–6% after fusion overhead.
+
+### Why Cast / Add / Mul are this large
+
+1. **RMSNorm fallback** (`Qwen2RMSNorm`): `to(fp32) → pow → mean → rsqrt →
+   mul → to(bf16) → *weight` = 2 Cast + 3 Mul + 1 Add + 1 Reduce per call.
+   ~177 norm calls/step (LLM 28×2 with checkpoint replay, ViT 32×2, `ln_q`).
+2. **RoPE**: `q*cos + rotate_half(q)*sin` plus `cat`/neg = 4 Mul + 2 Add per
+   layer per q/k; ~240 Mul + 120 Add per step.
+3. **SwiGLU**: `silu(gate)*up` = Sigmoid + 2 Mul per MLP; 28 layers × replay.
+4. **Residual/bias adds**: 2 residual adds per block plus q/k/v biases across
+   LLM, ViT and UNet ≈ 700–900 Adds.
+5. **SD1.5 UNet**: GroupNorm computes in fp32 (2 Casts + affine Mul/Add per
+   norm) and every SiLU is `x*sigmoid(x)`.
+6. **ROSS fp32 block**: `autocast(fp32)` plus `.float()` on image/action
+   hidden and `z_q` at `modeling_qwen2_5_vl_ross.py:355-360`.
+7. **Optimizer**: `adamw_torch` runs the per-tensor path over ~1,000+
+   parameter tensors with bf16 params + fp32 master weights — likely the
+   largest *count* bucket of Cast/Add/Mul (parameter-shaped, memory-bound).
+
+Verify the split from the L1 `operator_details.csv`: parameter-shaped rows are
+optimizer, activation-shaped rows are the model.
+
+### Kernels to migrate
+
+| op | replaces | call site | status |
+|---|---|---|---|
+| `npu_add_rms_norm` | residual Add + post-attention RMSNorm | LLM decoder layer (1 of 2 norms/layer) | **new**, flag `ROSS_NPU_ADD_RMSNORM=1` |
+| `npu_group_norm_silu` | GroupNorm + SiLU | diffusers `ResnetBlock2D` norm1/norm2 pairs | **new**, flag `ROSS_NPU_GN_SILU=1` |
+| `npu_silu` | `x*sigmoid(x)` | LLM/ViT MLP activation, UNet SiLU | **new**, flag `ROSS_NPU_SILU=1` |
+| `npu_rms_norm` | whole RMSNorm fallback | all norms | already wired, +0.8% (Step 14) |
+| `npu_swiglu` | `silu(gate)*up` | LLM/ViT MLP | already wired, −3.2% (Step 14) |
+| `npu_rotary_mul` | rotate_half + 2 Mul + Add | q/k RoPE | already wired, −6.6% (Step 14) |
+| `npu_apply_adam_w` | per-tensor AdamW kernels | optimizer (`--optim adamw_torch_fused`) | retest on 2.11; was −3.6% |
+| `npu_confusion_transpose` | transpose+reshape | attention/vision layouts | deferred (≤1%, layout risk) |
+| `npu_fast_gelu` / `npu_layer_norm_eval` | — | — | not applicable (SiLU model; eval-only) |
+
+**Feasibility gate:** several torch_npu fused ops are inference-only. The new
+`probe_backward_support()` in `npu_fused_ops.py` runs one forward+backward per
+op before training and disables any op whose backward fails. The setup logs
+`[fused] backward support: {...}` and the fused ResNet block count.
+
+### Implementation
+
+- `reference/transformers/.../qwen2_5_vl/npu_fused_ops.py` — `fused_add_rms_norm`,
+  `fused_silu`, `fused_group_norm_silu`, `probe_backward_support`,
+  `fuse_unet_group_norm_silu` (patches `ResnetBlock2D` instance methods so the
+  state_dict keys are unchanged).
+- `modeling_qwen2_5_vl.py` — decoder layer uses add+RMSNorm; both MLP forwards
+  use `fused_silu` when SwiGLU is off.
+- `utils/train_qwen_vla.py` — probe + UNet GN+SiLU fusion after the UNet loads.
+- `tools/ascend_parity/check_fused_ops.py` — forward/backward parity for the
+  three new ops.
+
+### A/B protocol
+
+50 steps each, same seed/data/config as Step 17 (fa2, bs=64, valid CE, ZeRO-2,
+`adamw_torch`); metric = per-step `samples_per_s` median after dropping the
+first 5 steps.
+
+| run | env |
+|---|---|
+| base | no new flags |
+| add_rms | `ROSS_NPU_ADD_RMSNORM=1` |
+| gn_silu | `ROSS_NPU_GN_SILU=1` |
+| silu | `ROSS_NPU_SILU=1` |
+| all | all three |
+| adamw_fused | `--optim adamw_torch_fused` on the best of the above |
+
+Runs pending: the box is down for a driver upgrade (2026-10-23). Fill the
+results table and add the run rows to the index when the box returns.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
