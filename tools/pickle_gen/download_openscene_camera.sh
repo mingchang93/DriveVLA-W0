@@ -2,8 +2,8 @@
 # Download OpenScene v1.1 trainval camera shards (the NAVSIM sensor blobs).
 #
 # After extraction the tree is
-#   <out>/openscene-v1.1/sensor_blobs/<log>/CAM_F0/<frame>.jpg
-# which is exactly what the Qwen VLA dataset resolver expects for
+#   <out>/openscene-v1.1/sensor_blobs/trainval/<log>/CAM_F0/<frame>.jpg
+# so pass <out>/openscene-v1.1/sensor_blobs/trainval as --data_root for
 #   <data_root>/<log>/CAM_F0/<frame>.jpg
 #
 # Usage:
@@ -41,4 +41,4 @@ for i in $(seq "$START" "$END"); do
   rm -f "$TAR"
 done
 
-echo "done: $OUT/openscene-v1.1/sensor_blobs"
+echo "done: $OUT/openscene-v1.1/sensor_blobs/trainval"

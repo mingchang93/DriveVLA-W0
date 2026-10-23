@@ -1040,6 +1040,52 @@ Runs: `logs/bs_stab_20261023/bs{64,62,60,58,56}` and `bs62_rep`.
 
 ---
 
+## Step 20 — Real NAVSIM data for training (branch `navsim-real-data`)
+
+The Qwen VLA dataset resolves each pickle path to
+`<data_root>/<log>/CAM_F0/<frame>.jpg` and loads only `image[cur_frame_idx]`
+plus `pre_1s_image[cur_frame_idx]`. The HF trainval pickle
+(`navsim_emu_vla_256_144_trainval_pre_1s.pkl`, 103,288 samples, already
+action-normalized) therefore needs only the camera JPEGs — no VQ codes and no
+NuPlan.
+
+**Source.** OpenScene v1.1 trainval camera shards (the NAVSIM sensor blobs).
+`huggingface.co` resolves to IPv6 only on this box; use `hf-mirror.com`
+(the download script defaults to it). Metadata is 7.0 GB; camera shards are
+4.7 GB × 200 ≈ **940 GB**.
+
+**Layout gotcha.** Each shard extracts to
+`openscene-v1.1/sensor_blobs/trainval/<log>/CAM_F0/<frame>.jpg`. Pass
+`.../sensor_blobs/trainval` as `--data_root`, not `.../sensor_blobs`.
+
+**Validate with one shard.**
+
+```bash
+bash tools/pickle_gen/download_openscene_camera.sh \
+    --out /mnt/sfs_turbo/lmc/navsim_openscene --start 0 --end 0
+python tools/pickle_gen/filter_pickle_by_images.py \
+    --input /mnt/sfs_turbo/models/DriveVLA-W0/DriveVLA-W0/navsim_emu_vla_256_144_trainval_pre_1s.pkl \
+    --data_root /mnt/sfs_turbo/lmc/navsim_openscene/openscene-v1.1/sensor_blobs/trainval \
+    --output /mnt/sfs_turbo/lmc/navsim_openscene/navsim_trainval_subset.pkl
+```
+
+Shard 0: 22,360 JPEGs, **467 / 103,288** samples kept (both the current and
+pre_1s frames exist).
+
+**Smoke run** (`logs/navsim_real_smoke_20261023`, 10 steps, bs=8, real images):
+action_loss 20.7 → 11.2, `ross_loss` **0.16–0.26** (versus ~0.002 on the
+near-identity synthetic data), 1.66–3.0 s/step. JPEG loading and the 180-token
+16:9 resize work.
+
+**Full download.** Single-stream throughput was ~3.2 MB/s (24 min/shard), so
+200 shards serially would take ~80 h. Run 4–8 shards in parallel to bring that
+to roughly 10–20 h. The 7 GB metadata tarball
+(`openscene_metadata_trainval.tgz`) is only needed to regenerate the pickle
+from `navsim_logs` with `pickle_generation_navsim_mini.py`; the filtered-HF-
+pickle path above does not need it.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1082,6 +1128,7 @@ file's commit and the box `HEAD` are noted.
 | `oldbox_torch211_adamwfused_20261023/navsim` | 18 | `9573d02` | 50 (`adamw_torch_fused`, 50.60 samples/s) |
 | `bs_stab_20261023/bs{64,62,60,58,56}` | 19 | `c49bfb1` | 50 each (stability sweep) |
 | `bs_stab_20261023/bs62_rep` | 19 | `c49bfb1` | 50 (bs=62 repeat) |
+| `navsim_real_smoke_20261023/navsim` | 20 | `237c2ac` | 10 (real data, 467 samples, bs=8) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.

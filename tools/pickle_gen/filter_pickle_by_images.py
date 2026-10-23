@@ -10,7 +10,7 @@ can be used for a real-data smoke test.
 Usage:
     python tools/pickle_gen/filter_pickle_by_images.py \
         --input  /mnt/sfs_turbo/models/DriveVLA-W0/DriveVLA-W0/navsim_emu_vla_256_144_trainval_pre_1s.pkl \
-        --data_root /mnt/sfs_turbo/lmc/navsim_openscene/trainval_sensor_blobs \
+        --data_root /mnt/sfs_turbo/lmc/navsim_openscene/openscene-v1.1/sensor_blobs/trainval \
         --cur_frame_idx 3 \
         --output /mnt/sfs_turbo/lmc/navsim_openscene/navsim_trainval_subset.pkl
 """
