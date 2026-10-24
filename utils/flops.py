@@ -23,6 +23,8 @@ docs/superpowers/specs/2026-10-24-flops-counting-design.md.
 Self-check: python utils/flops.py
 """
 
+import os
+
 import torch
 import torch.nn as nn
 
@@ -75,13 +77,19 @@ class FlopsCounter:
         """Register hooks once. Call after accelerator.prepare()/unwrap."""
         if self._attached:
             return
+        seen = {}
         for module in model.modules():
             if isinstance(module, (nn.Linear,) + _CONV_TYPES):
+                name = type(module).__name__
+                seen[name] = seen.get(name, 0) + 1
                 self._trainable[id(module)] = any(
                     p.requires_grad for p in module.parameters(recurse=False)
                 )
                 self._handles.append(module.register_forward_hook(self._module_hook))
             elif _is_attention(module):
+                name = type(module).__name__
+                key = f"{name}(is_causal={getattr(module, 'is_causal', None)!r})"
+                seen[key] = seen.get(key, 0) + 1
                 self._trainable[id(module)] = any(
                     p.requires_grad for p in module.parameters(recurse=True)
                 )
@@ -89,6 +97,8 @@ class FlopsCounter:
                     module.register_forward_hook(self._attn_hook, with_kwargs=True)
                 )
         self._attached = True
+        if int(os.environ.get("LOCAL_RANK", 0)) == 0:
+            print(f"[flops] hooked modules: {seen}", flush=True)
 
     def reset(self):
         self.mm_trainable = self.mm_frozen = 0.0
