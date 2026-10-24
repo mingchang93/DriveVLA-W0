@@ -32,6 +32,9 @@ the weights are needed.
   `filter_pickle_by_images.py` (drop the replication once the retained count
   gives several batches per epoch) or use the full pickle at
   `/mnt/sfs_turbo/models/DriveVLA-W0/DriveVLA-W0/navsim_emu_vla_256_144_trainval_pre_1s.pkl`.
+- **FLOPs/MFU counting does not train on the above.** It uses
+  `navsim_flops_L420.pkl` — the single longest scene (L=420) replicated to a
+  fixed batch shape. Never use it for timing or learning; see Step 24.
 - `--pin_memory true` needs `ulimit -l unlimited` (the container's memlock is
   64 MB) and a bounded worker count; 8 workers is tested at bs=62. Pinning is
   the main on-stage free-time lever (Step 23).
@@ -1273,6 +1276,64 @@ amortize; free per sample is flat (8.7 vs 8.4 ms) and computing per sample is
 
 ---
 
+## Step 24 — Fixed input length and the FLOPs counting input
+
+Prerequisite for the FLOPs/MFU work (design:
+[`docs/superpowers/specs/2026-10-24-flops-counting-design.md`](docs/superpowers/specs/2026-10-24-flops-counting-design.md)).
+Per-step FLOPs depend on the padded sequence length, which the collator sets to
+the batch max, so the number drifts with batch composition. This step measures
+the real length and pins it.
+
+**Method.** Ran the dataset's own `_get_item` over every sample with the
+canonical arguments (`cur_frame_idx=3`, `future_nums=8`, `pre_future_nums=2`,
+`use_previous_actions=false`, `max_pixels=150528`), text and FAST actions
+tokenized for real, image loading stubbed to the verified real grid
+(`grid_thw=[1,20,36]` → 180 tokens; confirmed by loading one real image).
+Zero failures across 112,628 samples.
+
+| dataset | n | min | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|
+| `navsim_trainval_subset_x20.pkl` | 9,340 | 408 | 413 | 416 | 419 | **420** |
+| `navsim_emu_vla_256_144_trainval_pre_1s.pkl` | 103,288 | 407 | 413 | 416 | 419 | **423** |
+
+Findings:
+
+- 360 of the ~413 tokens are the two image blocks; text + action + template is
+  only ~48–63 tokens. The distribution is tight for that reason — nothing like
+  the `model_max_length=4096` truncation cap.
+- The x20 subset is exactly `data[:467] * 20`; every per-length count is a
+  multiple of 20. The longest scene is token `6a185e2130c75743` at index 356,
+  replicated at `356 + 467k`, so there is only **one unique scene at L=420**.
+- **Decision: fix L=420** for the canonical set (424 if the full pickle is ever
+  used). Versus the median sample that is +1.7% tokens and +3.4% attention work
+  — negligible, and it removes run-to-run variation.
+
+**Counting input artifact.** `navsim_flops_L420.pkl` (not committed;
+regenerate with the recipe below) contains only the L=420 scene, replicated to
+`8 ranks × 62 × 20 steps = 9,920` entries. Verified: every measured length is
+420 and each rank gets 1,240 samples = exactly 20 batches of 62, so no short
+tail batch changes the shape.
+
+```python
+import pickle
+src = "/mnt/sfs_turbo/lmc/navsim_openscene/navsim_trainval_subset_x20.pkl"
+d = pickle.load(open(src, "rb"))
+P = len(d) // 20                                             # 467
+sel = [d[i] for i in range(len(d)) if i % P == 356 % P]       # the 20 L=420 copies
+pickle.dump(sel * 496, open(".../navsim_flops_L420.pkl", "wb"))
+```
+
+Caveats: all samples are identical, so this pickle's step time is meaningless
+(page-cache-hot image loads) — never use it for timing or learning. FLOPs depend
+only on shapes, so it is sound as a counting instrument. The total must be a
+multiple of `world_size × per_device_batch_size`.
+
+Related: at L=420 with bs=62 the eager LLM score matrix is `62 · 28 · 420² ≈
+3.1e8` elements ≈ 612 MB bf16, so an eager, production-shaped counting run is
+memory-feasible; the timed run stays on FA2.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1395,6 +1456,9 @@ DeepSpeed ZeRO-3 + `torch_npu`, device-aware autocast, and the 180-token grid.
 | [`reference/transformers/src/transformers/data/__init__.py`](reference/transformers/src/transformers/data/__init__.py) | new | 6 |
 | [`reference/transformers/src/transformers/data/data_collator.py`](reference/transformers/src/transformers/data/data_collator.py) | new (upstream v4.56.0) | 6 |
 | [`.gitignore`](.gitignore) | modified | 6 |
+| [`docs/superpowers/specs/2026-10-24-flops-counting-design.md`](docs/superpowers/specs/2026-10-24-flops-counting-design.md) | new (FLOPs/MFU design) | 24 |
 | [`npu-port.md`](npu-port.md) | new | this document |
 
-Generated but not committed: `logs/synth_qwen_data/` (gitignored).
+Generated but not committed: `logs/synth_qwen_data/` (gitignored) and
+`/mnt/sfs_turbo/lmc/navsim_openscene/navsim_flops_L420.pkl` (Step 24; regenerate
+from the recipe there).
