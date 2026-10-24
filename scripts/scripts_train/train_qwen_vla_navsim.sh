@@ -42,6 +42,7 @@ MASTER_PORT=23458
 BATCH_SIZE=64
 GRAD_ACCUM=1
 NUM_WORKERS=24
+PIN_MEMORY=true
 FP="bf16"
 ATTN_TYPE="fa2"
 DEVICE="auto"
@@ -107,6 +108,7 @@ Training:
   --batch_size <n>             per-device batch, must be >= 2 (default: 64)
   --grad_accum <n>             (1)
   --num_workers <n>            (24)
+  --pin_memory <bool>          (true; false avoids the pinned-host-memory limit)
   --fp <bf16|fp16|fp32>        (bf16)
   --attn_type <sdpa|fa2|eager> (fa2; uses the vendored NPU flash-attention path)
   --device <auto|cuda|npu>     (auto)
@@ -175,6 +177,7 @@ while [[ $# -gt 0 ]]; do
     --batch_size)            BATCH_SIZE="$2";              shift 2 ;;
     --grad_accum)            GRAD_ACCUM="$2";              shift 2 ;;
     --num_workers)           NUM_WORKERS="$2";             shift 2 ;;
+    --pin_memory)            PIN_MEMORY="$2";              shift 2 ;;
     --fp)                    FP="$2";                      shift 2 ;;
     --attn_type)             ATTN_TYPE="$2";               shift 2 ;;
     --optim)                 OPTIM="$2";                   shift 2 ;;
@@ -398,6 +401,7 @@ torchrun \
     --gradient_accumulation_steps "$GRAD_ACCUM" \
     --gradient_checkpointing True \
     --dataloader_num_workers "$NUM_WORKERS" \
+    --dataloader_pin_memory "$PIN_MEMORY" \
     --dataloader_shuffle "$SHUFFLE" \
     --seed "$SEED" \
     --save_strategy steps \
