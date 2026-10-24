@@ -721,6 +721,12 @@ def train():
             f"[flops] cumulative per-card FLOPs: {total:.6e} "
             f"({total / 1e15:.4f} PFLOPs)"
         )
+        f = trainer._flops
+        rank0_print(
+            f"[flops] buckets: mm_t={f.mm_trainable:.3e} mm_f={f.mm_frozen:.3e} "
+            f"attn_t={f.attn_trainable:.3e} attn_f={f.attn_frozen:.3e} "
+            f"attn_full_t={f.attn_full_trainable:.3e} attn_full_f={f.attn_full_frozen:.3e}"
+        )
         steps = max(1, trainer.state.global_step)
         parts = ", ".join(
             f"{name}={value / steps:.3e}"
