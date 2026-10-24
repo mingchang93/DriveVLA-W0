@@ -1152,6 +1152,49 @@ never fired. Fixed to time `on_pre_optimizer_step` → `on_step_end`.)
 
 ---
 
+## Step 21 — Re-profile on real data (torch 2.11, bs=62)
+
+Run `logs/profile_l1_real_20261024` (real 20× subset, bs=62, fa2,
+`CPU_AFFINITY_CONF=1`, 8 workers, `pin_memory=false`, no weights saved),
+L1 trace at step 28.
+
+`step_trace_time.csv`: Computing **9.273 s**, Communication (not overlapped)
+0.266 s, Free **1.875 s**, total stage 11.414 s. Unprofiled step: 9.8 s
+compute, ~15.8 s wall.
+
+| op | ms | share | calls |
+|---|---|---|---|
+| MatMulV3 (3 kernel forms) | 5,657 | 55.5% | 2,181 |
+| HcclLaunch | 655 | 6.4% | 389 |
+| Mul | 629 | 6.2% | 2,808 |
+| Add | 351 | 3.4% | 2,030 |
+| FlashAttentionScoreGrad | 351 | 3.4% | 92 |
+| FlashAttentionScore | 300 | 2.9% | 185 |
+| Conv2D | 295 | 2.9% | 182 |
+| Cast | 243 | 2.4% | 3,320 |
+| Conv backward | 284 | 2.8% | 195 |
+| Transpose | 120 | 1.2% | 818 |
+| SiLU fwd+grad | 122 | 1.2% | 400 |
+| Div (RealDiv) | 100 | 1.0% | 274 |
+| ReduceSum / Square / Concat | 196 | 1.9% | — |
+
+Findings:
+
+- **MatMul is still 55.5%**; FA 6.3%, Conv 5.6%. Elementwise/layout is 17.3%
+  (Step 15: 15%). The compute shape of the step has not changed.
+- **The optimizer is only 3.8–5 ms per step** (new callback metric). The earlier
+  guess that AdamW dominated the elementwise profile was wrong — the wall-clock
+  gap is dataloader/logging, not the optimizer.
+- fp32 Mul (365 ms) exceeds bf16 Mul (303 ms): the fp32 RMSNorm/RoPE/LayerNorm
+  fallbacks. `npu_rms_norm` targets this but remains neutral (Step 14).
+- INT64 Mul: **621 calls, 0.8 ms** — mRoPE/window index arithmetic (see the
+  earlier trace analysis); 0.1% of Mul time.
+- **Free rose from 0.32 s (synthetic) to 1.88 s (real JPEGs)**: the remaining
+  overhead is the data path. With 8 workers the loader still leaves bubbles;
+  worker count is constrained by the 64 MB memlock/pin issue.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1198,6 +1241,7 @@ file's commit and the box `HEAD` are noted.
 | `navsim_real_200step_x20_20261024/navsim` | 20 | `19781ee` | 200 (real 20× subset, bs=62, throughput) |
 | `affinity_20261024/base` | 20 | `b875769` | 50 (`CPU_AFFINITY_CONF=0`) |
 | `affinity_20261024/aff` | 20 | `b875769` | 50 (`CPU_AFFINITY_CONF=1`) |
+| `profile_l1_real_20261024/navsim` | 21 | `67765d9` | 35 (L1 trace, step 28, no weights) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
