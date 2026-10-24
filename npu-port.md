@@ -12,6 +12,7 @@
 Canonical real-data configuration (bs=62 is the most stable, Step 19):
 
 ```bash
+export CPU_AFFINITY_CONF=1
 --data_path /mnt/sfs_turbo/lmc/navsim_openscene/navsim_trainval_subset_x20.pkl \
 --data_root /mnt/sfs_turbo/lmc/navsim_openscene/openscene-v1.1/sensor_blobs/trainval \
 --batch_size 62 --num_workers 8 --pin_memory false
@@ -1131,6 +1132,19 @@ New from `ed9eec9`: every run also logs `step_time_full_s` /
 `samples_per_s_full` = forward/backward + `optimizer.step()` + `zero_grad()`
 (device-synced), so the wall-clock gap is measured rather than inferred.
 
+**CPU affinity A/B (2026-10-24, 50 steps each, real 20× subset, bs=62):**
+
+| tag | step median | mean | CV | samples/s |
+|---|---|---|---|---|
+| base (`CPU_AFFINITY_CONF=0`) | 9.821 s | 10.151 s | 12.88% | 50.50 |
+| **`CPU_AFFINITY_CONF=1`** | 9.809 s | **9.877 s** | **2.38%** | **50.57** |
+
+Same throughput, ~5× lower step-time variance. `CPU_AFFINITY_CONF=1` is now
+part of the canonical run config. (The `step_time_full_s` values were identical
+to `step_time_s` in this A/B: the vendored Trainer calls `self.optimizer.step()`
+directly rather than `Trainer.optimizer_step`, so the first implementation
+never fired. Fixed to time `on_pre_optimizer_step` → `on_step_end`.)
+
 ---
 
 ## Run index
@@ -1177,6 +1191,8 @@ file's commit and the box `HEAD` are noted.
 | `bs_stab_20261023/bs62_rep` | 19 | `c49bfb1` | 50 (bs=62 repeat) |
 | `navsim_real_smoke_20261023/navsim` | 20 | `237c2ac` | 10 (real data, 467 samples, bs=8) |
 | `navsim_real_200step_x20_20261024/navsim` | 20 | `19781ee` | 200 (real 20× subset, bs=62, throughput) |
+| `affinity_20261024/base` | 20 | `b875769` | 50 (`CPU_AFFINITY_CONF=0`) |
+| `affinity_20261024/aff` | 20 | `b875769` | 50 (`CPU_AFFINITY_CONF=1`) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.

@@ -201,6 +201,27 @@ from token_utils import smart_load_model_and_tokenizer, prepare_action_tokenizer
 local_rank = None
 
 
+class OptimizerTimingCallback(TrainerCallback):
+    """Time optimizer.step() + lr_scheduler.step() + zero_grad().
+
+    The vendored Trainer calls `self.optimizer.step()` directly (it does not
+    route through `Trainer.optimizer_step`), so the window is measured with
+    callbacks: on_pre_optimizer_step fires after backward, on_step_end after
+    zero_grad(). training_step runs before the optimizer, so the value is
+    folded into the next step's log (one-step shift; medians are unaffected).
+    """
+
+    def __init__(self):
+        self.last_optimizer_s = 0.0
+
+    def on_pre_optimizer_step(self, args, state, control, **kwargs):
+        self._t0 = time.perf_counter()
+
+    def on_step_end(self, args, state, control, **kwargs):
+        device_synchronize()  # count completed optimizer work, not enqueue time
+        self.last_optimizer_s = time.perf_counter() - self._t0
+
+
 class RossTrainer(Trainer):
 
     def __init__(self, *args, **kwargs):
@@ -208,7 +229,8 @@ class RossTrainer(Trainer):
         self._acc_sum = defaultdict(float)
         self._acc_n = 0
         self._micro_in_accum = 0  # 当前累积里的 micro-step 计数
-        self._last_optimizer_s = 0.0  # optimizer.step() + zero_grad() wall time
+        self._opt_timer = OptimizerTimingCallback()
+        self.add_callback(self._opt_timer)
 
         # Data hash logging for cross-platform (NPU vs GPU) data-order verification
         # PRECISION_ALIGNMENT.md Phase 4.1 — per-rank file so NPU and GPU can be diffed
@@ -252,19 +274,6 @@ class RossTrainer(Trainer):
         self._acc_sum.clear()
         self._acc_n = 0
 
-    def optimizer_step(self, *args, **kwargs):
-        """Time optimizer.step() + lr_scheduler + zero_grad().
-
-        training_step only covers forward/backward; this is the other half of
-        the per-step wall time (Step 18's elementwise profile is dominated by
-        it). The value is folded into the next step's `step_time_full_s`.
-        """
-        t0 = time.perf_counter()
-        result = super().optimizer_step(*args, **kwargs)
-        device_synchronize()  # count completed optimizer work, not enqueue time
-        self._last_optimizer_s = time.perf_counter() - t0
-        return result
-
     def training_step(self, model, inputs, num_items_in_batch=None):
         # Data hash logging — compute BEFORE forward (the model can mutate inputs)
         # PRECISION_ALIGNMENT.md Phase 4.1: diff hash files across NPU vs GPU
@@ -292,7 +301,7 @@ class RossTrainer(Trainer):
             )
             # Full optimizer step: forward/backward + the previous step's
             # optimizer.step()/zero_grad(). Dataloader wait is still excluded.
-            full_s = step_s + self._last_optimizer_s
+            full_s = step_s + self._opt_timer.last_optimizer_s
             logs["step_time_full_s"] = full_s
             logs["samples_per_s_full"] = (
                 float(self.args.per_device_train_batch_size * self.args.world_size)
