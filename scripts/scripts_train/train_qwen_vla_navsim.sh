@@ -51,6 +51,9 @@ OPTIM="adamw_torch"
 MAX_STEPS=4000
 SAVE_STEPS=2000
 SAVE_TOTAL_LIMIT=2
+# Throughput runs should not write weights: the final model is ~18 GB and the
+# end-of-run checkpoint (with optimizer state) adds ~137 GB.
+SAVE_MODEL=false
 LOGGING_STEPS=10
 WARMUP_STEPS=50
 LR="5e-5"
@@ -117,6 +120,7 @@ Training:
   --max_steps <n>              (4000)
   --save_steps <n>             (2000)
   --save_total_limit <n>       (2)
+  --save_model <bool>          (false; true writes the final model + checkpoints)
   --logging_steps <n>          (10)
   --warmup_steps <n>           (50)
   --learning_rate <f>          (5e-5)
@@ -185,6 +189,7 @@ while [[ $# -gt 0 ]]; do
     --max_steps)             MAX_STEPS="$2";               shift 2 ;;
     --save_steps)            SAVE_STEPS="$2";              shift 2 ;;
     --save_total_limit)      SAVE_TOTAL_LIMIT="$2";        shift 2 ;;
+    --save_model)            SAVE_MODEL="$2";              shift 2 ;;
     --logging_steps)         LOGGING_STEPS="$2";           shift 2 ;;
     --warmup_steps)          WARMUP_STEPS="$2";            shift 2 ;;
     --learning_rate)         LR="$2";                      shift 2 ;;
@@ -249,6 +254,16 @@ if [ "$DEEPSPEED_CONFIG_EXPLICIT" = false ]; then
   esac
 fi
 [ -f "$DEEPSPEED_CONFIG" ] || die "DeepSpeed config not found: $DEEPSPEED_CONFIG"
+
+# Throughput runs skip both the end-of-run checkpoint (optimizer state) and the
+# final model save. train_qwen_vla.py reads ROSS_SAVE_MODEL.
+if [ "$SAVE_MODEL" = true ]; then
+  SAVE_STRATEGY=steps
+  export ROSS_SAVE_MODEL=1
+else
+  SAVE_STRATEGY=no
+  export ROSS_SAVE_MODEL=0
+fi
 
 # Local model path? Otherwise assume an HF id.
 case "$MODEL_NAME_OR_PATH" in
@@ -352,6 +367,7 @@ echo "  cur_frame_idx / fut:   $CUR_FRAME_IDX / $FUTURE_NUMS"
 echo "  deepspeed:             $DEEPSPEED_CONFIG (zero stage $ZERO_STAGE)"
 echo "  npu profiling:         $NPU_PROFILING (level $NPU_PROFILER_LEVEL)"
 echo "  valid_token_ce:        $VALID_TOKEN_CE"
+echo "  save_model:            $SAVE_MODEL (save_strategy=$SAVE_STRATEGY)"
 echo ""
 
 # ============================================================
@@ -404,7 +420,7 @@ torchrun \
     --dataloader_pin_memory "$PIN_MEMORY" \
     --dataloader_shuffle "$SHUFFLE" \
     --seed "$SEED" \
-    --save_strategy steps \
+    --save_strategy "$SAVE_STRATEGY" \
     --save_steps "$SAVE_STEPS" \
     --save_total_limit "$SAVE_TOTAL_LIMIT" \
     --eval_strategy "$EVAL_STRATEGY" \

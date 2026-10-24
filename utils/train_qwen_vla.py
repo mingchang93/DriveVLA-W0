@@ -669,18 +669,21 @@ def train():
         rank0_print("Starting training from scratch...")
         trainer.train()
     
-    # Save final model
+    # Always write trainer_state.json (metrics only, a few KB).
     trainer.save_state()
-    
-    # Save image processor
-    if hasattr(data_args, 'image_processor'):
-        data_args.image_processor.save_pretrained(training_args.output_dir)
-    
-    # Save tokenizer (with new VLA tokens)
-    tokenizer.save_pretrained(training_args.output_dir)
-    
-    model.config.use_cache = True
-    safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
+
+    if os.getenv("ROSS_SAVE_MODEL", "1") == "1":
+        # Save image processor
+        if hasattr(data_args, 'image_processor'):
+            data_args.image_processor.save_pretrained(training_args.output_dir)
+
+        # Save tokenizer (with new VLA tokens)
+        tokenizer.save_pretrained(training_args.output_dir)
+
+        model.config.use_cache = True
+        safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
+    else:
+        rank0_print("[save] model weights disabled (ROSS_SAVE_MODEL=0)")
     
     rank0_print("="*50)
     rank0_print("Training completed successfully!")

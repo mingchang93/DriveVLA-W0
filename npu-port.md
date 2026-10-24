@@ -15,8 +15,13 @@ Canonical real-data configuration (bs=62 is the most stable, Step 19):
 export CPU_AFFINITY_CONF=1
 --data_path /mnt/sfs_turbo/lmc/navsim_openscene/navsim_trainval_subset_x20.pkl \
 --data_root /mnt/sfs_turbo/lmc/navsim_openscene/openscene-v1.1/sensor_blobs/trainval \
---batch_size 62 --num_workers 8 --pin_memory false
+--batch_size 62 --num_workers 8 --pin_memory false --save_model false
 ```
+
+`--save_model` defaults to **false**: throughput runs write no checkpoint and no
+final model (a 200-step run otherwise leaves ~155 GB: an end-of-run checkpoint
+with optimizer state plus the 18 GB model). Set `--save_model true` only when
+the weights are needed.
 
 - `navsim_trainval_subset_x20.pkl` = the 467 scenes from camera shard 0,
   replicated 20× purely so the dataloader has multiple batches per epoch. As
