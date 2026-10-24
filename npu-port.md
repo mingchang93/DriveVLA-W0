@@ -1195,6 +1195,41 @@ Findings:
 
 ---
 
+## Step 22 — Three-way profile: batch size vs code revision
+
+All traces: real 20× subset, fa2, `CPU_AFFINITY_CONF=1`, L1 profiler, traced
+step 28, CANN 9.1.0 / torch_npu 2.11.0.
+
+| trace | code | bs | Computing | Comm | Free | Stage |
+|---|---|---|---|---|---|---|
+| A. HEAD | `f78fd40` | 62 | 9.273 s | 0.266 s | 1.875 s | 11.414 s |
+| B. HEAD | `f78fd40` | 40 | 6.028 s | 0.279 s | 1.273 s | 7.579 s |
+| C. Step 15 | `c01713b` | 40 | 6.195 s | 0.269 s | 0.358 s | 6.822 s |
+
+Kernel shares (A/B/C): MatMul 55.5/53.8/54.3%, FA 6.7/6.5/6.4%, Hccl
+6.4/7.0/6.9%, Mul 6.2/5.9/5.8%, Conv 5.7/5.8/5.7%, Add 3.4/3.1/3.1%,
+Cast 3.0/3.1/3.2%, Transpose 1.3/1.4/1.4%.
+
+**Batch-size delta (A vs B).** Compute scales linearly with batch
+(9.273/6.028 = 1.538 vs 62/40 = 1.55): no per-sample compute advantage at
+bs=62. The throughput gain is fixed-cost amortization — communication per
+sample 4.3 ms (bs62) vs 7.0 ms (bs40), plus the ~4 ms optimizer step.
+
+**Code delta (B vs C).** HEAD computes 2.7% faster (6.028 vs 6.195 s), from
+the valid-token CE compaction (Step 17). The old commit shows much less free
+time (0.358 vs 1.273 s), but that arm ran with 2 workers and `pin_memory`
+(the only configuration that fit) while HEAD used 8 workers without pinning, so
+the free-time difference is data-path configuration, not code. The `c01713b`
+run also needed `PYTORCH_NPU_ALLOC_CONF=expandable_segments:True` at bs=40:
+without it the full-vocab LM loss OOMs (9.5 GiB contiguous request with
+62.9 GiB resident).
+
+Saved weights from all previous runs were deleted during this step
+(`logs/` 3,046 GB → 13 GB); `--save_model false` keeps it that way.
+Traces are archived in `logs/profile_traces_20261024/` (see the README there).
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1242,6 +1277,8 @@ file's commit and the box `HEAD` are noted.
 | `affinity_20261024/base` | 20 | `b875769` | 50 (`CPU_AFFINITY_CONF=0`) |
 | `affinity_20261024/aff` | 20 | `b875769` | 50 (`CPU_AFFINITY_CONF=1`) |
 | `profile_l1_real_20261024/navsim` | 21 | `67765d9` | 35 (L1 trace, step 28, no weights) |
+| `profile_l1_real_bs40_20261024/navsim` | 22 | `f78fd40` | 35 (L1 trace, bs=40, no weights) |
+| `profile_l1_c01713b_bs40_20261024/navsim` | 22 | `c01713b` | 35 (L1 trace, Step 15 code, bs=40; weights deleted) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
