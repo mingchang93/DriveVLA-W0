@@ -1383,6 +1383,45 @@ five significant figures, because the causal halving only touches the LLM's
 
 ---
 
+## Step 26 — Segmented attention, one step at bs=2 (`a350933`)
+
+Run `logs/flops_b2_buckets_20261024`: 8 × 950DT, per-device bs=2, **one step**,
+`ROSS_COUNT_FLOPS=1`, `ROSS_VALID_CE=1`, fa2, ZeRO-2, fixed-length pickle.
+
+| per card, bs=2, 1 step | ×31 → bs=62 |
+|---|---|
+| `flops_mm` 4.7603e13 | **1.4757e15** |
+| `flops_attn` 6.3435e11 | **1.9665e13** |
+| `flops_attn_full` 8.4677e11 | **2.6250e13** |
+| `flops_total` 4.8237e13 | **1.4954e15** |
+
+The ×31 mm value is exactly the bs=62 value from Step 25's run — batch linearity
+at fixed L holds to the digit, so one step at bs=2 replaces 20 at bs=62.
+
+**Bugs found and fixed on the way** (all `a350933` / `865ef27`):
+
+- **Attention was not counted at all.** The Qwen decoder calls
+  `self.self_attn(hidden_states=..., ...)` **by keyword**, and the hook only
+  read positional args, so all 28 LLM attention modules were silently skipped.
+  `flops_attn == flops_attn_full` was the symptom (only non-causal vision/UNet
+  attention was counted). The hook now accepts `kwargs["hidden_states"]`, with a
+  self-check case for the keyword form.
+- **Vision attention was densified.** Now costed by `cu_seqlens`: per-image
+  segments (720 patch tokens) for the 4 full-attention blocks and 64-token
+  windows for the other 28. Attention drops from 3.92e15 to 1.97e13 at bs=62.
+
+**Reading the diagnostic prints.** `[flops] by class` and `[flops] buckets`
+accumulate over the whole run and the run logged two forwards (the print is 2×
+the per-step value), so use the logged `flops_*` keys, not the prints. The
+logged per-step value is anchored: 4.7603e13 = 2 samples × 418 tokens ×
+2 × 28.45e9 effective params.
+
+**Single rank** still does not fit: at `world_size=1` ZeRO-2 holds the
+unsharded optimizer state and gradient partition regardless of batch size. Use
+8 ranks; the counter is per-rank and identical.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1433,6 +1472,8 @@ file's commit and the box `HEAD` are noted.
 | `profile_l1_real_bs40_20261024/navsim` | 22 | `f78fd40` | 35 (L1 trace, bs=40, no weights) |
 | `profile_l1_c01713b_bs40_20261024/navsim` | 22 | `c01713b` | 35 (L1 trace, Step 15 code, bs=40; weights deleted) |
 | `flops_count_20261024_v3` | 25 | `f404d21` | 20 (FLOPs count, bs=62, L=420, no weights) |
+| `flops_b2_final_20261024` | 26 | `a350933` | 1 (FLOPs count, bs=2, L=420, no weights) |
+| `flops_b2_buckets_20261024` | 26 | `bc64c73` | 1 (same, with the bucket diagnostic) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
