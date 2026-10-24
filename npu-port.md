@@ -1336,6 +1336,11 @@ memory-feasible; the timed run stays on FA2.
 
 ## Step 25 — First FLOPs count (fixed-length batch, `f404d21`)
 
+> **Superseded by Step 26.** These numbers cost the vision attention as one
+> dense matrix over the concatenated patch sequence; the counter now segments
+> by `cu_seqlens`, and the protocol is one step at bs=2 (×31) rather than 20
+> steps at bs=62. Kept for the record.
+
 Run `logs/flops_count_20261024_v3`: 8 × Ascend 950DT, bs=62, L=420,
 `ROSS_COUNT_FLOPS=1`, `ROSS_VALID_CE=1`, fa2, ZeRO-2, 20 steps, no profiling,
 input `/mnt/sfs_turbo/lmc/navsim_openscene/navsim_flops_L420.pkl`.

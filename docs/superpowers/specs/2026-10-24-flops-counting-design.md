@@ -4,9 +4,12 @@ Status: **draft v2, post-review** — nothing implemented yet.
 Date: 2026-10-24
 Scope: `utils/train_qwen_vla.py` + one new file `utils/flops.py`.
 
-Revision note: v3 adds the measured input length (§3.5: `L = 420`, measured on
-both the canonical subset and the full pickle) and updates §3.2 — eager at the
-production batch is now known to be memory-safe. v2 corrected §2.1's MFU
+Revision note: v4 costs the vision attention by `cu_seqlens` segments (§2.2.1a)
+instead of one dense matrix over the concatenated sequence, and shrinks the
+counting protocol to one step at batch 2 scaled by 31 (§5). v3 added the
+measured input length (§3.5: `L = 420`, measured on both the canonical subset
+and the full pickle) and updated §3.2 — eager at the production batch is now
+known to be memory-safe. v2 corrected §2.1's MFU
 formula (per-card) and the conv formula. The vision tower's attention is counted
 with the same generic dense formula as every other attention module — no
 upstream model changes, no special-casing; see §7 for the resulting over-count.
@@ -79,10 +82,21 @@ cost model:
 ([modeling_qwen2_5_vl.py:202](../../../reference/transformers/src/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py#L202)).
 
 `hidden_states` is **2-D** `(seq_len, C)`
-([:225](../../../reference/transformers/src/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py#L225)),
-so it is treated as `B=1`, `Lq=Lk=seq_len` and costed with the same generic
-formula as everything else. `is_causal` is `False` for this module. The
-resulting over-count is recorded in §7; upstream model code is not touched.
+([:225](../../../reference/transformers/src/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py#L225))
+— the whole batch's patches concatenated — and the tower splits it by
+`cu_seqlens`, passed as a keyword from the block
+([:312-318](../../../reference/transformers/src/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py#L312-L318)).
+The executed cost is the sum of per-segment dense attention:
+
+```
+lens  = cu_seqlens[1:] - cu_seqlens[:-1]
+flops = 4 · H · D · Σ lenᵢ²
+```
+
+Only blocks `[7, 15, 23, 31]` use the per-image `cu_seqlens`
+(`fullatt_block_indexes`); the other 28 use `cu_window_seqlens`, whose segments
+are 112-px windows → 64 patch tokens. `is_causal` is `False` for this module.
+When `cu_seqlens` is absent, fall back to the dense `B=1, Lq=Lk=seq_len` term.
 
 **(b) Qwen LLM attention** — `Qwen2_5_VLAttention`
 ([:633](../../../reference/transformers/src/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py#L633)).
@@ -262,10 +276,12 @@ sel = [d[i] for i in range(len(d)) if i % P == 356 % P]       # the 20 L=420 cop
 pickle.dump(sel * 496, open(".../navsim_flops_L420.pkl", "wb"))   # 9,920 = 8 ranks x 62 x 20 steps
 ```
 
-The total must be a multiple of the per-device batch (and of
-`world_size × per_device_batch_size` if it is ever run multi-rank), otherwise
-the last batch is short and has a different shape. The generated 9,920-entry
-file satisfies both: 9,920 = 8 × 62 × 20 = 160 × 62.
+The total must be a multiple of the per-device batch and of
+`world_size × per_device_batch_size`, otherwise the last batch is short and has
+a different shape. The 9,920-entry file was sized for a 20-step bs=62 run
+(9,920 = 8 × 62 × 20 = 160 × 62). The current protocol needs only one step at
+bs=2, i.e. `world_size × 2 = 16` entries, so the existing file is more than
+sufficient.
 
 Caveats: every sample is identical, so the counting run's *step time* is not
 meaningful (page-cache-hot image loads, no batch diversity). It is a FLOPs
@@ -380,12 +396,19 @@ No peak/TFLOPS variable exists — MFU is computed outside the tool (§2.1).
 3. **Count with fusions on vs off** (`ROSS_FLOPS_NATIVE=1` vs `0`, same batch,
    2 steps): `flops_mm` and `flops_total` must be bit-identical. This is the
    empirical form of §3.1's claim.
-4. **Counting run (single rank, per-device batch 62, ~20 steps).** Input is the
-   duplicated longest-sample pickle from §3.5, so every step is exactly
-   `[62, 420]`. Gates: `flops_total > flops_mm`, `flops_attn_frozen > 0` (VAE
-   mid-block reachable), and `L` logged as 420 on every step. Ignore this run's
-   step time, and ignore the other seven ranks — they would produce the same
-   count.
+4. **Counting run (per-device batch 2, one step).** Input is the duplicated
+   longest-sample pickle from §3.5, so the shape is exactly `[2, 420]`. FLOPs
+   are **exactly** linear in `B` at fixed `L` (every term carries a `B` factor
+   and the model has no batch-dependent normalisation), so multiply by 31 to get
+   the bs=62 per-card number. One step is enough — the shape is constant, so
+   there is nothing to average.
+
+   Use 8 ranks, not one: at `world_size=1` ZeRO-2 must hold the unsharded
+   optimizer state and gradient partition, which does not fit even at bs=2. The
+   counter is per-rank, so any rank reports the same number.
+
+   Gates: `flops_total > flops_mm`, `flops_attn_frozen > 0` (VAE mid-block
+   reachable), `seq_len == 420`. Ignore this run's step time.
 5. **Timing run (production pickle, bs=62, accelerated, 100 steps, drop the first
    10, average 20–70)** for the authoritative step time.
 
@@ -418,12 +441,6 @@ computes MFU, so no peak value is needed (§2.1).
   deliberately snapshots before backward. Reported MFU is therefore ~25–30%
   below raw hardware utilisation. This is the standard MFU convention, kept for
   comparability with published numbers.
-- **Vision attention is over-counted.** The module segments its input by
-  `cu_seqlens` (28 of 32 blocks are windowed, `fullatt_block_indexes=[7,15,23,31]`),
-  but we cost the concatenated sequence as one dense `L²` matrix. The vision
-  attention term is therefore larger than what executes. Accepted deliberately:
-  upstream model code is out of scope. It inflates `flops_total` and MFU; do not
-  compare the absolute MFU to a reference that segments this term.
 - **One peak for mixed precision.** The denoiser runs under an fp32 autocast
   ([modeling_qwen2_5_vl_ross.py:355](../../../reference/transformers/src/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl_ross.py#L355))
   and the VAE under `no_grad`; both are divided by the bf16 peak, which

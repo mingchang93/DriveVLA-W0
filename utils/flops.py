@@ -6,10 +6,12 @@ Counts matmul work in the forward pass with module hooks:
     nn.Linear         2 * rows * in_features * out_features
     nn.Conv1d/2d/3d   2 * output.numel() * (in_channels // groups) * prod(kernel)
     attention         4 * B * H * Lq * Lk * D   (halved when is_causal)
+                      or 4 * H * D * sum(L_i^2) when cu_seqlens segments it
 
 Attention is costed from the shapes the module receives, so the number is the
-same whether FA2, SDPA or eager executes it. Vision attention gets a 2-D input
-and is treated as B=1 over the concatenated sequence.
+same whether FA2, SDPA or eager executes it. Vision attention packs the whole
+batch into one 2-D sequence and splits it by cu_seqlens; that path costs the
+sum of per-segment dense attention rather than one dense matrix.
 
 Trainable and frozen parameters accumulate into separate buckets so the caller
 can apply the standard 3x / 1x forward+backward rule. Counters are per rank:
@@ -144,13 +146,24 @@ class FlopsCounter:
         if not heads or not head_dim:
             return
 
-        encoder = (kwargs or {}).get("encoder_hidden_states")
-        if encoder is not None and torch.is_tensor(encoder):
-            lk = encoder.shape[1] if encoder.dim() == 3 else encoder.shape[0]
-        else:
-            lk = lq
+        # Vision packs the batch into one sequence and splits it by cu_seqlens
+        # (the block passes it as a keyword). Sum of per-segment dense
+        # attention, not one dense matrix over the concatenation.
+        cu = (kwargs or {}).get("cu_seqlens")
+        if cu is None and len(args) > 1 and torch.is_tensor(args[1]) and args[1].dim() == 1:
+            cu = args[1]
 
-        flops = 4.0 * batch * int(heads) * lq * lk * head_dim
+        if cu is not None and cu.numel() >= 2:
+            lens = cu[1:].to(torch.int64) - cu[:-1].to(torch.int64)
+            sum_sq = int((lens * lens).sum().item())
+            flops = 4.0 * int(heads) * head_dim * sum_sq
+        else:
+            encoder = (kwargs or {}).get("encoder_hidden_states")
+            if encoder is not None and torch.is_tensor(encoder):
+                lk = encoder.shape[1] if encoder.dim() == 3 else encoder.shape[0]
+            else:
+                lk = lq
+            flops = 4.0 * batch * int(heads) * lq * lk * head_dim
         causal = bool(getattr(module, "is_causal", False))
         self._add(module, flops, is_attn=True, causal_scale=0.5 if causal else 1.0)
 
@@ -223,10 +236,10 @@ def _selfcheck():
             self.is_causal = causal
             self.to_q = nn.Linear(heads * head_dim, heads * head_dim)
 
-        def forward(self, hidden, encoder_hidden_states=None):
+        def forward(self, hidden, cu_seqlens=None, encoder_hidden_states=None):
             return self.to_q(hidden)
 
-    def attention_flops(causal, shape, encoder_shape=None):
+    def attention_flops(causal, shape, encoder_shape=None, cu_seqlens=None):
         c = FlopsCounter()
         attn = FakeAttention(heads=3, head_dim=5, causal=causal)
         c.attach(attn)
@@ -234,6 +247,8 @@ def _selfcheck():
         kwargs = {}
         if encoder_shape is not None:
             kwargs["encoder_hidden_states"] = torch.zeros(*encoder_shape)
+        if cu_seqlens is not None:
+            kwargs["cu_seqlens"] = torch.tensor(cu_seqlens, dtype=torch.int32)
         attn(torch.zeros(*shape), **kwargs)
         return c.flops_attn_full, c.flops_attn
 
@@ -250,9 +265,15 @@ def _selfcheck():
     full, causal_adj = attention_flops(False, (2, 4, 15), encoder_shape=(2, 6, 15))
     assert full == 3.0 * 2880, full
 
-    # 2-D input (vision): B=1, Lq=Lk=6 -> 4 * 1 * 3 * 6 * 6 * 5 = 2160
+    # 2-D input without segments: B=1, Lq=Lk=6 -> 4 * 1 * 3 * 6 * 6 * 5 = 2160
     full, causal_adj = attention_flops(False, (6, 15))
     assert full == 3.0 * 2160, full
+
+    # Segmented (vision): cu_seqlens [0,4,6] over 6 tokens
+    #   sum L^2 = 4^2 + 2^2 = 20 -> 4 * 1 * 3 * 5 * 20 = 1200  (not L^2 = 36)
+    full, causal_adj = attention_flops(False, (6, 15), cu_seqlens=[0, 4, 6])
+    assert full == 3.0 * 1200, full
+    assert causal_adj == 3.0 * 1200, causal_adj
 
     # Total = mm + causal attention
     c = FlopsCounter()
