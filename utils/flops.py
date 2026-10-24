@@ -144,9 +144,14 @@ class FlopsCounter:
         self._add(module, flops, is_attn=False)
 
     def _attn_hook(self, module, args, kwargs, output):
-        if not args or not torch.is_tensor(args[0]):
+        hidden = None
+        if args and torch.is_tensor(args[0]):
+            hidden = args[0]
+        elif kwargs and torch.is_tensor(kwargs.get("hidden_states")):
+            # The Qwen decoder calls attention with hidden_states= as a keyword.
+            hidden = kwargs["hidden_states"]
+        if hidden is None:
             return
-        hidden = args[0]
         if hidden.dim() == 3:
             batch, lq = hidden.shape[0], hidden.shape[1]
         elif hidden.dim() == 2:          # Qwen vision: (seq_len, C)
@@ -249,8 +254,8 @@ def _selfcheck():
             self.is_causal = causal
             self.to_q = nn.Linear(heads * head_dim, heads * head_dim)
 
-        def forward(self, hidden, cu_seqlens=None, encoder_hidden_states=None):
-            return self.to_q(hidden)
+        def forward(self, hidden_states, cu_seqlens=None, encoder_hidden_states=None):
+            return self.to_q(hidden_states)
 
     def attention_flops(causal, shape, encoder_shape=None, cu_seqlens=None):
         c = FlopsCounter()
@@ -281,6 +286,15 @@ def _selfcheck():
     # 2-D input without segments: B=1, Lq=Lk=6 -> 4 * 1 * 3 * 6 * 6 * 5 = 2160
     full, causal_adj = attention_flops(False, (6, 15))
     assert full == 3.0 * 2160, full
+
+    # Keyword call: the Qwen decoder passes hidden_states= to the attention
+    c = FlopsCounter()
+    attn = FakeAttention(heads=3, head_dim=5, causal=True)
+    c.attach(attn)
+    c.reset()
+    attn(hidden_states=torch.zeros(2, 4, 15))
+    assert c.flops_attn == 3.0 * 960, c.flops_attn
+    assert c.flops_attn_full == 3.0 * 1920, c.flops_attn_full
 
     # Segmented (vision): cu_seqlens [0,4,6] over 6 tokens
     #   sum L^2 = 4^2 + 2^2 = 20 -> 4 * 1 * 3 * 5 * 20 = 1200  (not L^2 = 36)
