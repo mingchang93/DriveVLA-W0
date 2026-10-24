@@ -1334,6 +1334,50 @@ memory-feasible; the timed run stays on FA2.
 
 ---
 
+## Step 25 — First FLOPs count (fixed-length batch, `f404d21`)
+
+Run `logs/flops_count_20261024_v3`: 8 × Ascend 950DT, bs=62, L=420,
+`ROSS_COUNT_FLOPS=1`, `ROSS_VALID_CE=1`, fa2, ZeRO-2, 20 steps, no profiling,
+input `/mnt/sfs_turbo/lmc/navsim_openscene/navsim_flops_L420.pkl`.
+
+| quantity | per card per step |
+|---|---|
+| `flops_mm` (Linear + Conv, 3× / 1×) | **1.4757e15** |
+| `flops_attn` (causal variant, 3× / 1×) | **3.9249e15** |
+| `flops_total` | **5.4006e15** |
+| cumulative over 20 steps | 1.0801e17 (108.01 PFLOPs/card) |
+
+`seq_len` logged 420 on all 20 steps and every FLOPs value is bit-identical
+step to step, as expected for a fixed-shape batch.
+
+**Decomposition.** Attention is 72.7 % of the total and 99.8 % of that is the
+vision tower, counted dense over the concatenated patch sequence (the accepted
+over-count from Step 24): 32 blocks × `4·16·80·89,280²` ≈ 1.306e15 forward
+(×3 = 3.918e15). The LLM contributes 6.6e12 (causal-halved). Segmented by
+`cu_seqlens` the vision term would be ~6.1e12 forward — ~214× smaller — and the
+total would fall from 5.40e15 to ~1.49e15. `flops_attn == flops_attn_full` to
+five significant figures, because the causal halving only touches the LLM's
+0.2 % share.
+
+**Findings.**
+
+- **Single-rank counting does not fit at bs=62.** At `world_size=1` ZeRO-2 must
+  hold the full gradient partition; backward OOMs allocating 17.05 GiB with
+  82.47 GiB already resident. The 8-rank layout is what makes bs=62 fit. Since
+  the counter is per-rank and every rank sees the same shapes, the 8-rank run is
+  the practical way to count — read rank 0's log.
+- **`ROSS_VALID_CE=1` is mandatory** at bs=62. Without it the full
+  `[26040, 152064]` fp32 logits transient (≈15.8 GiB) OOMs. It is also the
+  production setting, so the count matches what actually runs.
+- The earlier async-mode A/B failure was the same missing flag, not the feature:
+  it ran without `ROSS_VALID_CE=1` under the L1 profiler and hit the LM-head OOM.
+- Step time was **not** logged in this run: the shared tmux shell still had
+  `ROSS_STEP_TIMING=0` exported from Step 23. That is fine — the counting run's
+  own time is the native-path time and must not be used for MFU; pair
+  `flops_total` with a production run's `step_time_full_s`.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1383,6 +1427,7 @@ file's commit and the box `HEAD` are noted.
 | `profile_l1_real_20261024/navsim` | 21 | `67765d9` | 35 (L1 trace, step 28, no weights) |
 | `profile_l1_real_bs40_20261024/navsim` | 22 | `f78fd40` | 35 (L1 trace, bs=40, no weights) |
 | `profile_l1_c01713b_bs40_20261024/navsim` | 22 | `c01713b` | 35 (L1 trace, Step 15 code, bs=40; weights deleted) |
+| `flops_count_20261024_v3` | 25 | `f404d21` | 20 (FLOPs count, bs=62, L=420, no weights) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
