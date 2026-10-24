@@ -1482,6 +1482,39 @@ overlap here.
 
 ---
 
+## Step 29 — Batch-size stability sweep on the fixed-length set (`02a694f`)
+
+200 steps per size (bs=62 reused from Step 27 at 100 steps), no profiling,
+canonical otherwise (fa2, ZeRO-2, pinning, valid-token CE). FLOPs per card
+scale linearly: `1.4954e15 × bs/62`. Peak 486 TFLOPS.
+
+| bs | steps | mean s | median s | CV | outliers | samples/s (median) | samples/s (mean) | MFU (median) | MFU (mean) |
+|---|---|---|---|---|---|---|---|---|---|
+| 62 | 100 | 10.858 | 9.662 | 24.2% | 7 | **51.33** | 45.68 | **31.8%** | 28.3% |
+| 48 | 200 | 8.394 | 7.570 | 19.2% | 4 | 50.73 | **45.75** | 31.5% | **28.4%** |
+| 40 | 200 | 7.088 | 6.404 | 21.4% | 5 | 49.97 | 45.15 | 31.0% | 28.0% |
+| 32 | 200 | 5.760 | 5.220 | 17.4% | 2 | 49.04 | 44.44 | 30.4% | 27.6% |
+| 24 | 200 | 4.491 | 4.418 | **16.3%** | **1** | 43.46 | 42.75 | 27.0% | 26.5% |
+
+(20–70 window; outliers = steps > 1.5× the window median.)
+
+Findings:
+
+- **Lowering the batch reduces variance but does not remove the spikes.** CV
+  goes 24.2% → 16.3% from bs=62 to 24, and outlier count 7 → 1, but a few
+  10–20 s steps appear at every size. The spikes are not batch-size artefacts.
+- **Mean-based MFU is flat above bs=32** (27.6–28.4%, best at bs=48) and drops
+  at bs=24 (26.5%). Median-based MFU is 30–32% for bs≥32.
+- **Per-sample step cost rises as bs falls**: 0.156 s/sample at bs=62 → 0.184
+  at bs=24 (fixed per-step cost amortized over fewer samples), which is exactly
+  why throughput and MFU fall at the bottom of the sweep.
+- **Throughput:** 51.3 samples/s at bs=62, 50.7 at 48, 50.0 at 40, 49.0 at 32,
+  43.5 at 24 (median-based; mean-based ~42.8–45.8 throughout).
+- If the goal is a *stable* number, bs=24 is the tightest (CV 16.3%); if it is
+  *throughput/MFU*, bs=48–62 is better and the mean is the honest figure.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1537,6 +1570,7 @@ file's commit and the box `HEAD` are noted.
 | `bestcfg_flopsdata_20261024` | 27 | `7109a22` | 100 (best config, fixed-length set, no weights) |
 | `coc_sync_20261024` | 28 | `7109a22` | 32 (L1 trace, `TASK_QUEUE_ENABLE=0`) |
 | `coc_async_20261024` | 28 | `7109a22` | 32 (L1 trace, `TASK_QUEUE_ENABLE=1`) |
+| `bsstab_{48,40,32,24}_20261024` | 29 | `02a694f` | 200 each (no profiling) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
