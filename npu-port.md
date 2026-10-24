@@ -15,8 +15,11 @@ Canonical real-data configuration (bs=62 is the most stable, Step 19):
 export CPU_AFFINITY_CONF=1
 --data_path /mnt/sfs_turbo/lmc/navsim_openscene/navsim_trainval_subset_x20.pkl \
 --data_root /mnt/sfs_turbo/lmc/navsim_openscene/openscene-v1.1/sensor_blobs/trainval \
---batch_size 62 --num_workers 8 --pin_memory false --save_model false
+--batch_size 62 --num_workers 8 --pin_memory true --save_model false
 ```
+
+Run `ulimit -l unlimited` first (Step 23): pinning needs it, and 8 workers is
+the tested point at bs=62; more workers risk exhausting host pinned memory.
 
 `--save_model` defaults to **false**: throughput runs write no checkpoint and no
 final model (a 200-step run otherwise leaves ~155 GB: an end-of-run checkpoint
@@ -29,8 +32,9 @@ the weights are needed.
   `filter_pickle_by_images.py` (drop the replication once the retained count
   gives several batches per epoch) or use the full pickle at
   `/mnt/sfs_turbo/models/DriveVLA-W0/DriveVLA-W0/navsim_emu_vla_256_144_trainval_pre_1s.pkl`.
-- `--num_workers 8 --pin_memory false` is required: the container has a 64 MB
-  memlock limit, and a prefetching real-image loader OOMs the host otherwise.
+- `--pin_memory true` needs `ulimit -l unlimited` (the container's memlock is
+  64 MB) and a bounded worker count; 8 workers is tested at bs=62. Pinning is
+  the main on-stage free-time lever (Step 23).
 - Step 20 has the data layout, download and validation details.
 
 This document records every change made on the branch since the base commit, the
@@ -1232,8 +1236,8 @@ Traces are archived in `logs/profile_traces_20261024/` (see the README there).
 
 ## Step 23 — On-stage free time
 
-All runs: HEAD code, real 20× subset, bs=40, fa2, affinity on, L1 trace,
-step 28 (where applicable).
+All runs: HEAD code, real 20× subset, fa2, affinity on, L1 trace, step 28
+(where applicable); bs=40 unless the row says bs=62.
 
 | variant | Computing | Comm | Free | Stage |
 |---|---|---|---|---|
@@ -1241,6 +1245,7 @@ step 28 (where applicable).
 | `pin_memory`, 2 workers | 6.061 s | 0.230 s | 0.420 s | 6.710 s |
 | `pin_memory`, 8 workers | 6.052 s | 0.271 s | **0.347 s** | 6.670 s |
 | `pin_memory`, 8 workers, gate diagnostics removed + `ROSS_STEP_TIMING=0` | 6.054 s | 0.250 s | 0.349 s | 6.652 s |
+| `pin_memory`, 8 workers, **bs=62** | 9.227 s | 0.249 s | 0.521 s | 9.996 s |
 
 Findings:
 
@@ -1258,8 +1263,13 @@ Findings:
   remaining on-stage lever is fewer kernels (fusion), which Step 14 measured
   as neutral or negative on this stack.
 - Note: pinning lowers on-stage free but the wall was ~unchanged — the idle
-  moves off-stage (dataloader wait). Wall reduction needs faster data delivery
-  (decode caching), not more sync removal.
+  moves off-stage (dataloader wait). Wall reduction needs faster data delivery,
+  not more sync removal.
+
+**Per-sample on-stage (pinned):** bs=40 → 6.670/40 = **166.8 ms**; bs=62 →
+9.996/62 = **161.2 ms**. bs=62 is ~3% better because comm/launch/fixed costs
+amortize; free per sample is flat (8.7 vs 8.4 ms) and computing per sample is
+148.8 vs 151.3 ms. The canonical config is therefore bs=62 + pinning.
 
 ---
 
