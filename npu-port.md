@@ -1084,6 +1084,31 @@ to roughly 10–20 h. The 7 GB metadata tarball
 from `navsim_logs` with `pickle_generation_navsim_mini.py`; the filtered-HF-
 pickle path above does not need it.
 
+**Throughput on the 20× subset (throughput only, not a learning run).**
+`navsim_trainval_subset_x20.pkl` = 9,340 entries (467 × 20), bs=62, 200 steps:
+
+| metric | value |
+|---|---|
+| `step_time_s` median (steps 6–200) | 9.995 s (mean 10.27, CV 13.85%, 6 outliers, max 21.4) |
+| samples/s median | 49.62 |
+| wall clock | 14.4 s/step (bar), 15.2 s/step incl. final save |
+| `train_loss` | 2.08 (overfits the 467 unique scenes; ignore) |
+
+Synthetic bs=62 for comparison: 9.745 s median, CV 4.03%. Real data is ~2.5%
+slower in compute and noisier (JPEG loading stalls even with prefetch).
+
+Two host-memory traps with a prefetching real-data loader:
+1. The 467-sample subset gives `dataloader len: 1`, so loading cannot overlap
+   (48.6 s/step wall). Replicating the list fixes it.
+2. `ulimit -l` is 64 MB in this container; `pin_memory` exhausts it
+   (`aclrtMallocHostWithCfg` 207001). Raising the limit lets the kernel OOM-kill
+   the workers instead. Launch real-data runs with
+   `--num_workers 8 --pin_memory false`.
+
+New from `ed9eec9`: every run also logs `step_time_full_s` /
+`samples_per_s_full` = forward/backward + `optimizer.step()` + `zero_grad()`
+(device-synced), so the wall-clock gap is measured rather than inferred.
+
 ---
 
 ## Run index
@@ -1129,6 +1154,7 @@ file's commit and the box `HEAD` are noted.
 | `bs_stab_20261023/bs{64,62,60,58,56}` | 19 | `c49bfb1` | 50 each (stability sweep) |
 | `bs_stab_20261023/bs62_rep` | 19 | `c49bfb1` | 50 (bs=62 repeat) |
 | `navsim_real_smoke_20261023/navsim` | 20 | `237c2ac` | 10 (real data, 467 samples, bs=8) |
+| `navsim_real_200step_x20_20261024/navsim` | 20 | `19781ee` | 200 (real 20× subset, bs=62, throughput) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
