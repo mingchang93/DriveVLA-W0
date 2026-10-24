@@ -20,6 +20,8 @@ from typing import Dict, List, Optional
 from collections import defaultdict
 from torch.utils.data import SequentialSampler, RandomSampler
 
+from utils.flops import FlopsCounter
+
 # ---------------------------------------------------------------------------
 # Device detection: NPU > CUDA > CPU  (override via DEVICE env var)
 # ---------------------------------------------------------------------------
@@ -159,6 +161,16 @@ def compute_batch_hash(inputs: Dict) -> str:
     return h.hexdigest()
 
 
+# FLOPs counting runs the unaccelerated path, so no fused kernel can hide work.
+# These flags are read at import time by npu_fused_ops, which the vendored
+# modeling module pulls in below — hence this must run first.
+if os.getenv("ROSS_COUNT_FLOPS", "0") == "1" and os.getenv("ROSS_FLOPS_NATIVE", "1") == "1":
+    for _flag in ("ROSS_NPU_RMSNORM", "ROSS_NPU_SWIGLU", "ROSS_NPU_ROPE",
+                  "ROSS_NPU_ADD_RMSNORM", "ROSS_NPU_GN_SILU", "ROSS_NPU_SILU"):
+        if os.environ.get(_flag) == "1" and int(os.environ.get("LOCAL_RANK", 0)) == 0:
+            print(f"[flops] native path: overriding {_flag}=1 -> 0")
+        os.environ[_flag] = "0"
+
 # Add paths to import Qwen-VL components
 qwen_vl_path = Path(__file__).parent.parent / "reference" / "Qwen2.5-VL" / "qwen-vl-finetune"
 sys.path.append(str(qwen_vl_path))
@@ -235,6 +247,11 @@ class RossTrainer(Trainer):
         self._acc_n = 0
         self._micro_in_accum = 0  # 当前累积里的 micro-step 计数
         self._opt_timer = None
+
+        # Per-step FLOPs (ROSS_COUNT_FLOPS=1). Attached lazily on the first
+        # compute_loss, i.e. after accelerator.prepare().
+        self._flops = FlopsCounter() if os.getenv("ROSS_COUNT_FLOPS", "0") == "1" else None
+        self._last_flops = None
         if _STEP_TIMING:
             self._opt_timer = OptimizerTimingCallback()
             self.add_callback(self._opt_timer)
@@ -281,7 +298,35 @@ class RossTrainer(Trainer):
         self._acc_sum.clear()
         self._acc_n = 0
 
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        """FLOPs window: reset before the forward, read right after it.
+
+        Reading here — before accelerator.backward() — keeps gradient-checkpoint
+        replay out of the count.
+        """
+        if self._flops is not None:
+            if not self._flops.attached:
+                self._flops.attach(self.accelerator.unwrap_model(model))
+            self._flops.reset()
+
+        loss = super().compute_loss(
+            model,
+            inputs,
+            return_outputs=return_outputs,
+            num_items_in_batch=num_items_in_batch,
+        )
+
+        if self._flops is not None:
+            self._last_flops = self._flops.snapshot()
+            self._flops.accumulate()
+        return loss
+
     def training_step(self, model, inputs, num_items_in_batch=None):
+        seq_len = 0
+        _ids = inputs.get("input_ids") if isinstance(inputs, dict) else None
+        if isinstance(_ids, torch.Tensor) and _ids.dim() >= 2:
+            seq_len = int(_ids.shape[-1])
+
         # Data hash logging — compute BEFORE forward (the model can mutate inputs)
         # PRECISION_ALIGNMENT.md Phase 4.1: diff hash files across NPU vs GPU
         if self._hash_logfile is not None:
@@ -315,6 +360,10 @@ class RossTrainer(Trainer):
                     float(self.args.per_device_train_batch_size * self.args.world_size)
                     / max(full_s, 1e-9)
                 )
+            if self._last_flops is not None:
+                logs.update(self._last_flops)
+                logs["seq_len"] = float(seq_len)
+
             for k, v in logs.items():
                 try:
                     self._acc_sum[k] += float(v)
@@ -666,6 +715,13 @@ def train():
         rank0_print("Starting training from scratch...")
         trainer.train()
     
+    if trainer._flops is not None:
+        total = trainer._flops.cumulative
+        rank0_print(
+            f"[flops] cumulative per-card FLOPs: {total:.6e} "
+            f"({total / 1e15:.4f} PFLOPs)"
+        )
+
     # Always write trainer_state.json (metrics only, a few KB).
     trainer.save_state()
 
