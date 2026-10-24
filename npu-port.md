@@ -1,9 +1,31 @@
 # Qwen2.5-VL NPU Port — Work Log
 
 **Base commit:** `db45a6f7f2d6e966b6b94166a33dcf8e1014804e`
-**Branch:** `qwen-npu-port`
-**Scope:** train the Qwen2.5-VL (ROSS) VLA backbone on Ascend NPU, starting with a
-synthetic-data throughput run.
+**Branches:** `qwen-npu-port` (port + perf work), `navsim-real-data` (real data)
+**Scope:** train the Qwen2.5-VL (ROSS) VLA backbone on Ascend NPU.
+
+## Data policy (2026-10-24)
+
+**Every new training run uses the real NAVSIM data.** The synthetic
+`logs/synth_qwen_data` set is only for pipeline smoke tests.
+
+Canonical real-data configuration (bs=62 is the most stable, Step 19):
+
+```bash
+--data_path /mnt/sfs_turbo/lmc/navsim_openscene/navsim_trainval_subset_x20.pkl \
+--data_root /mnt/sfs_turbo/lmc/navsim_openscene/openscene-v1.1/sensor_blobs/trainval \
+--batch_size 62 --num_workers 8 --pin_memory false
+```
+
+- `navsim_trainval_subset_x20.pkl` = the 467 scenes from camera shard 0,
+  replicated 20× purely so the dataloader has multiple batches per epoch. As
+  more shards are downloaded, regenerate the subset with
+  `filter_pickle_by_images.py` (drop the replication once the retained count
+  gives several batches per epoch) or use the full pickle at
+  `/mnt/sfs_turbo/models/DriveVLA-W0/DriveVLA-W0/navsim_emu_vla_256_144_trainval_pre_1s.pkl`.
+- `--num_workers 8 --pin_memory false` is required: the container has a 64 MB
+  memlock limit, and a prefetching real-image loader OOMs the host otherwise.
+- Step 20 has the data layout, download and validation details.
 
 This document records every change made on the branch since the base commit, the
 reason for it, and what is still outstanding.
