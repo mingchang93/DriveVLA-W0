@@ -61,6 +61,7 @@ class FlopsCounter:
         self.attn_full_trainable = 0.0  # no masking adjustment
         self.attn_full_frozen = 0.0
         self.cumulative = 0.0           # per-card FLOPs over the whole run
+        self.by_class = {}              # raw forward FLOPs per module class
         self._trainable = {}
         self._handles = []
         self._attached = False
@@ -99,6 +100,8 @@ class FlopsCounter:
 
     # -- hooks -------------------------------------------------------------
     def _add(self, module, flops, is_attn, causal_scale=1.0):
+        name = type(module).__name__
+        self.by_class[name] = self.by_class.get(name, 0.0) + flops
         trainable = self._trainable.get(id(module), False)
         if is_attn:
             if trainable:

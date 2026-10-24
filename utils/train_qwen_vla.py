@@ -721,6 +721,14 @@ def train():
             f"[flops] cumulative per-card FLOPs: {total:.6e} "
             f"({total / 1e15:.4f} PFLOPs)"
         )
+        steps = max(1, trainer.state.global_step)
+        parts = ", ".join(
+            f"{name}={value / steps:.3e}"
+            for name, value in sorted(
+                trainer._flops.by_class.items(), key=lambda kv: -kv[1]
+            )
+        )
+        rank0_print(f"[flops] by class per step (raw forward FLOPs): {parts}")
 
     # Always write trainer_state.json (metrics only, a few KB).
     trainer.save_state()
