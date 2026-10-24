@@ -1230,6 +1230,39 @@ Traces are archived in `logs/profile_traces_20261024/` (see the README there).
 
 ---
 
+## Step 23 — On-stage free time
+
+All runs: HEAD code, real 20× subset, bs=40, fa2, affinity on, L1 trace,
+step 28 (where applicable).
+
+| variant | Computing | Comm | Free | Stage |
+|---|---|---|---|---|
+| unpinned, 8 workers | 6.028 s | 0.279 s | **1.273 s** | 7.579 s |
+| `pin_memory`, 2 workers | 6.061 s | 0.230 s | 0.420 s | 6.710 s |
+| `pin_memory`, 8 workers | 6.052 s | 0.271 s | **0.347 s** | 6.670 s |
+| `pin_memory`, 8 workers, gate diagnostics removed + `ROSS_STEP_TIMING=0` | 6.054 s | 0.250 s | 0.349 s | 6.652 s |
+
+Findings:
+
+- **Pinned host memory is the free-time lever**: 1.273 → 0.347 s (−73%) and
+  stage 7.579 → 6.670 s (−12%), with compute unchanged. Pageable H2D stalls
+  the device between kernels; pinned buffers DMA asynchronously.
+- Removing the five scalar gate `.cpu()` syncs and the step-boundary timing
+  syncs did **not** change on-stage free (0.347 → 0.349 s, noise). The gate
+  syncs are microseconds (scalars); the timing syncs sit outside the traced
+  step. They still matter for host-side overlap/wall, not for free.
+- Pinning requires `ulimit -l unlimited` (64 MB memlock) and a bounded worker
+  count; 24 workers with pinning OOM'd the host earlier. 8 workers is safe at
+  bs=40; bs=62 with pinning was not yet profiled.
+- The residual ~0.35 s is launch/dispatch and profiler overhead. The only
+  remaining on-stage lever is fewer kernels (fusion), which Step 14 measured
+  as neutral or negative on this stack.
+- Note: pinning lowers on-stage free but the wall was ~unchanged — the idle
+  moves off-stage (dataloader wait). Wall reduction needs faster data delivery
+  (decode caching), not more sync removal.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
