@@ -208,6 +208,7 @@ class RossTrainer(Trainer):
         self._acc_sum = defaultdict(float)
         self._acc_n = 0
         self._micro_in_accum = 0  # 当前累积里的 micro-step 计数
+        self._last_optimizer_s = 0.0  # optimizer.step() + zero_grad() wall time
 
         # Data hash logging for cross-platform (NPU vs GPU) data-order verification
         # PRECISION_ALIGNMENT.md Phase 4.1 — per-rank file so NPU and GPU can be diffed
@@ -251,6 +252,19 @@ class RossTrainer(Trainer):
         self._acc_sum.clear()
         self._acc_n = 0
 
+    def optimizer_step(self, *args, **kwargs):
+        """Time optimizer.step() + lr_scheduler + zero_grad().
+
+        training_step only covers forward/backward; this is the other half of
+        the per-step wall time (Step 18's elementwise profile is dominated by
+        it). The value is folded into the next step's `step_time_full_s`.
+        """
+        t0 = time.perf_counter()
+        result = super().optimizer_step(*args, **kwargs)
+        device_synchronize()  # count completed optimizer work, not enqueue time
+        self._last_optimizer_s = time.perf_counter() - t0
+        return result
+
     def training_step(self, model, inputs, num_items_in_batch=None):
         # Data hash logging — compute BEFORE forward (the model can mutate inputs)
         # PRECISION_ALIGNMENT.md Phase 4.1: diff hash files across NPU vs GPU
@@ -275,6 +289,14 @@ class RossTrainer(Trainer):
             logs["samples_per_s"] = (
                 float(self.args.per_device_train_batch_size * self.args.world_size)
                 / max(step_s, 1e-9)
+            )
+            # Full optimizer step: forward/backward + the previous step's
+            # optimizer.step()/zero_grad(). Dataloader wait is still excluded.
+            full_s = step_s + self._last_optimizer_s
+            logs["step_time_full_s"] = full_s
+            logs["samples_per_s_full"] = (
+                float(self.args.per_device_train_batch_size * self.args.world_size)
+                / max(full_s, 1e-9)
             )
             for k, v in logs.items():
                 try:
