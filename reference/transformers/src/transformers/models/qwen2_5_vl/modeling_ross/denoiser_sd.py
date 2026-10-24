@@ -93,17 +93,6 @@ class RossStableDiffusionXOmni(nn.Module):
 
         cond = self.factor * z + self.factor_a * z_a if z_a is not None else self.factor * z
 
-        # Temporary diagnostics: gate values and the magnitudes they actually
-        # contribute. If |cond| is O(1) while |factor| is huge, the gate is
-        # harmless but frozen (GroupNorm normalizes the scale away).
-        self._gate_values = (
-            float(self.factor.detach().float().cpu()),
-            float(self.factor_a.detach().float().cpu()),
-            float(z.detach().float().abs().mean().cpu()),
-            float(z_a.detach().float().abs().mean().cpu()) if z_a is not None else -1.0,
-            float(cond.detach().float().abs().mean().cpu()),
-        )
-
         # Predict the noise residual
         model_pred = self.unet(
             noisy_model_input,

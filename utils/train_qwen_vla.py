@@ -47,6 +47,11 @@ else:
         _npu_available = False
     _device_type = "npu" if _npu_available else ("cuda" if torch.cuda.is_available() else "cpu")
 
+# Per-step timing syncs are accurate but serialize the step tail. Disable them
+# with ROSS_STEP_TIMING=0 for throughput runs; the profiler still gives the
+# truth. The action/ROSS losses are logged either way.
+_STEP_TIMING = os.getenv("ROSS_STEP_TIMING", "1") == "1"
+
 
 # ---------------------------------------------------------------------------
 # Reproducibility helpers (mirrors train_moe.py — PRECISION_ALIGNMENT.md)
@@ -229,8 +234,10 @@ class RossTrainer(Trainer):
         self._acc_sum = defaultdict(float)
         self._acc_n = 0
         self._micro_in_accum = 0  # 当前累积里的 micro-step 计数
-        self._opt_timer = OptimizerTimingCallback()
-        self.add_callback(self._opt_timer)
+        self._opt_timer = None
+        if _STEP_TIMING:
+            self._opt_timer = OptimizerTimingCallback()
+            self.add_callback(self._opt_timer)
 
         # Data hash logging for cross-platform (NPU vs GPU) data-order verification
         # PRECISION_ALIGNMENT.md Phase 4.1 — per-rank file so NPU and GPU can be diffed
@@ -286,27 +293,28 @@ class RossTrainer(Trainer):
             self._hash_logfile.write(json.dumps(record) + '\n')
             self._hash_logfile.flush()  # survive crashes
 
-        t0 = time.perf_counter()
+        t0 = time.perf_counter() if _STEP_TIMING else None
         loss = super().training_step(model, inputs, num_items_in_batch)
-        device_synchronize()  # count completed device work, not just enqueue time
-        step_s = time.perf_counter() - t0
 
         # 累积 forward 写入的 _last_logs
         logs = getattr(model, "_last_logs", None)
         if logs:
-            logs["step_time_s"] = step_s
-            logs["samples_per_s"] = (
-                float(self.args.per_device_train_batch_size * self.args.world_size)
-                / max(step_s, 1e-9)
-            )
-            # Full optimizer step: forward/backward + the previous step's
-            # optimizer.step()/zero_grad(). Dataloader wait is still excluded.
-            full_s = step_s + self._opt_timer.last_optimizer_s
-            logs["step_time_full_s"] = full_s
-            logs["samples_per_s_full"] = (
-                float(self.args.per_device_train_batch_size * self.args.world_size)
-                / max(full_s, 1e-9)
-            )
+            if _STEP_TIMING:
+                device_synchronize()  # completed device work, not enqueue time
+                step_s = time.perf_counter() - t0
+                logs["step_time_s"] = step_s
+                logs["samples_per_s"] = (
+                    float(self.args.per_device_train_batch_size * self.args.world_size)
+                    / max(step_s, 1e-9)
+                )
+                # Full optimizer step: forward/backward + the previous step's
+                # optimizer.step()/zero_grad(). Dataloader wait is excluded.
+                full_s = step_s + self._opt_timer.last_optimizer_s
+                logs["step_time_full_s"] = full_s
+                logs["samples_per_s_full"] = (
+                    float(self.args.per_device_train_batch_size * self.args.world_size)
+                    / max(full_s, 1e-9)
+                )
             for k, v in logs.items():
                 try:
                     self._acc_sum[k] += float(v)
@@ -438,9 +446,6 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
             torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
             trust_remote_code=True,
     )
-    rank0_print(f"[GATE] after from_pretrained: factor={model.denoiser.factor.item():.6g} "
-                f"factor_a={model.denoiser.factor_a.item():.6g}")
-
     # from_pretrained builds the model under init_empty_weights(), so the
     # torch.tensor(0.) initial value of the two bare nn.Parameters is discarded
     # and these missing keys are materialized from uninitialized memory
@@ -450,8 +455,6 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
     with torch.no_grad():
         model.denoiser.factor.zero_()
         model.denoiser.factor_a.zero_()
-    rank0_print(f"[GATE] zero-initialized: factor={model.denoiser.factor.item():.6g} "
-                f"factor_a={model.denoiser.factor_a.item():.6g}")
 
     from diffusers import AutoencoderKL
     from reference.transformers.src.transformers.models.qwen2_5_vl.modeling_ross.unet_2d_condition import UNet2DConditionModel   
@@ -469,13 +472,9 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
     fused_blocks = npu_fused_ops.fuse_unet_group_norm_silu(model.denoiser.unet)
     rank0_print(f"[fused] backward support: {npu_fused_ops.backward_status()}")
     rank0_print(f"[fused] ResNet GN+SiLU blocks fused: {fused_blocks}")
-    rank0_print(f"[GATE] after vae/unet assignment: factor={model.denoiser.factor.item():.6g} "
-                f"factor_a={model.denoiser.factor_a.item():.6g}")
 
     tokenizer, model, _ = check_and_add_vla_tokens(tokenizer, model)
-    rank0_print(f"[GATE] after vla tokens: factor={model.denoiser.factor.item():.6g} "
-                f"factor_a={model.denoiser.factor_a.item():.6g}")
-    
+
     rank0_print(f"Loaded {model_class.__name__} from {model_args.model_name_or_path}")
 
     image_processor = AutoProcessor.from_pretrained(model_args.model_name_or_path).image_processor
@@ -534,8 +533,6 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
     for n, p in model.vae.named_parameters():
         p.requires_grad = False
     rank0_print("VAE: FROZEN")
-    rank0_print(f"[GATE] before Trainer: factor={model.denoiser.factor.item():.6g} "
-                f"factor_a={model.denoiser.factor_a.item():.6g}")
     
     def count(m):
         tot = sum(p.numel() for p in m.parameters())
