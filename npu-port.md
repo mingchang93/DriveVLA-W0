@@ -1422,6 +1422,66 @@ unsharded optimizer state and gradient partition regardless of batch size. Use
 
 ---
 
+## Step 27 — Best config on the fixed-length set + MFU (`7109a22`)
+
+Run `logs/bestcfg_flopsdata_20261024`: canonical config (bs=62, fa2, ZeRO-2,
+8 workers, pinning, `CPU_AFFINITY_CONF=1`, `ROSS_VALID_CE=1`, no counting, no
+profiler), 100 steps on `navsim_flops_L420.pkl`.
+
+| metric | value |
+|---|---|
+| `step_time_full_s`, steps 20–70, **mean** | **10.858 s** |
+| median (stable plateau) | 9.662 s |
+| min / max | 9.651 / 19.961 s |
+| outliers > 1.5× median | 7 / 51 (14.5–20.0 s) |
+| samples/s per rank at the plateau | 51.3 |
+
+Most steps are 9.65–9.67 s; seven spikes inflate the mean (CV 24% vs the 4–5%
+Step 19 measured on the real subset). Host load during the run was ordinary
+(44/192 cores, 973/1502 GB), so the spikes are device/collective skew.
+
+**MFU** with `flops_total = 1.4954e15` per card per step (Step 26) and peak
+**486 TFLOPS**:
+
+| step time used | MFU |
+|---|---|
+| mean 10.858 s | **28.3 %** |
+| median 9.662 s | **31.8 %** |
+
+## Step 28 — Communication/compute overlap A/B (`7109a22`)
+
+The earlier async A/B failure (Step 25 note) was **not** the env: it ran without
+`ROSS_VALID_CE=1` and OOM'd on the LM-head logits. Facts about the knob on
+torch_npu 2.11:
+
+- `torch.npu.set_async_mode` does **not exist** (removed). `torch.npu.SyncLaunchStream`
+  docstring confirms the default stream *does* enable the task queue.
+- `torch_npu/_init/core/optional_features.py` forces `TASK_QUEUE_ENABLE=0` only
+  on an **interactive** command line, so torchrun scripts already run async.
+- The lever is therefore `TASK_QUEUE_ENABLE=0|1`; `set_option` rejects it.
+
+A/B: canonical config, `navsim_flops_L420.pkl`, 32 steps, L1 trace at step 28,
+`ROSS_STEP_TIMING=0`.
+
+| metric (step 28) | sync (`TASK_QUEUE_ENABLE=0`) | async (`=1`) |
+|---|---|---|
+| Computing | 9.227 s | 9.218 s |
+| Communication (not overlapped) | 0.215 s | 0.205 s |
+| **Overlapped** | **0.000 s** | **0.000 s** |
+| Free | 0.400 s | 0.375 s |
+| Stage | 9.842 s | 9.799 s |
+
+**Finding: there is no communication/compute overlap in either mode.** The
+whole communication time is reported as not-overlapped in both arms
+(`Overlapped = 0.000 s`), and async mode only shaves ~25 ms of free time and
+~10 ms of communication — 0.4 % of stage, within noise. Host-side async
+dispatch cannot create device-side CoC; that needs multi-stream execution or a
+different collective schedule (Step 16's `COMBINED_ENABLE` was also neutral).
+DeepSpeed's `overlap_comm: true` is set in `zero2.json` but produces no traced
+overlap here.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1474,6 +1534,9 @@ file's commit and the box `HEAD` are noted.
 | `flops_count_20261024_v3` | 25 | `f404d21` | 20 (FLOPs count, bs=62, L=420, no weights) |
 | `flops_b2_final_20261024` | 26 | `a350933` | 1 (FLOPs count, bs=2, L=420, no weights) |
 | `flops_b2_buckets_20261024` | 26 | `bc64c73` | 1 (same, with the bucket diagnostic) |
+| `bestcfg_flopsdata_20261024` | 27 | `7109a22` | 100 (best config, fixed-length set, no weights) |
+| `coc_sync_20261024` | 28 | `7109a22` | 32 (L1 trace, `TASK_QUEUE_ENABLE=0`) |
+| `coc_async_20261024` | 28 | `7109a22` | 32 (L1 trace, `TASK_QUEUE_ENABLE=1`) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
