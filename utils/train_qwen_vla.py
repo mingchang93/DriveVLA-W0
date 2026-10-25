@@ -22,6 +22,11 @@ from torch.utils.data import SequentialSampler, RandomSampler
 
 from utils.flops import FlopsCounter
 
+try:  # PyTorch's dispatch-level counter, for the independent forward cross-check
+    from torch.utils.flop_counter import FlopCounterMode
+except Exception:  # pragma: no cover - older torch
+    FlopCounterMode = None
+
 # ---------------------------------------------------------------------------
 # Device detection: NPU > CUDA > CPU  (override via DEVICE env var)
 # ---------------------------------------------------------------------------
@@ -252,6 +257,12 @@ class RossTrainer(Trainer):
         # compute_loss, i.e. after accelerator.prepare().
         self._flops = FlopsCounter() if os.getenv("ROSS_COUNT_FLOPS", "0") == "1" else None
         self._last_flops = None
+        # PyTorch's own counter, for an independent check of the forward count.
+        # Note: on torch_npu 2.11 the backward is invisible to it (npu:: kernels).
+        self._torch_flops = (
+            os.getenv("ROSS_FLOPS_TORCH", "0") == "1" and FlopCounterMode is not None
+        )
+        self._last_flops_torch = None
         if _STEP_TIMING:
             self._opt_timer = OptimizerTimingCallback()
             self.add_callback(self._opt_timer)
@@ -309,12 +320,22 @@ class RossTrainer(Trainer):
                 self._flops.attach(self.accelerator.unwrap_model(model))
             self._flops.reset()
 
-        loss = super().compute_loss(
-            model,
-            inputs,
-            return_outputs=return_outputs,
-            num_items_in_batch=num_items_in_batch,
-        )
+        if self._torch_flops:
+            with FlopCounterMode(display=False) as mode:
+                loss = super().compute_loss(
+                    model,
+                    inputs,
+                    return_outputs=return_outputs,
+                    num_items_in_batch=num_items_in_batch,
+                )
+            self._last_flops_torch = mode.get_total_flops()
+        else:
+            loss = super().compute_loss(
+                model,
+                inputs,
+                return_outputs=return_outputs,
+                num_items_in_batch=num_items_in_batch,
+            )
 
         if self._flops is not None:
             self._last_flops = self._flops.snapshot()
@@ -363,6 +384,8 @@ class RossTrainer(Trainer):
             if self._last_flops is not None:
                 logs.update(self._last_flops)
                 logs["seq_len"] = float(seq_len)
+            if self._last_flops_torch is not None:
+                logs["flops_torch_fwd"] = float(self._last_flops_torch)
 
             for k, v in logs.items():
                 try:
@@ -727,6 +750,13 @@ def train():
             f"attn_t={f.attn_trainable:.3e} attn_f={f.attn_frozen:.3e} "
             f"attn_full_t={f.attn_full_trainable:.3e} attn_full_f={f.attn_full_frozen:.3e}"
         )
+        raw_fwd = sum(trainer._flops.by_class.values())
+        rank0_print(f"[flops] hooks raw forward (run total): {raw_fwd:.6e}")
+        if trainer._last_flops_torch is not None:
+            rank0_print(
+                f"[flops] torch forward (last step): {trainer._last_flops_torch:.6e} "
+                f"(ratio hooks/torch = {raw_fwd / max(trainer._last_flops_torch, 1):.4f})"
+            )
         steps = max(1, trainer.state.global_step)
         parts = ", ".join(
             f"{name}={value / steps:.3e}"
