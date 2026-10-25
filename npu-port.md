@@ -1538,10 +1538,13 @@ and a lower CV than bs=62 (19.2% vs 24.2%). Adopted in the Data policy section.
 | MFU @486, mean 10.858 s | 28.3 % | **37.5 %** |
 
 The logged values are identical by construction — the snapshot is taken before
-`backward()`. The replay is visible only in the hook totals, so the hooks/torch
-ratio is the diagnostic: ~1.0 means no replay, ~1.9 means replay was counted
-(≈0.92 of a forward — the VAE is `no_grad` and part of the graph is not
-checkpointed).
+`backward()`. The replay is visible only in the hook totals, because the hooks
+are **forward** hooks and checkpoint replay re-runs the forward inside
+`backward()`; the backward gradient math is never a forward call, so neither the
+hooks nor `FlopCounterMode` see it (that is the 2× in the 3× rule). The
+hooks/torch ratio is therefore the diagnostic: ~1.0 means no replay, ~1.9 means
+replay was counted (≈0.92 of a forward — the VAE is `no_grad` and part of the
+graph is not checkpointed).
 
 Original run notes follow. Run `logs/flops_exec_20261025`: bs=2, 8 ranks,
 **sdpa**, **gradient checkpointing off**, 1 step,
