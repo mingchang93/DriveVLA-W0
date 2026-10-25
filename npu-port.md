@@ -1520,6 +1520,42 @@ and a lower CV than bs=62 (19.2% vs 24.2%). Adopted in the Data policy section.
 
 ---
 
+## Step 30 — Executed-backward count + PyTorch cross-check (`5b2a053`)
+
+Run `logs/flops_exec_20261025`: bs=2, 8 ranks, **sdpa**, **gradient checkpointing
+off**, 1 step, `ROSS_COUNT_FLOPS=1 ROSS_FLOPS_TORCH=1`.
+
+| quantity | value |
+|---|---|
+| hooks raw forward | 1.6927e13 |
+| `FlopCounterMode` forward | 1.6645e13 |
+| hooks / torch | **1.017** |
+| `flops_mm` (3× / 1×) | 4.7603e13 |
+| `flops_attn` (causal) | 6.3435e11 |
+| `flops_total` | 4.8237e13 |
+
+Findings:
+
+- **The two independent forward counts agree to 1.7 %** — the hook formulas are
+  validated (hooks are slightly higher; likely addmm bias handling).
+- **`FlopCounterMode` cannot see the NPU backward.** Verified: CPU fwd+bwd = 384,
+  NPU forward = 128, NPU backward = **0** (torch_npu runs backward in `npu::`
+  kernels outside aten dispatch). So `di-qwen-mot`'s executed-backward method is
+  not reproducible on torch_npu 2.11; the executed backward stays the 3×/1×
+  factor. With checkpointing off that factor is exact for GEMM (attention would
+  be 3.5×, +0.2 % of the total).
+- **Checkpoint replay is now measured, not assumed.** The earlier ckpt-on run
+  recorded `mm_t = 3.071e13` in the hook buckets versus **1.548e13** here —
+  1.98×, i.e. replay adds one full forward. The snapshot (taken before backward)
+  never sees it; `by_class` does, which is why the earlier diagnostic print read
+  2×.
+- **Executed vs counted at bs=62:** counted 1.4954e15; executed ≈ 1.4954e15 +
+  31 × 1.6927e13 = **2.020e15**. Against peak 486 TFLOPS that is **43.0 %**
+  (median 9.662 s) / **38.3 %** (mean 10.858 s), versus 31.8 % / 28.3 % on the
+  convention number.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1576,6 +1612,7 @@ file's commit and the box `HEAD` are noted.
 | `coc_sync_20261024` | 28 | `7109a22` | 32 (L1 trace, `TASK_QUEUE_ENABLE=0`) |
 | `coc_async_20261024` | 28 | `7109a22` | 32 (L1 trace, `TASK_QUEUE_ENABLE=1`) |
 | `bsstab_{48,40,32,24}_20261024` | 29 | `02a694f` | 200 each (no profiling) |
+| `flops_exec_20261025` | 30 | `5b2a053` | 1 (bs=2, no ckpt, sdpa, torch cross-check) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
