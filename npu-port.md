@@ -6,12 +6,21 @@
 
 ## Data policy (2026-10-24)
 
-**Every new training run uses the real NAVSIM data.** The synthetic
-`logs/synth_qwen_data` set is only for pipeline smoke tests.
+**Every new learning run uses the real NAVSIM data.** The synthetic
+`logs/synth_qwen_data` set is only for pipeline smoke tests; throughput runs
+follow the fixed-length protocol noted below.
 
-**Current best config: `--batch_size 48`** (Step 29 sweep on the fixed-length
-set: best mean MFU 28.4%, 50.7 samples/s). Step 19's bs=62 was chosen on the
-natural subset before that sweep and remains the highest raw throughput.
+**Goal: maximize throughput (samples/sec).** Every new run must aim to beat
+the best config — **50.73 samples/s median / 45.75 mean, mean MFU 28.4%** at
+bs=48 with replay on (Step 29 basis: per-step `samples_per_s`, first 5 steps
+dropped, fa2, ZeRO-2, valid CE). Any configuration is fair game — batch size,
+ZeRO stage, offload, attention backend, worker count — as long as it beats
+this number. The shared `lmc-w0` shell exports `ROSS_STEP_TIMING=0`; override
+it to `1` so the median is comparable.
+
+**Current best config: `--batch_size 48`**, replay on (Step 29). Step 19's
+bs=62 was chosen on the natural subset before that sweep and remains the
+highest raw throughput.
 
 ```bash
 export CPU_AFFINITY_CONF=1
@@ -21,7 +30,7 @@ export CPU_AFFINITY_CONF=1
 ```
 
 Run `ulimit -l unlimited` first (Step 23): pinning needs it, and 8 workers is
-the tested point at bs=62; more workers risk exhausting host pinned memory.
+the tested point at bs=48–62; more workers risk exhausting host pinned memory.
 
 `--save_model` defaults to **false**: throughput runs write no checkpoint and no
 final model (a 200-step run otherwise leaves ~155 GB: an end-of-run checkpoint
@@ -36,7 +45,9 @@ the weights are needed.
   `/mnt/sfs_turbo/models/DriveVLA-W0/DriveVLA-W0/navsim_emu_vla_256_144_trainval_pre_1s.pkl`.
 - **FLOPs/MFU counting does not train on the above.** It uses
   `navsim_flops_L420.pkl` — the single longest scene (L=420) replicated to a
-  fixed batch shape. Never use it for timing or learning; see Step 24.
+  fixed batch shape. Use it for shape-fixed FLOPs and per-step compute timing
+  only; its wall time is optimistic (page-cache-hot, identical images) and it
+  is never a learning set. See Step 24.
 - `--pin_memory true` needs `ulimit -l unlimited` (the container's memlock is
   64 MB) and a bounded worker count; 8 workers is tested at bs=62. Pinning is
   the main on-stage free-time lever (Step 23).
@@ -54,8 +65,8 @@ reason for it, and what is still outstanding.
 | SSH alias | `ott9-a57` |
 | Host / user | `liteserver-hps-d235-00007.novalocal` / `root` |
 | Repository | `/mnt/sfs_turbo/lmc/DriveVLA-W0` |
-| tmux session | `lmc-w0-3` (group `lmc-w0`) |
-| Conda env | `drivevla` — active only inside the `lmc-w0-3` session |
+| tmux session | `lmc-w0` (training pane; `lmc-cann920` is a separate session) |
+| Conda env | `drivevla` — active only inside `lmc-w0` |
 | Accelerators | 8 × Ascend NPU (`/dev/davinci0..7`) |
 | Qwen weights | `/mnt/sfs_turbo/models/Qwen2.5-VL-7B-Instruct` |
 | SD1.5 weights | `/mnt/sfs_turbo/models/stable-diffusion-v1-5` |
@@ -65,14 +76,14 @@ reason for it, and what is still outstanding.
 
 ```bash
 ssh ott9-a57
-tmux attach -t lmc-w0-3
+tmux attach -t lmc-w0
 ```
 
 ### Run a command without attaching
 
 ```bash
-ssh ott9-a57 "tmux send-keys -t lmc-w0-3 'cd /mnt/sfs_turbo/lmc/DriveVLA-W0 && python -c \"import torch; print(torch.__version__)\"' C-m"
-ssh ott9-a57 "tmux capture-pane -t lmc-w0-3 -p | tail -20"
+ssh ott9-a57 "tmux send-keys -t lmc-w0 'cd /mnt/sfs_turbo/lmc/DriveVLA-W0 && python -c \"import torch; print(torch.__version__)\"' C-m"
+ssh ott9-a57 "tmux capture-pane -t lmc-w0 -p | tail -20"
 ```
 
 For automation, `ssh -o BatchMode=yes ott9-a57 '<command>'` works (key auth is
@@ -80,14 +91,14 @@ configured) and returns the command's stdout.
 
 ### Launching runs — always use `tmux`
 
-**Launch every training/eval run inside the `lmc-w0-3` tmux session. Do not use
+**Launch every training/eval run inside the `lmc-w0` tmux session. Do not use
 detached processes (`docker exec -d`, `nohup ... &`, background SSH jobs)
 unless explicitly told otherwise.** The session runs inside the training
 container with the env already active, and it is what the user monitors.
 
 ```bash
-ssh ott9-a57 "tmux send-keys -t lmc-w0-3 'cd /mnt/sfs_turbo/lmc/DriveVLA-W0 && bash run_100.sh 2>&1 | tee logs/run.log' C-m"
-ssh ott9-a57 "tmux capture-pane -t lmc-w0-3 -p | tail -20"
+ssh ott9-a57 "tmux send-keys -t lmc-w0 'cd /mnt/sfs_turbo/lmc/DriveVLA-W0 && bash run_100.sh 2>&1 | tee logs/run.log' C-m"
+ssh ott9-a57 "tmux capture-pane -t lmc-w0 -p | tail -20"
 ```
 
 To stop a job, kill its processes (`pkill -f train_qwen_vla.py`) — do not send
@@ -117,7 +128,7 @@ A plain non-interactive SSH shell is **not** the training environment:
 ssh ott9-a57 'which python'   -> /usr/bin/python   (3.11.6, no torch)
 ```
 
-The `drivevla` env is active only inside the `lmc-w0-3` tmux session
+The `drivevla` env is active only inside the `lmc-w0` tmux session
 (`which python` → `/usr/local/python3.12.13/bin/python`,
 `CONDA_PREFIX=/root/miniconda3/envs/drivevla`). Run Python/torch work through
 tmux, or use the exact interpreter path from inside that session.
@@ -129,12 +140,12 @@ file inspection can be done directly over SSH.
 
 ```bash
 ssh ott9-a57 'ls /dev/davinci* | head; nproc'
-ssh ott9-a57 "tmux send-keys -t lmc-w0-3 'python -c \"import torch, torch_npu; print(torch.__version__, torch.npu.is_available(), torch.npu.device_count())\"' C-m"
+ssh ott9-a57 "tmux send-keys -t lmc-w0 'python -c \"import torch, torch_npu; print(torch.__version__, torch.npu.is_available(), torch.npu.device_count())\"' C-m"
 ```
 
-Expected: eight devices and `(2.7.1+cpu, True, 8)`.
+Expected: eight devices and `(2.11.0+cpu, True, 8)` (verified 2026-10-25).
 
-**Do not send `C-c`** to the `lmc-w0-3` pane unless you intend to kill the running
+**Do not send `C-c`** to the `lmc-w0` pane unless you intend to kill the running
 job — the session is shared.
 
 ---
@@ -168,7 +179,9 @@ Image path resolution (`data_qwen_vla.py:391-424`): the pickle's
 Added a Qwen-specific environment file because `requirements.txt` is for the
 Emu3 path and its `transformers==4.44.0` is incompatible.
 
-Final contents (evolved over commits `1701619`, `2088d65`, `877dfd8`):
+Initial contents (evolved over commits `1701619`, `2088d65`, `877dfd8`; the
+torch pins below were replaced by the 2.11.0 / CANN 9.1.0 stack in `02ea9d5` —
+see `requirements_qwen.txt`):
 
 - `-e ./reference/transformers` — editable 4.56.0 so `import transformers`
   resolves to the vendored patched tree and port edits are live.
@@ -180,8 +193,9 @@ Final contents (evolved over commits `1701619`, `2088d65`, `877dfd8`):
 - `decord` removed (see Step 4); `flash-attn` left commented because it is
   CUDA-only.
 
-Install order is documented in the file header: CANN 8.5.1 must be installed
-and `set_env.sh` sourced before `torch_npu`.
+Install order is documented in the file header; the current header targets
+CANN 9.1.0 (it was 8.5.1 in the original port), sourced from
+`/usr/local/Ascend/ascend-toolkit/set_env.sh` before `torch_npu`.
 
 ### 1b. `scripts/scripts_train/train_qwen_vla_navsim.sh` (new)
 
@@ -287,6 +301,7 @@ torch_npu==2.7.1.post4
 Header updated with:
 
 - CANN 8.5.1 is system-level; source `/usr/local/Ascend/ascend-toolkit/set_env.sh`.
+  (Later replaced by the 2.11.0 / CANN 9.1.0 pins in `02ea9d5`.)
 - CUDA users must replace these four lines with torch 2.4.0 / torchvision
   0.19.0 / torchaudio 2.4.0 and drop `torch_npu`.
 - DeepSpeed's ZeRO CPU offload JIT-builds CPUAdam, so a C++ toolchain is needed.
@@ -644,7 +659,8 @@ per-step medians from the steady-state portion (first 5 steps dropped);
 
 **Baseline:** the current harness peaks at **≈20.5 samples/s** (bs=68, global
 batch 544). Recommended operating point is **bs=66** (19.75 samples/s, ~5 %
-HBM headroom) or **bs=64** (18.42 samples/s) for longer runs.
+HBM headroom) or **bs=64** (18.42 samples/s) for longer runs. (Superseded by
+Step 13 onward — these are ZeRO-3 + CPU-offload numbers.)
 
 Notes:
 
@@ -690,8 +706,10 @@ Findings:
   Adam state move into HBM, but throughput still rises.
 - **ZeRO-2 beats ZeRO-3.** Parameters are replicated, but there is no per-step
   parameter all-gather. At equal batch ZeRO-2 is consistently faster.
-- **Gradient checkpointing is required.** Disabling it OOMs at bs=8 on step 2
-  (88.5 GB allocated, then a 46 MB allocation fails).
+- **Gradient checkpointing is required at useful batch sizes.** Under this
+  ZeRO-3 config, disabling it OOM'd at bs=8 on step 2 (88.5 GB allocated, then
+  a 46 MB allocation fails). Under the later ZeRO-2/fa2/valid-CE config it fits
+  only at bs=8 and is slower there — see Step 31.
 - **More dataloader workers help, up to CPU saturation.** 8 ranks × 24 workers
   = 192 cores exactly; at bs=32 that oversubscribes and regresses (21.66 →
   21.28), while at bs=24 it improves (21.19 → 21.75).
@@ -756,12 +774,14 @@ OOM), versus 26.58 for the sdpa baseline. The same config measured 48.05 over
 
 Implementation:
 
-- `models/qwen2_5_vl/npu_fused_ops.py` — device-gated `npu_rms_norm` /
+- `reference/transformers/src/transformers/models/qwen2_5_vl/npu_fused_ops.py`
+  — device-gated `npu_rms_norm` /
   `npu_swiglu` / `npu_rotary_mul` helpers, each behind an env flag and
   returning `None` on CUDA/CPU so the original path runs.
 - `utils/train_qwen_vla.py` — `fa2` now maps to `flash_attention_2` and is
   allowed on NPU through the vendored `integrations/npu_flash_attention.py`.
-- `integrations/npu_flash_attention.py` — mask cache keyed by sequence length.
+- `reference/transformers/src/transformers/integrations/npu_flash_attention.py`
+  — mask cache keyed by sequence length.
   **Hardware constraint:** on this CANN 9.1 / Ascend 950 build,
   `npu_fusion_attention` with `sparse_mode=2/3` fails kernel tiling unless the
   mask is **at least 2048×2048**, even for shorter sequences; the mask is
@@ -876,7 +896,7 @@ The remaining communication cost is structural (Step 15: 389 collectives plus
 collective count requires bucket tuning (`reduce_bucket_size`), and the larger
 win remains the memory/batch levers.
 
-Re-checked at the current best config (`fa2`, bs=64, `ROSS_VALID_CE=1`): the
+Re-checked at the then-current best config (`fa2`, bs=64, `ROSS_VALID_CE=1`): the
 combined-knobs + determinism-off run measured **50.84 samples/s**, identical to
 the baseline's 50.84 (−0.01 %, step 10.07 s both). The conclusion is unchanged
 at the new operating point; no further env tuning was done.
@@ -1139,8 +1159,8 @@ Two host-memory traps with a prefetching real-data loader:
    (48.6 s/step wall). Replicating the list fixes it.
 2. `ulimit -l` is 64 MB in this container; `pin_memory` exhausts it
    (`aclrtMallocHostWithCfg` 207001). Raising the limit lets the kernel OOM-kill
-   the workers instead. Launch real-data runs with
-   `--num_workers 8 --pin_memory false`.
+   the workers instead. **Superseded by Step 23:** with `ulimit -l unlimited`
+   and 8 workers, pinning is safe and is the current canonical setting.
 
 New from `ed9eec9`: every run also logs `step_time_full_s` /
 `samples_per_s_full` = forward/backward + `optimizer.step()` + `zero_grad()`
@@ -1275,6 +1295,7 @@ Findings:
 9.996/62 = **161.2 ms**. bs=62 is ~3% better because comm/launch/fixed costs
 amortize; free per sample is flat (8.7 vs 8.4 ms) and computing per sample is
 148.8 vs 151.3 ms. The canonical config is therefore bs=62 + pinning.
+(Superseded by Step 29: bs=48 with the same pinning.)
 
 ---
 
@@ -1325,10 +1346,12 @@ sel = [d[i] for i in range(len(d)) if i % P == 356 % P]       # the 20 L=420 cop
 pickle.dump(sel * 496, open(".../navsim_flops_L420.pkl", "wb"))
 ```
 
-Caveats: all samples are identical, so this pickle's step time is meaningless
-(page-cache-hot image loads) — never use it for timing or learning. FLOPs depend
-only on shapes, so it is sound as a counting instrument. The total must be a
-multiple of `world_size × per_device_batch_size`.
+Caveats: all samples are identical, so this pickle's **wall** time is
+meaningless (page-cache-hot image loads) — never use it for learning. Its
+per-step **compute** time is valid, because every step has the same shapes;
+that is the Step 27/29 throughput basis. FLOPs depend only on shapes, so it is
+sound as a counting instrument. The total must be a multiple of
+`world_size × per_device_batch_size`.
 
 Related: at L=420 with bs=62 the eager LLM score matrix is `62 · 28 · 420² ≈
 3.1e8` elements ≈ 612 MB bf16, so an eager, production-shaped counting run is
@@ -1572,10 +1595,53 @@ Findings:
 - **The counting run disables gradient checkpointing** (`--gradient_checkpointing
   False`). No replay is executed, so `flops_total` is the executed-work number
   directly — there is nothing to correct for. Checkpointing is only re-enabled
-  for the timed run (bs=62 does not fit without it).
+  for the timed run (no batch ≥16 fits without it under ZeRO-2 — Step 31).
 - The logged `flops_*` values are read before backward, so they are unaffected
   even if checkpointing is left on; only the `by_class` diagnostic accumulates
   replay. A warning is printed in that case.
+
+---
+
+## Step 31 — Replay on/off versus the throughput target (negative result)
+
+Question: does disabling gradient checkpointing beat the bs=48 replay-on
+baseline on samples/sec? All runs: 8×950DT, `navsim_flops_L420.pkl`, 50 steps,
+fa2, valid CE, pinning (`ulimit -l unlimited`), `CPU_AFFINITY_CONF=1`, no
+weights saved, code `6575814`; only the batch size, ZeRO stage and the flag
+differ.
+
+The shared `lmc-w0` shell still exported `ROSS_STEP_TIMING=0`, so these runs
+report HF wall-clock (`train_runtime`), not the per-step median the target uses.
+The on/off pairs are comparable to each other, not to the 50.73 target.
+
+| run | bs | ZeRO | replay | result | runtime | s/step | samples/s (global) |
+|---|---|---|---|---|---|---|---|
+| `ab_replay_on_bs48_20261025` | 48 | 2 | on | 50/50 | 497.77 s | 9.955 | 38.57 |
+| `ab_replay_off_bs48_20261025` | 48 | 2 | off | OOM, step 1 | — | — | — |
+| `ab_replay_off_bs40_20261025` | 40 | 2 | off | OOM, step 1 | — | — | — |
+| `ab_replay_off_bs32_20261025` | 32 | 2 | off | OOM, step 1 | — | — | — |
+| `ab_replay_off_bs16_20261025` | 16 | 2 | off | OOM, step 1 | — | — | — |
+| `ab_replay_off_bs8_20261025` | 8 | 2 | off | 50/50 | 154.35 s | 3.087 | 20.73 |
+| `ab_replay_on_bs8_20261025` | 8 | 2 | on | 50/50 | 102.50 s | 2.050 | 31.22 |
+| `abz3_replay_off_bs48_20261025` | 48 | 3 | off | killed at goal reset | — | — | — |
+
+Findings:
+
+- **Replay off does not fit above bs=8 under ZeRO-2.** Every failure is on the
+  first forward, in the ViT rotary path, with 90.0–90.3 GiB of the 91.75 GiB
+  HBM ceiling already allocated. The ceiling is between 8 and 16.
+- **At the only size where it fits, replay off is slower**: 3.087 vs 2.050
+  s/step at bs=8 (1.51×), and 20.73 vs 31.22 samples/s.
+- **ZeRO-3 cannot rescue it.** Step 13 measured replay-on at 19.59 samples/s
+  (12 workers) with ZeRO-3 at bs=48; a replay-off arm there would be no faster
+  and stays far below the 50.73 target. The ZeRO-3 bs=48 off run was stopped
+  when the goal was restated and produced no result.
+- Direction closed: replay off is not a throughput candidate.
+
+Why off is slower at equal batch is not measured (no memory trace was taken).
+The likely cause is that the uncheckpointed backward holds the full activation
+set and runs at ~90 GiB with ~1.4 GiB headroom, while at bs=8 there is too
+little compute to amortize the extra activation traffic.
 
 ---
 
@@ -1637,6 +1703,14 @@ file's commit and the box `HEAD` are noted.
 | `bsstab_{48,40,32,24}_20261024` | 29 | `02a694f` | 200 each (no profiling) |
 | `flops_exec_20261025` | 30 | `5b2a053` | 1 (bs=2, no ckpt, sdpa, torch cross-check) |
 | `flops_replay_on_20261025` | 30 | `5b2a053` | 1 (same, checkpointing on) |
+| `ab_replay_on_bs48_20261025` | 31 | `6575814` | 50 (wall-clock metric) |
+| `ab_replay_off_bs48_20261025` | 31 | `6575814` | OOM step 1 |
+| `ab_replay_off_bs40_20261025` | 31 | `6575814` | OOM step 1 |
+| `ab_replay_off_bs32_20261025` | 31 | `6575814` | OOM step 1 |
+| `ab_replay_off_bs16_20261025` | 31 | `6575814` | OOM step 1 |
+| `ab_replay_off_bs8_20261025` | 31 | `6575814` | 50 |
+| `ab_replay_on_bs8_20261025` | 31 | `6575814` | 50 |
+| `abz3_replay_off_bs48_20261025` | 31 | `6575814` | killed (goal reset) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
@@ -1663,9 +1737,10 @@ with no `trainer_state.json`.
 
 ### Verified on the remote NPU host
 
-- `torch==2.7.1`, `torchvision==0.22.1`, `torchaudio==2.7.1`,
-  `torch_npu==2.7.1.post4` installed; `torch.npu.is_available()` → True,
-  8 devices.
+- At the time of Step 7: `torch==2.7.1`, `torchvision==0.22.1`,
+  `torchaudio==2.7.1`, `torch_npu==2.7.1.post4`; `torch.npu.is_available()` →
+  True, 8 devices. The box now reports `torch 2.11.0+cpu` / `torch_npu 2.11.0`
+  (verified 2026-10-25).
 - `transformers.data` + `transformers.trainer` import successfully after
   Step 6 (no reinstall needed).
 - **20-step training on 8 NPU completed successfully** (Step 7): all five
@@ -1686,7 +1761,7 @@ Core NPU training works (Step 7). What remains:
 |---|---|---|---|
 | 1 | [`inference/qwen/inference_action_navsim_vava.py:100-104`](inference/qwen/inference_action_navsim_vava.py#L100-L104) | inference hardcodes `backend='nccl'` and `torch.cuda` | use `hccl` / `torch.npu` when NPU; only needed for evaluation |
 | 2 | `use_previous_actions=true` | ROSS asserts 2 action segments | currently disabled; if history is required, generalize the assert/extraction to handle 4 segments |
-| 3 | launcher | no way to disable checkpointing | add `--save_strategy`; a 20-step run otherwise writes ~137 GB including optimizer state. The ad-hoc `run_confirm.sh` / `run_short.sh` already pass `--save_strategy no`, leaving only the 18 GB final model |
+| 3 | launcher | `--gradient_checkpointing True` is hardcoded; no off switch | **Save half resolved** by `67765d9`: `--save_model false` (default) sets `--save_strategy no` and skips the final model. The checkpointing switch is optional — replay off does not beat the target (Step 31) |
 | 4 | training recipe | 20 steps / warmup 50 is not a valid learning test | use lr 5e-5–1e-4, warmup 10–50, several hundred steps (Steps 8, 10); on corrected data the ROSS loss is still at baseline after 60 steps (Step 10) |
 
 Resolved by Step 7 (no longer open): `diffusers 0.41.0` UNet compatibility,
@@ -1694,7 +1769,7 @@ DeepSpeed ZeRO-3 + `torch_npu`, device-aware autocast, and the 180-token grid.
 
 ---
 
-## Appendix — files changed since `db45a6f`
+## Appendix — core port files (Steps 1–6, 24; later steps list their own files)
 
 | File | Status | Step |
 |---|---|---|
