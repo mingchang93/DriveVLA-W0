@@ -9,13 +9,15 @@
 **Every new training run uses the real NAVSIM data.** The synthetic
 `logs/synth_qwen_data` set is only for pipeline smoke tests.
 
-Canonical real-data configuration (bs=62 is the most stable, Step 19):
+**Current best config: `--batch_size 48`** (Step 29 sweep on the fixed-length
+set: best mean MFU 28.4%, 50.7 samples/s). Step 19's bs=62 was chosen on the
+natural subset before that sweep and remains the highest raw throughput.
 
 ```bash
 export CPU_AFFINITY_CONF=1
 --data_path /mnt/sfs_turbo/lmc/navsim_openscene/navsim_trainval_subset_x20.pkl \
 --data_root /mnt/sfs_turbo/lmc/navsim_openscene/openscene-v1.1/sensor_blobs/trainval \
---batch_size 62 --num_workers 8 --pin_memory true --save_model false
+--batch_size 48 --num_workers 8 --pin_memory true --save_model false
 ```
 
 Run `ulimit -l unlimited` first (Step 23): pinning needs it, and 8 workers is
@@ -1512,6 +1514,9 @@ Findings:
   43.5 at 24 (median-based; mean-based ~42.8–45.8 throughout).
 - If the goal is a *stable* number, bs=24 is the tightest (CV 16.3%); if it is
   *throughput/MFU*, bs=48–62 is better and the mean is the honest figure.
+
+**Current best config: bs=48** — highest mean MFU (28.4%) with 50.7 samples/s,
+and a lower CV than bs=62 (19.2% vs 24.2%). Adopted in the Data policy section.
 
 ---
 
