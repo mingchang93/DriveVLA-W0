@@ -1544,15 +1544,13 @@ Findings:
   not reproducible on torch_npu 2.11; the executed backward stays the 3×/1×
   factor. With checkpointing off that factor is exact for GEMM (attention would
   be 3.5×, +0.2 % of the total).
-- **Checkpoint replay is now measured, not assumed.** The earlier ckpt-on run
-  recorded `mm_t = 3.071e13` in the hook buckets versus **1.548e13** here —
-  1.98×, i.e. replay adds one full forward. The snapshot (taken before backward)
-  never sees it; `by_class` does, which is why the earlier diagnostic print read
-  2×.
-- **Executed vs counted at bs=62:** counted 1.4954e15; executed ≈ 1.4954e15 +
-  31 × 1.6927e13 = **2.020e15**. Against peak 486 TFLOPS that is **43.0 %**
-  (median 9.662 s) / **38.3 %** (mean 10.858 s), versus 31.8 % / 28.3 % on the
-  convention number.
+- **The counting run disables gradient checkpointing** (`--gradient_checkpointing
+  False`). No replay is executed, so `flops_total` is the executed-work number
+  directly — there is nothing to correct for. Checkpointing is only re-enabled
+  for the timed run (bs=62 does not fit without it).
+- The logged `flops_*` values are read before backward, so they are unaffected
+  even if checkpointing is left on; only the `by_class` diagnostic accumulates
+  replay. A warning is printed in that case.
 
 ---
 

@@ -396,12 +396,17 @@ No peak/TFLOPS variable exists — MFU is computed outside the tool (§2.1).
 3. **Count with fusions on vs off** (`ROSS_FLOPS_NATIVE=1` vs `0`, same batch,
    2 steps): `flops_mm` and `flops_total` must be bit-identical. This is the
    empirical form of §3.1's claim.
-4. **Counting run (per-device batch 2, one step).** Input is the duplicated
-   longest-sample pickle from §3.5, so the shape is exactly `[2, 420]`. FLOPs
-   are **exactly** linear in `B` at fixed `L` (every term carries a `B` factor
-   and the model has no batch-dependent normalisation), so multiply by 31 to get
-   the bs=62 per-card number. One step is enough — the shape is constant, so
-   there is nothing to average.
+4. **Counting run (per-device batch 2, one step, `--gradient_checkpointing
+   False`, `--attn_type sdpa`).** Input is the duplicated longest-sample pickle
+   from §3.5, so the shape is exactly `[2, 420]`. FLOPs are **exactly** linear
+   in `B` at fixed `L` (every term carries a `B` factor and the model has no
+   batch-dependent normalisation), so multiply by 31 to get the bs=62 per-card
+   number. One step is enough — the shape is constant, so there is nothing to
+   average.
+
+   Checkpointing is **off** for this run: no replay executes, so the 3×/1×
+   count is the executed work with nothing to correct. sdpa keeps attention
+   visible to the `FlopCounterMode` cross-check (§5.7).
 
    Use 8 ranks, not one: at `world_size=1` ZeRO-2 must hold the unsharded
    optimizer state and gradient partition, which does not fit even at bs=2. The
@@ -411,6 +416,14 @@ No peak/TFLOPS variable exists — MFU is computed outside the tool (§2.1).
    reachable), `seq_len == 420`. Ignore this run's step time.
 5. **Timing run (production pickle, bs=62, accelerated, 100 steps, drop the first
    10, average 20–70)** for the authoritative step time.
+
+6. **PyTorch counter cross-check (same run).** `ROSS_FLOPS_TORCH=1` wraps
+   `compute_loss` in `torch.utils.flop_counter.FlopCounterMode` and logs
+   `flops_torch_fwd`; the end-of-run print reports the hooks/torch ratio. It
+   must agree to a few percent. On torch_npu 2.11 the counter sees the
+   **forward only** — backward runs in `npu::` kernels (verified: CPU fwd+bwd
+   384, NPU forward 128, NPU backward 0) — so the executed backward still comes
+   from the 3×/1× factors.
 
 Deliverables are `flops_total` (step 4) and mean `step_time_full_s` (step 5).
 The MFU arithmetic is done outside the tool.
@@ -436,11 +449,13 @@ computes MFU, so no peak value is needed (§2.1).
 - No model or kernel changes.
 - Elementwise / normalisation / activation FLOPs (RMSNorm, SiLU, rotary,
   GroupNorm) are not counted. Deliberate under-count of total executed FLOPs.
-- **3×/1× is a convention, not executed work.** Gradient-checkpoint replay runs
-  an extra forward per checkpointed block on the hardware; the counter
-  deliberately snapshots before backward. Reported MFU is therefore ~25–30%
-  below raw hardware utilisation. This is the standard MFU convention, kept for
-  comparability with published numbers.
+- **3×/1× is a convention, and the counting run removes replay from the
+  question.** Checkpointing is disabled for the counting run, so the counted
+  forward is the only forward that executes and 3×/1× is exactly the work done.
+  The *timed* run still uses checkpointing (bs=62 does not fit otherwise), so it
+  executes one extra forward per checkpointed block and the resulting MFU is a
+  convention number ~25–30% below raw hardware utilisation. That gap is a
+  property of the timed run, not of the count.
 - **One peak for mixed precision.** The denoiser runs under an fp32 autocast
   ([modeling_qwen2_5_vl_ross.py:355](../../../reference/transformers/src/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl_ross.py#L355))
   and the VAE under `no_grad`; both are divided by the bf16 peak, which

@@ -667,6 +667,15 @@ def train():
     local_rank = training_args.local_rank
     os.makedirs(training_args.output_dir, exist_ok=True)
 
+    if os.getenv("ROSS_COUNT_FLOPS", "0") == "1" and getattr(
+        training_args, "gradient_checkpointing", False
+    ):
+        rank0_print(
+            "[flops] gradient checkpointing is ON: logged flops_* are unaffected "
+            "(read before backward) but by_class includes replay. The counting run "
+            "should use --gradient_checkpointing False."
+        )
+
     rank0_print(f"[Device] detected: {_device_type}")
 
     # Strict reproducibility for cross-platform (NPU vs GPU) comparison
