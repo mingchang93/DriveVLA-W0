@@ -404,9 +404,13 @@ No peak/TFLOPS variable exists — MFU is computed outside the tool (§2.1).
    number. One step is enough — the shape is constant, so there is nothing to
    average.
 
-   Checkpointing is **off** for this run: no replay executes, so the 3×/1×
-   count is the executed work with nothing to correct. sdpa keeps attention
-   visible to the `FlopCounterMode` cross-check (§5.7).
+   **Run it twice — checkpointing off and on — and report both.** In the
+   checkpointing-off run no replay executes, so the 3×/1× count *is* the
+   executed work. In the checkpointing-on run the logged `flops_*` are
+   identical (the snapshot precedes backward), but the replayed forward shows up
+   in the hook totals; executed work = logged + replayed. The hooks/torch ratio
+   is the diagnostic: ~1.0 = no replay, ~1.9 = replay counted. sdpa keeps
+   attention visible to the `FlopCounterMode` cross-check (§5.6).
 
    Use 8 ranks, not one: at `world_size=1` ZeRO-2 must hold the unsharded
    optimizer state and gradient partition, which does not fit even at bs=2. The

@@ -1522,8 +1522,30 @@ and a lower CV than bs=62 (19.2% vs 24.2%). Adopted in the Data policy section.
 
 ## Step 30 — Executed-backward count + PyTorch cross-check (`5b2a053`)
 
-Run `logs/flops_exec_20261025`: bs=2, 8 ranks, **sdpa**, **gradient checkpointing
-off**, 1 step, `ROSS_COUNT_FLOPS=1 ROSS_FLOPS_TORCH=1`.
+**Protocol: every FLOPs measurement is now two runs** — the same command with
+`--gradient_checkpointing False` and with `True`:
+
+| | replay off (`flops_exec_20261025`) | replay on (`flops_replay_on_20261025`) |
+|---|---|---|
+| logged `flops_total` (read before backward) | 4.8237e13 | 4.8237e13 |
+| hooks raw forward (whole run) | 1.6927e13 | 3.2444e13 |
+| torch `FlopCounterMode` forward | 1.6645e13 | 1.6645e13 |
+| hooks / torch | **1.017** | **1.949** |
+| replayed forward (hooks delta) | 0 | **1.5517e13** |
+| executed (logged + replayed) | 4.8237e13 | **6.3754e13** |
+| ×31 → bs=62 | 1.4954e15 | **1.9764e15** |
+| MFU @486, median 9.662 s | 31.8 % | **42.1 %** |
+| MFU @486, mean 10.858 s | 28.3 % | **37.5 %** |
+
+The logged values are identical by construction — the snapshot is taken before
+`backward()`. The replay is visible only in the hook totals, so the hooks/torch
+ratio is the diagnostic: ~1.0 means no replay, ~1.9 means replay was counted
+(≈0.92 of a forward — the VAE is `no_grad` and part of the graph is not
+checkpointed).
+
+Original run notes follow. Run `logs/flops_exec_20261025`: bs=2, 8 ranks,
+**sdpa**, **gradient checkpointing off**, 1 step,
+`ROSS_COUNT_FLOPS=1 ROSS_FLOPS_TORCH=1`.
 
 | quantity | value |
 |---|---|
@@ -1611,6 +1633,7 @@ file's commit and the box `HEAD` are noted.
 | `coc_async_20261024` | 28 | `7109a22` | 32 (L1 trace, `TASK_QUEUE_ENABLE=1`) |
 | `bsstab_{48,40,32,24}_20261024` | 29 | `02a694f` | 200 each (no profiling) |
 | `flops_exec_20261025` | 30 | `5b2a053` | 1 (bs=2, no ckpt, sdpa, torch cross-check) |
+| `flops_replay_on_20261025` | 30 | `5b2a053` | 1 (same, checkpointing on) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
