@@ -1728,6 +1728,40 @@ Runs: `ab_fused_{base1,swiglu,rope,base2}_20261026`.
 
 ---
 
+## Step 34 — L1 profile of the fused best config
+
+Run `logs/profile_l1_best_20261026`: 32 steps, L1 profiler, real 20× subset,
+bs=48, replay on, fused RMSNorm + RoPE, fa2, ZeRO-2, valid CE, pinning,
+`CPU_AFFINITY_CONF=1`, code `9c79b54`. Traced step 28. Archive:
+`logs/profile_traces_20261026/profile_l1_best_bs48_rmsrope_20261026.tar.gz`
+(2.3 GB → 286 MB).
+
+Step 28, rank 0: Computing 6.296 s, Communication (not overlapped) 4.317 s,
+Free 1.581 s, Stage 12.194 s. All ranks agree on computing (6.27–6.30 s).
+
+Kernel mix (rank 0, 6.688 s total op time):
+
+| category | time | share |
+|---|---|---|
+| MatMul (AI_CORE + MIX_AIC) | 4.365 s | 65.3% |
+| FlashAttention fwd+bwd | 0.504 s | 7.5% |
+| Conv fwd/bwd | 0.450 s | 6.7% |
+| Elementwise/layout | 0.516 s | 7.7% |
+| HCCL launch kernels (389) | 0.392 s | 5.9% |
+
+The fusions land where the pre-fusion profile predicted: elementwise/layout
+17.3% → 7.7% versus Step 21, with Cast 243 → 70 ms, Mul 629 → 141 ms and Add
+351 → 128 ms. MatMul's share rises to 65.3% only because the other buckets
+shrank; absolute MatMul is lower at bs=48 than at bs=62.
+
+Caveat: step 28 is a spike step (Stage 12.19 s vs ~7.1 s typical), and its
+4.32 s communication is peer-wait, not HCCL work — the HCCL kernels are
+0.392 s over the same 389 launches as Step 21. Use this trace for kernel
+attribution, not for the communication split; a clean CoC number needs a
+non-spike step or a multi-step active window.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1801,6 +1835,7 @@ file's commit and the box `HEAD` are noted.
 | `ab_fused_swiglu_20261026` | 33 | `ff1169d` | 50 |
 | `ab_fused_rope_20261026` | 33 | `ff1169d` | 50 |
 | `ab_fused_base2_20261026` | 33 | `ff1169d` | 50 |
+| `profile_l1_best_20261026` | 34 | `9c79b54` | 32 (L1 trace, step 28, no weights) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
