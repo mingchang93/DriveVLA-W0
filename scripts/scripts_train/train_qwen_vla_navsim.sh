@@ -303,6 +303,11 @@ export DEVICE
 export ROSS_VALID_CE=0
 [ "$VALID_TOKEN_CE" = true ] && export ROSS_VALID_CE=1
 
+# Fused RMSNorm won 6.8% median throughput on torch 2.11 at bs=48 (Step 32,
+# A-B-A: 50.5 -> 54.0 samples/s). An existing env value wins, so A/Bs can set
+# ROSS_NPU_RMSNORM=0 without editing this script.
+export ROSS_NPU_RMSNORM="${ROSS_NPU_RMSNORM:-1}"
+
 # `reference.transformers...` needs the repo root; qwenvl needs the finetune root.
 export PYTHONPATH="$ROOT:$ROOT/reference/Qwen2.5-VL/qwen-vl-finetune${PYTHONPATH:+:$PYTHONPATH}"
 

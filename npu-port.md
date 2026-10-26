@@ -11,16 +11,17 @@
 follow the fixed-length protocol noted below.
 
 **Goal: maximize throughput (samples/sec).** Every new run must aim to beat
-the best config — **50.73 samples/s median / 45.75 mean, mean MFU 28.4%** at
-bs=48 with replay on (Step 29 basis: per-step `samples_per_s`, first 5 steps
-dropped, fa2, ZeRO-2, valid CE). Any configuration is fair game — batch size,
-ZeRO stage, offload, attention backend, worker count — as long as it beats
-this number. The shared `lmc-w0` shell exports `ROSS_STEP_TIMING=0`; override
-it to `1` so the median is comparable.
+the best config — **53.99 samples/s median / 50.25 mean, MFU 33.5% median /
+31.2% mean** at bs=48 with replay on and fused RMSNorm (Step 32 basis: per-step
+`samples_per_s`, first 5 steps dropped, fa2, ZeRO-2, valid CE). Any
+configuration is fair game — batch size, ZeRO stage, offload, attention
+backend, worker count — as long as it beats this number. The shared `lmc-w0`
+shell exports `ROSS_STEP_TIMING=0`; override it to `1` so the median is
+comparable.
 
-**Current best config: `--batch_size 48`**, replay on (Step 29). Step 19's
-bs=62 was chosen on the natural subset before that sweep and remains the
-highest raw throughput.
+**Current best config: `--batch_size 48`**, replay on, `ROSS_NPU_RMSNORM=1`
+(Step 32; supersedes Step 29's 50.73/45.75). The launcher now exports
+`ROSS_NPU_RMSNORM=1` unless the environment already sets it.
 
 ```bash
 export CPU_AFFINITY_CONF=1
@@ -770,7 +771,8 @@ noise. **FA2 is the win: +83% at bs=40.**
 OOM), versus 26.58 for the sdpa baseline. The same config measured 48.05 over
 50 steps. These are now the launcher defaults (`ATTN_TYPE=fa2`,
 `BATCH_SIZE=40`; Step 17 raises the batch to 64 and enables valid-token CE). The leaf-op flags (`ROSS_NPU_RMSNORM`, `ROSS_NPU_SWIGLU`,
-`ROSS_NPU_ROPE`) are left off; they did not pay for themselves.
+`ROSS_NPU_ROPE`) are left off; they did not pay for themselves. (RMSNorm is
+superseded by Step 32: +6.8% on torch 2.11 at bs=48.)
 
 Implementation:
 
@@ -1068,7 +1070,8 @@ run-to-run noise. No win; the launcher default stays `adamw_torch`.
 Run: `logs/oldbox_torch211_adamwfused_20261023`.
 
 The existing fused ops keep their Step 14 verdicts: RMSNorm neutral (+0.8%),
-SwiGLU −3.2%, RoPE −6.6%, so none is enabled by default.
+SwiGLU −3.2%, RoPE −6.6%, so none is enabled by default. (Superseded for
+RMSNorm by Step 32: +6.8% on torch 2.11 at bs=48; the other two stand.)
 
 ---
 
@@ -1645,6 +1648,40 @@ little compute to amortize the extra activation traffic.
 
 ---
 
+## Step 32 — Fused RMSNorm re-test on the 2.11 stack (adopted)
+
+Step 14's +0.8% verdict for `npu_rms_norm` was measured on torch 2.7.1 at
+bs=24. Re-tested on the current stack: torch 2.11, bs=48, replay on, fa2,
+ZeRO-2, valid CE, pinning, `CPU_AFFINITY_CONF=1`, fixed-length set, 50 steps,
+per-step `step_time_s` with the first 5 dropped. A-B-A to separate signal from
+drift.
+
+| arm | median s | mean s | CV | outliers | samples/s (median) | samples/s (mean) |
+|---|---|---|---|---|---|---|
+| A1 base | 7.614 | 8.221 | 14.2% | 2 | 50.43 | 46.71 |
+| B `ROSS_NPU_RMSNORM=1` | **7.112** | 7.641 | 18.8% | 3 | **53.99** | 50.25 |
+| A3 base | 7.587 | 8.159 | 13.9% | 2 | 50.61 | 47.06 |
+
+Base-vs-base drift is 0.36%. Effect: median step time −6.4%, throughput
+**+6.8%** (mean-based +7.2%). Losses match (3.6658 / 3.6690 / 3.6647), so it
+is the same work. MFU on the logged-FLOPs basis
+(`1.4954e15 × 48/62 = 1.1577e15` per card per step): **33.5% median / 31.2%
+mean**.
+
+The fused path is live: `Qwen2RMSNorm.forward` calls `fused_rms_norm`
+([`qwen2/modeling_qwen2.py:198`](reference/transformers/src/transformers/models/qwen2/modeling_qwen2.py#L198)),
+and Qwen2.5-VL imports that class. The run's `[fused] backward support: {}` is
+expected — the probe covers only add-RMSNorm, GN+SiLU and SiLU, the ops with
+no NPU backward kernel.
+
+**Adopted:** the launcher exports `ROSS_NPU_RMSNORM=1` (an existing env value
+wins, so A/Bs can set `0`). This supersedes Step 14's verdict for RMSNorm;
+SwiGLU and RoPE keep their negative results.
+
+Runs: `ab_rmsnorm_{base,on,base2}_20261026`.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1711,6 +1748,9 @@ file's commit and the box `HEAD` are noted.
 | `ab_replay_off_bs8_20261025` | 31 | `6575814` | 50 |
 | `ab_replay_on_bs8_20261025` | 31 | `6575814` | 50 |
 | `abz3_replay_off_bs48_20261025` | 31 | `6575814` | killed (goal reset) |
+| `ab_rmsnorm_base_20261026` | 32 | `6575814` | 50 |
+| `ab_rmsnorm_on_20261026` | 32 | `6575814` | 50 |
+| `ab_rmsnorm_base2_20261026` | 32 | `6575814` | 50 |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
