@@ -746,7 +746,10 @@ def train():
     else:
         rank0_print("Starting training from scratch...")
         trainer.train()
-    
+
+    if _device_type == "npu":
+        rank0_print(f"[mem] peak HBM allocated (rank0): {torch.npu.max_memory_allocated() / 1e9:.1f} GB")
+
     if trainer._flops is not None:
         total = trainer._flops.cumulative
         rank0_print(

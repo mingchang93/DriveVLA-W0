@@ -125,6 +125,52 @@ def main():
     else:
         print("unavailable npu_add_rms_norm")
 
+    # --- residual add + RMSNorm, v2_functional + explicit backward ---
+    if hasattr(torch_npu, "npu_add_rms_norm_v2_functional"):
+        try:
+            import importlib.util
+            _p = os.path.join(os.path.dirname(__file__), "..", "..",
+                              "reference/transformers/src/transformers/models/qwen2_5_vl/npu_fused_ops.py")
+            _spec = importlib.util.spec_from_file_location("_npu_fused_ops_v2", _p)
+            _mod = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+
+            xa = torch.randn(24, 421, 3584, device=dev, dtype=torch.bfloat16)
+            xb = torch.randn_like(xa)
+            wa = torch.randn(3584, device=dev, dtype=torch.bfloat16)
+            gout, gsum = torch.randn_like(xa), torch.randn_like(xa)
+
+            xa1 = xa.clone().requires_grad_(True)
+            xb1 = xb.clone().requires_grad_(True)
+            wa1 = wa.clone().requires_grad_(True)
+            out, summed = _mod._FusedAddRMSNormV2.apply(xa1, xb1, wa1, 1e-6)
+            check("add_rms_v2 y", out, reference_rms_norm(xa + xb, wa, 1e-6), TOL_BF16)
+            check("add_rms_v2 summed", summed, xa.float() + xb.float(), TOL_BF16)
+            ((out.float() * gout.float()).sum() + (summed.float() * gsum.float()).sum()).backward()
+
+            xa2 = xa.clone().requires_grad_(True)
+            xb2 = xb.clone().requires_grad_(True)
+            wa2 = wa.clone().requires_grad_(True)
+            s2 = xa2 + xb2
+            ref_out = reference_rms_norm(s2, wa2, 1e-6)
+            ((ref_out.float() * gout.float()).sum() + (s2.float() * gsum.float()).sum()).backward()
+
+            for name, got, ref in (("dx1", xa1.grad, xa2.grad),
+                                   ("dx2", xb1.grad, xb2.grad),
+                                   ("dw", wa1.grad, wa2.grad)):
+                rel = ((got.float() - ref.float()).abs().max()
+                       / ref.float().abs().max().clamp_min(1e-6)).item()
+                ok = rel <= TOL_BF16
+                print(f"{'PASS' if ok else 'FAIL'} add_rms_v2 backward {name}: "
+                      f"rel={rel:.3e} tol={TOL_BF16}")
+                if not ok:
+                    failures.append(f"add_rms_v2 backward {name}")
+        except Exception as e:
+            print("SKIP add_rms_v2:", type(e).__name__, str(e).splitlines()[0][:160])
+            failures.append("add_rms_v2")
+    else:
+        print("unavailable npu_add_rms_norm_v2_functional")
+
     # --- GroupNorm + SiLU ---
     if hasattr(torch_npu, "npu_group_norm_silu"):
         try:

@@ -44,6 +44,7 @@ _ENABLE_RMSNORM = _flag("ROSS_NPU_RMSNORM")
 _ENABLE_SWIGLU = _flag("ROSS_NPU_SWIGLU")
 _ENABLE_ROPE = _flag("ROSS_NPU_ROPE")
 _ENABLE_ADD_RMS = _flag("ROSS_NPU_ADD_RMSNORM")
+_ENABLE_ADD_RMS_V2 = _flag("ROSS_NPU_ADD_RMSNORM_V2")
 _ENABLE_GN_SILU = _flag("ROSS_NPU_GN_SILU")
 _ENABLE_SILU = _flag("ROSS_NPU_SILU")
 
@@ -51,6 +52,7 @@ _HAS_RMSNORM = _npu_ready("npu_rms_norm")
 _HAS_SWIGLU = _npu_ready("npu_swiglu")
 _HAS_ROTARY = _npu_ready("npu_rotary_mul")
 _HAS_ADD_RMS = _npu_ready("npu_add_rms_norm")
+_HAS_ADD_RMS_V2 = _npu_ready("npu_add_rms_norm_v2_functional")
 _HAS_GN_SILU = _npu_ready("npu_group_norm_silu")
 _HAS_SILU = _npu_ready("npu_silu")
 
@@ -149,13 +151,61 @@ def fused_rotary_mul(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
     return torch_npu.npu_rotary_mul(x, cos, sin)
 
 
-def fused_add_rms_norm(x1: torch.Tensor, x2: torch.Tensor, weight: torch.Tensor, eps: float):
-    """Residual add + RMSNorm via npu_add_rms_norm.
+class _FusedAddRMSNormV2(torch.autograd.Function):
+    """Fused add+RMSNorm forward with an explicit backward.
 
-    Returns ``(normed(x1 + x2), x1 + x2)`` or ``None``. The second value is the
-    summed residual, so the caller keeps the un-normalised stream for the next
-    residual add.
+    ``npu_add_rms_norm_v2_functional`` registers no autograd kernel on
+    torch_npu 2.11 — the residual and the norm weight receive no gradient — so
+    the backward is derived here: ``xhat = s * rstd`` from the kernel's saved
+    tensors, the standard RMSNorm gradient, plus the residual-stream gradient.
     """
+
+    @staticmethod
+    def forward(ctx, x1, x2, weight, eps):
+        rstd, out, summed = torch_npu.npu_add_rms_norm_v2_functional(x1, x2, weight, eps)
+        ctx.save_for_backward(summed, rstd, weight)
+        return out, summed
+
+    @staticmethod
+    def backward(ctx, dout, dsum):
+        summed, rstd, weight = ctx.saved_tensors
+        if dout is None:
+            dout = torch.zeros_like(summed)
+        if dsum is None:
+            dsum = torch.zeros_like(summed)
+        # fp32 math; bf16 reductions lose too much in the mean term.
+        s = summed.float()
+        r = rstd.float()
+        w = weight.float()
+        do = dout.float()
+        xhat = s * r
+        dw = (do * xhat).sum(dim=tuple(range(do.dim() - 1))).to(weight.dtype)
+        dxhat = do * w
+        ds = r * (dxhat - xhat * (dxhat * xhat).mean(dim=-1, keepdim=True))
+        ds = (ds + dsum.float()).to(summed.dtype)
+        return ds, ds, dw, None
+
+
+def fused_add_rms_norm(x1: torch.Tensor, x2: torch.Tensor, weight: torch.Tensor, eps: float):
+    """Residual add + RMSNorm, or ``None`` to use the reference path.
+
+    Returns ``(normed(x1 + x2), x1 + x2)``. The second value is the summed
+    residual, so the caller keeps the un-normalised stream for the next add.
+
+    Preferred path is ``npu_add_rms_norm_v2_functional`` + the explicit
+    backward above (``ROSS_NPU_ADD_RMSNORM_V2=1``). The v1 op
+    (``ROSS_NPU_ADD_RMSNORM=1``) is kept for stacks where it has a backward.
+    """
+    if _ENABLE_ADD_RMS_V2 and _HAS_ADD_RMS_V2:
+        if x1.dtype != x2.dtype:
+            x2 = x2.to(x1.dtype)
+        if weight.dtype != x1.dtype:
+            weight = weight.to(x1.dtype)
+        try:
+            return _FusedAddRMSNormV2.apply(x1, x2, weight, eps)
+        except Exception as exc:
+            _warn_once("add_rms_norm_v2", exc)
+            return None
     if not (_ENABLE_ADD_RMS and _HAS_ADD_RMS and _BACKWARD_OK.get("add_rms_norm", False)):
         return None
     if x1.dtype != x2.dtype:

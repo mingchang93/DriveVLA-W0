@@ -52,6 +52,9 @@ from .npu_fused_ops import fused_add_rms_norm, fused_rotary_mul, fused_silu, fus
 # positions are ignore_index (prompts + image tokens), so the full [N, vocab]
 # projection and its fp32 upcast dominate memory at large batches.
 _VALID_TOKEN_CE = os.getenv("ROSS_VALID_CE", "0") == "1"
+# Selective activation checkpointing around the valid-token CE (same policy as
+# 408235117's Emu3 port): keep the matmul outputs, recompute exp/sub.
+_SELECTIVE_CE = os.getenv("ROSS_SELECTIVE_CE", "0") == "1"
 
 
 logger = logging.get_logger(__name__)
@@ -1563,9 +1566,32 @@ class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMi
                 hidden = hidden_states[:, slice_indices, :].reshape(-1, hidden_states.shape[-1])[valid]
                 valid_logits = self.lm_head(hidden).float()
                 num_items = kwargs.get("num_items_in_batch")
-                loss = F.cross_entropy(
-                    valid_logits, shift_labels[valid], reduction="sum" if num_items is not None else "mean"
-                )
+                if _SELECTIVE_CE:
+                    from torch.utils.checkpoint import (
+                        CheckpointPolicy,
+                        checkpoint,
+                        create_selective_checkpoint_contexts,
+                    )
+
+                    def _ce_policy(_ctx, op, *a, **kw):
+                        if op in (torch.ops.aten.mm.default, torch.ops.aten.addmm.default):
+                            return CheckpointPolicy.MUST_SAVE
+                        if op in (torch.ops.aten.exp.default, torch.ops.aten.sub.Tensor):
+                            return CheckpointPolicy.MUST_RECOMPUTE
+                        return CheckpointPolicy.PREFER_RECOMPUTE
+
+                    loss = checkpoint(
+                        F.cross_entropy,
+                        valid_logits,
+                        shift_labels[valid],
+                        reduction="sum" if num_items is not None else "mean",
+                        use_reentrant=False,
+                        context_fn=lambda: create_selective_checkpoint_contexts(_ce_policy),
+                    )
+                else:
+                    loss = F.cross_entropy(
+                        valid_logits, shift_labels[valid], reduction="sum" if num_items is not None else "mean"
+                    )
                 if num_items is not None:
                     loss = loss / (num_items.to(loss.device) if torch.is_tensor(num_items) else num_items)
             else:
