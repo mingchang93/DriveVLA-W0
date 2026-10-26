@@ -8,6 +8,7 @@ Compares each torch_npu op against the PyTorch reference used in the vendored
 transformers code. Exits non-zero on failure. No test framework by design.
 """
 
+import os
 import sys
 
 import torch
