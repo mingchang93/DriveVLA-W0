@@ -11,21 +11,23 @@
 follow the fixed-length protocol noted below.
 
 **Goal: maximize throughput (samples/sec).** Every new run must aim to beat
-the best config — **57.52 samples/s median / 53.98 mean, MFU 35.7% median /
-33.5% mean** at bs=48 with replay on, fused RMSNorm and fused RoPE (Step 33
-basis: per-step `samples_per_s`, first 5 steps dropped, fa2, ZeRO-2, valid CE).
+the best config — **57.52 samples/s median / 54.20 mean, MFU 35.7% median /
+33.6% mean** at bs=48 with replay on, fused RMSNorm, fused RoPE and
+`expandable_segments` (Step 35 basis: per-step `samples_per_s`, first 5 steps
+dropped, fa2, ZeRO-2, valid CE).
 Any configuration is fair game — batch size, ZeRO stage, offload, attention
 backend, worker count — as long as it beats this number. The shared `lmc-w0`
 shell exports `ROSS_STEP_TIMING=0`; override it to `1` so the median is
 comparable.
 
 **Current best config: `--batch_size 48`**, replay on, `ROSS_NPU_RMSNORM=1`,
-`ROSS_NPU_ROPE=1` (Step 33; supersedes Step 29's 50.73/45.75 and Step 32's
-53.99/50.25). The launcher exports both unless the environment already sets
-them.
+`ROSS_NPU_ROPE=1`, `PYTORCH_NPU_ALLOC_CONF=expandable_segments:True`,
+`CPU_AFFINITY_CONF=1`, `ulimit -l unlimited` (Steps 33, 35; supersedes Step
+29's 50.73/45.75 and Step 32's 53.99/50.25). The launcher now sets the whole
+canonical env; existing environment values win for the ROSS_NPU_* flags.
 
 ```bash
-export CPU_AFFINITY_CONF=1
+export CPU_AFFINITY_CONF=1 PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 --data_path /mnt/sfs_turbo/lmc/navsim_openscene/navsim_trainval_subset_x20.pkl \
 --data_root /mnt/sfs_turbo/lmc/navsim_openscene/openscene-v1.1/sensor_blobs/trainval \
 --batch_size 48 --num_workers 8 --pin_memory true --save_model false
@@ -1762,6 +1764,44 @@ non-spike step or a multi-step active window.
 
 ---
 
+## Step 35 — Collective stalls: expandable segments (adopted)
+
+Step 34's trace showed a 12.194 s step whose 4.317 s of communication was pure
+wait: 389 collectives, transit ≈ 0, and a few allReduces at ~0.5 s on every
+rank. The previous pinned profile (Step 23) had 0.261 s over the same 389
+collectives. The one config difference was
+`PYTORCH_NPU_ALLOC_CONF=expandable_segments:True` — Step 23 had it, Step 34
+did not.
+
+Re-profiled with it (`logs/profile_l1_best_es_20261026`, same config):
+
+| trace | collectives | comm elapsed | max single | step 28 stage |
+|---|---|---|---|---|
+| without expandable segments | 389 | 4.317 s | 595.8 ms | 12.194 s |
+| with expandable segments | 389 | **0.234 s** | 47.0 ms | **6.996 s** |
+
+Computing is unchanged (6.296 s), so the stalls are allocator fragmentation at
+specific backward allocations — not bandwidth and not a straggler.
+
+Unprofiled 50-step A/B on the best config (`ab_es_on_20261026` against the
+Step 33 RoPE arm):
+
+| arm | median s | mean s | CV | outliers | samples/s (median) | samples/s (mean) |
+|---|---|---|---|---|---|---|
+| without | 6.676 | 7.114 | 20.7% | 3 | 57.52 | 53.98 |
+| with | 6.677 | 7.085 | 15.8% | 2 | 57.51 | 54.20 |
+
+Median throughput is unchanged; the mean gains 0.4% and variance drops.
+
+**Adopted:** the launcher now sets the whole canonical NPU env — `CPU_AFFINITY_CONF=1`,
+`PYTORCH_NPU_ALLOC_CONF=expandable_segments:True`, `ulimit -l unlimited`,
+`ASCEND_LAUNCH_BLOCKING=0`, and `ROSS_STEP_TIMING=1` — so ad-hoc launches
+cannot silently miss them.
+
+Trace: `logs/profile_traces_20261026/profile_l1_best_bs48_rmsrope_es_20261026.tar.gz`.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1836,6 +1876,8 @@ file's commit and the box `HEAD` are noted.
 | `ab_fused_rope_20261026` | 33 | `ff1169d` | 50 |
 | `ab_fused_base2_20261026` | 33 | `ff1169d` | 50 |
 | `profile_l1_best_20261026` | 34 | `9c79b54` | 32 (L1 trace, step 28, no weights) |
+| `profile_l1_best_es_20261026` | 35 | `9c79b54` | 32 (L1 trace, same + expandable segments) |
+| `ab_es_on_20261026` | 35 | `9c79b54` | 50 |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.

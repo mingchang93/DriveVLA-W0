@@ -286,8 +286,18 @@ case "$DEVICE" in
 esac
 
 if [ "$DEVICE" = "npu" ]; then
+  # Canonical NPU runtime env — keep this block authoritative. Ad-hoc launches
+  # that miss any of these produce misleading numbers (npu-port.md Steps 23-35).
   export INF_NAN_MODE_ENABLE=1
   export HCCL_DETERMINISTIC=TRUE
+  export CPU_AFFINITY_CONF=1              # ~5x lower step-time variance (Step 23)
+  export ASCEND_LAUNCH_BLOCKING=0
+  # HBM allocator: without expandable segments, large backward allocations
+  # fragment and stall collectives — Step 35 measured 4.32 s of comm wait
+  # versus 0.23 s with it, on identical collective counts.
+  export PYTORCH_NPU_ALLOC_CONF="${PYTORCH_NPU_ALLOC_CONF:-expandable_segments:True}"
+  # Host pinning needs unlimited memlock (Step 23); ignore hosts that forbid it.
+  ulimit -l unlimited 2>/dev/null || true
   : "${ASCEND_RT_VISIBLE_DEVICES:=0,1,2,3,4,5,6,7}"
 elif [ "$DEVICE" = "cuda" ]; then
   export NCCL_DETERMINISTIC=TRUE
@@ -302,6 +312,11 @@ fi
 export DEVICE
 export ROSS_VALID_CE=0
 [ "$VALID_TOKEN_CE" = true ] && export ROSS_VALID_CE=1
+
+# Per-step step_time_s / samples_per_s are the throughput metric (Step 29);
+# default on so every run reports them. Set 0 for profiler runs if the extra
+# device syncs distort a trace.
+export ROSS_STEP_TIMING="${ROSS_STEP_TIMING:-1}"
 
 # Fused RMSNorm won 6.8% median throughput on torch 2.11 at bs=48 (Step 32,
 # A-B-A: 50.5 -> 54.0 samples/s). An existing env value wins, so A/Bs can set
