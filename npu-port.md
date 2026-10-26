@@ -11,17 +11,18 @@
 follow the fixed-length protocol noted below.
 
 **Goal: maximize throughput (samples/sec).** Every new run must aim to beat
-the best config — **53.99 samples/s median / 50.25 mean, MFU 33.5% median /
-31.2% mean** at bs=48 with replay on and fused RMSNorm (Step 32 basis: per-step
-`samples_per_s`, first 5 steps dropped, fa2, ZeRO-2, valid CE). Any
-configuration is fair game — batch size, ZeRO stage, offload, attention
+the best config — **57.52 samples/s median / 53.98 mean, MFU 35.7% median /
+33.5% mean** at bs=48 with replay on, fused RMSNorm and fused RoPE (Step 33
+basis: per-step `samples_per_s`, first 5 steps dropped, fa2, ZeRO-2, valid CE).
+Any configuration is fair game — batch size, ZeRO stage, offload, attention
 backend, worker count — as long as it beats this number. The shared `lmc-w0`
 shell exports `ROSS_STEP_TIMING=0`; override it to `1` so the median is
 comparable.
 
-**Current best config: `--batch_size 48`**, replay on, `ROSS_NPU_RMSNORM=1`
-(Step 32; supersedes Step 29's 50.73/45.75). The launcher now exports
-`ROSS_NPU_RMSNORM=1` unless the environment already sets it.
+**Current best config: `--batch_size 48`**, replay on, `ROSS_NPU_RMSNORM=1`,
+`ROSS_NPU_ROPE=1` (Step 33; supersedes Step 29's 50.73/45.75 and Step 32's
+53.99/50.25). The launcher exports both unless the environment already sets
+them.
 
 ```bash
 export CPU_AFFINITY_CONF=1
@@ -771,8 +772,8 @@ noise. **FA2 is the win: +83% at bs=40.**
 OOM), versus 26.58 for the sdpa baseline. The same config measured 48.05 over
 50 steps. These are now the launcher defaults (`ATTN_TYPE=fa2`,
 `BATCH_SIZE=40`; Step 17 raises the batch to 64 and enables valid-token CE). The leaf-op flags (`ROSS_NPU_RMSNORM`, `ROSS_NPU_SWIGLU`,
-`ROSS_NPU_ROPE`) are left off; they did not pay for themselves. (RMSNorm is
-superseded by Step 32: +6.8% on torch 2.11 at bs=48.)
+`ROSS_NPU_ROPE`) are left off; they did not pay for themselves. (RMSNorm and
+RoPE are superseded by Steps 32/33: +6.8% and +6.3% on torch 2.11 at bs=48.)
 
 Implementation:
 
@@ -1071,7 +1072,8 @@ Run: `logs/oldbox_torch211_adamwfused_20261023`.
 
 The existing fused ops keep their Step 14 verdicts: RMSNorm neutral (+0.8%),
 SwiGLU −3.2%, RoPE −6.6%, so none is enabled by default. (Superseded for
-RMSNorm by Step 32: +6.8% on torch 2.11 at bs=48; the other two stand.)
+RMSNorm and RoPE by Steps 32/33: +6.8% and +6.3% on torch 2.11 at bs=48;
+SwiGLU stands.)
 
 ---
 
@@ -1682,6 +1684,50 @@ Runs: `ab_rmsnorm_{base,on,base2}_20261026`.
 
 ---
 
+## Step 33 — Re-testing the rejected fused kernels (RoPE adopted)
+
+Re-ran the backward probe (`tools/ascend_parity/check_fused_ops.py`) and an
+A-B-C-A throughput test on torch 2.11 at bs=48, with RMSNorm on as the
+baseline. 50 steps per arm, fa2, ZeRO-2, valid CE, pinning, fixed-length set,
+first 5 steps dropped.
+
+Probe result — the three feasibility rejects are unchanged:
+
+| op | forward | backward |
+|---|---|---|
+| `npu_add_rms_norm` | PASS | **unavailable** — `derivative for npu::npu_add_rms_norm is not implemented` |
+| `npu_group_norm_silu` | PASS | **unavailable** — no autograd kernel (finite check fails) |
+| `npu_silu` | unavailable | — (no aclnn implementation) |
+
+Throughput A-B-C-A:
+
+| arm | flags | median s | mean s | samples/s (median) | samples/s (mean) |
+|---|---|---|---|---|---|
+| A base | RMS | 7.098 | 7.764 | 54.10 | 49.46 |
+| B | RMS + SWIGLU | 7.286 | 7.862 | 52.70 | 48.84 |
+| C | RMS + ROPE | **6.676** | 7.114 | **57.52** | 53.98 |
+| D base | RMS | 7.096 | 7.603 | 54.11 | 50.50 |
+
+Base drift is 0.03% (7.098 vs 7.096), so both deltas are real.
+
+- **SwiGLU: rejected again** (+2.4% step time, −2.6% throughput); the old
+  −3.2% verdict holds.
+- **RoPE: flipped to a win** (−5.9% step time, +6.3% median throughput,
+  +8.0% mean-based). Step 14's −6.6% was on torch 2.7.1 at bs=24 — the same
+  stack-transfer effect as RMSNorm (Step 32). Fusion is live in the vision
+  tower ([`modeling_qwen2_5_vl.py:151-153`](reference/transformers/src/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py#L151-L153))
+  and the LLM ([`:624-627`](reference/transformers/src/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py#L624-L627)).
+- Losses agree across arms (3.6709 / 3.6782 / 3.6712 / 3.6712).
+
+**Adopted:** the launcher exports `ROSS_NPU_ROPE=1` alongside
+`ROSS_NPU_RMSNORM=1` (existing env values win). New best: **57.52 samples/s
+median / 53.98 mean, MFU 35.7% median / 33.5% mean** — +13.4% over the 50.73
+target.
+
+Runs: `ab_fused_{base1,swiglu,rope,base2}_20261026`.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1751,6 +1797,10 @@ file's commit and the box `HEAD` are noted.
 | `ab_rmsnorm_base_20261026` | 32 | `6575814` | 50 |
 | `ab_rmsnorm_on_20261026` | 32 | `6575814` | 50 |
 | `ab_rmsnorm_base2_20261026` | 32 | `6575814` | 50 |
+| `ab_fused_base1_20261026` | 33 | `ff1169d` | 50 |
+| `ab_fused_swiglu_20261026` | 33 | `ff1169d` | 50 |
+| `ab_fused_rope_20261026` | 33 | `ff1169d` | 50 |
+| `ab_fused_base2_20261026` | 33 | `ff1169d` | 50 |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.

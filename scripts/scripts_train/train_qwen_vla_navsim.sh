@@ -308,6 +308,10 @@ export ROSS_VALID_CE=0
 # ROSS_NPU_RMSNORM=0 without editing this script.
 export ROSS_NPU_RMSNORM="${ROSS_NPU_RMSNORM:-1}"
 
+# Fused RoPE won another 6.3% on top of that (Step 33, A-B-C-A: 54.1 -> 57.5
+# samples/s median). Same override rule for A/Bs.
+export ROSS_NPU_ROPE="${ROSS_NPU_ROPE:-1}"
+
 # `reference.transformers...` needs the repo root; qwenvl needs the finetune root.
 export PYTHONPATH="$ROOT:$ROOT/reference/Qwen2.5-VL/qwen-vl-finetune${PYTHONPATH:+:$PYTHONPATH}"
 
