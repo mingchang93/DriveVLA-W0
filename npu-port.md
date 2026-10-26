@@ -893,6 +893,8 @@ dropping the first 5 steps. Runs: `logs/env_ab_20261022`,
 Conclusion: none of these runtime knobs changes throughput beyond the 0.4%
 anchor drift. `TASK_QUEUE_ENABLE=2` is unusable on this build — it fails before
 model load, leaving an empty run directory; value 1 works but is neutral.
+(Superseded on the recreated container: `=2` now runs, still neutral and with
+zero overlap — Step 36.)
 Determinism-off is also neutral, so `HCCL_DETERMINISTIC` can stay on for
 correctness runs at no measurable cost.
 
@@ -1056,7 +1058,7 @@ first 5 steps.
 
 | op | forward | backward |
 |---|---|---|
-| `npu_add_rms_norm` | PASS (rel 4.4e-3) | **unavailable** — `derivative for npu::npu_add_rms_norm is not implemented` |
+| `npu_add_rms_norm` | PASS (rel 4.4e-3) | **unavailable** — `derivative for npu::npu_add_rms_norm is not implemented`. The `v2_functional` variant can be trained with a hand-written backward (Step 36) |
 | `npu_group_norm_silu` | returns `(y, mean, rstd)` | **unavailable** — no autograd kernel; backward leaves `grad=None` |
 | `npu_silu` | **unavailable** — `Current device only support aclnn operator, but ... npu_silu do not have aclnn implementation` | — |
 | `npu_rms_norm` / `npu_swiglu` / `npu_rotary_mul` | PASS | PASS |
@@ -1802,6 +1804,56 @@ Trace: `logs/profile_traces_20261026/profile_l1_best_bs48_rmsrope_es_20261026.ta
 
 ---
 
+## Step 36 — v2 add-RMSNorm, selective CE, TASK_QUEUE_ENABLE=2 (all neutral)
+
+Three experiments borrowed from the Emu3 port (`408235117/DriveVLA-W0-950DT`,
+branch `emu3-npu-port`; see Step 33 for the fused-kernel re-test that did pay
+off).
+
+### 36a. `npu_add_rms_norm_v2_functional` with a custom backward
+
+The v2 op exists on torch_npu 2.11 but registers **no autograd kernel**: the
+residual and the norm weight receive no gradient (`x.grad` only, plus a
+"silently incorrect" warning). `ROSS_NPU_ADD_RMSNORM_V2=1` wraps its forward in
+a `torch.autograd.Function` that derives the backward from the kernel's
+`summed`/`rstd` outputs. Parity (`check_fused_ops.py`): y rel 4.4e-3,
+dx1/dx2 4.98e-3, dw 1.41e-3 — all inside bf16 tolerance. The path engaged with
+no fallback warnings.
+
+### 36b. Selective checkpoint CE
+
+`ROSS_SELECTIVE_CE=1` wraps the valid-token cross-entropy in a selective
+checkpoint (save matmul, recompute exp/sub), mirroring the Emu3 port. Their win
+came from a 14.4 GB `exp()` transient in a chunked 184K-vocab CE; our compacted
+CE only materialises ~0.55 GB.
+
+### A-B-C-A (50 steps, bs=48, RMSNorm + RoPE + expandable segments)
+
+| arm | median s | mean s | CV | outliers | samples/s (median) | samples/s (mean) | peak HBM |
+|---|---|---|---|---|---|---|---|
+| base1 | 6.658 | 7.274 | 21.8% | 3 | 57.67 | 52.79 | 63.5 GB |
+| ADD_RMSNORM_V2 | 6.748 | 7.136 | 15.3% | 2 | 56.90 | 53.81 | 63.5 GB |
+| SELECTIVE_CE | 6.658 | 7.146 | 18.3% | 3 | 57.68 | 53.74 | 63.5 GB |
+| base2 | 6.649 | 7.097 | 16.9% | 2 | 57.75 | 54.11 | 63.5 GB |
+
+Base drift 0.14% median / ~2.5% mean. **Add-RMSNorm v2 is −1.3% median** — the
+fp32 math in the hand-written backward costs more than the fused residual add
+saves. **Selective CE is neutral** and peak HBM is unchanged, so there is
+nothing to reclaim. Both flags stay off by default.
+
+### 36c. `TASK_QUEUE_ENABLE=2` (retried)
+
+Step 16 found `=2` crashed before model loading. On the recreated container it
+runs, but is neutral: 6.639 s median / 57.84 samples/s versus 6.649 / 57.75 for
+the adjacent base, against 0.14% drift. The L1 trace shows why — step 28 has
+`Overlapped = 0.000 s` on all 8 ranks (Computing 6.299 s, Comm 0.248 s, Free
+0.412 s, Stage 6.960 s), the same zero-overlap result as `=0`/`=1` in Step 28.
+
+Runs: `abx_{base1,v2add,selce,base2,tq2}_20261026`, `profile_l1_tq2_20261026`.
+Trace: `logs/profile_traces_20261026/profile_l1_tq2_bs48_rmsrope_es_20261026.tar.gz`.
+
+---
+
 ## Run index
 
 Every run records the commit it is based on. "Code" is the commit whose tree
@@ -1878,6 +1930,12 @@ file's commit and the box `HEAD` are noted.
 | `profile_l1_best_20261026` | 34 | `9c79b54` | 32 (L1 trace, step 28, no weights) |
 | `profile_l1_best_es_20261026` | 35 | `9c79b54` | 32 (L1 trace, same + expandable segments) |
 | `ab_es_on_20261026` | 35 | `9c79b54` | 50 |
+| `abx_base1_20261026` | 36 | `7c769e7` | 50 |
+| `abx_v2add_20261026` | 36 | `7c769e7` | 50 |
+| `abx_selce_20261026` | 36 | `7c769e7` | 50 |
+| `abx_base2_20261026` | 36 | `7c769e7` | 50 |
+| `abx_tq2_20261026` | 36 | `7c769e7` | 50 |
+| `profile_l1_tq2_20261026` | 36 | `7c769e7` | 32 (L1 trace, step 28, `TASK_QUEUE_ENABLE=2`) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
