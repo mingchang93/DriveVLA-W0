@@ -480,32 +480,73 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
     Complete VLA model setup: load model, configure training parameters, and set up tokenizer
     """
     
-    model_type = "qwen2.5vl_ross"
-
-    model_class = Qwen2_5_VLForConditionalGenerationROSS
+    # Backbone family comes from the checkpoint's config.json. Qwen3-VL's
+    # modeling is vendored into the same transformers tree (the 4.57 module on
+    # our 4.56 base) and has its own ROSS subclass.
+    import json as _json
+    _cfg_path = os.path.join(model_args.model_name_or_path, "config.json")
+    _family = "qwen25"
+    if os.path.exists(_cfg_path):
+        with open(_cfg_path) as _cfg_f:
+            if _json.load(_cfg_f).get("model_type") == "qwen3_vl":
+                _family = "qwen3vl"
+    rank0_print(f"[model] backbone family: {_family}")
 
     tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path)
 
-    base_cfg = Qwen2_5_VLConfig.from_pretrained(
-            model_args.model_name_or_path, trust_remote_code=True
-    )
-    if "enable_ross" in base_cfg.to_dict().keys():
-        ross_cfg = Qwen2_5_VLConfigROSS(
-                **base_cfg.to_dict(),
+    if _family == "qwen3vl":
+        from reference.transformers.src.transformers.models.qwen3_vl.configuration_qwen3_vl import (
+            Qwen3VLConfig,
         )
-    else:
-        ross_cfg = Qwen2_5_VLConfigROSS(
-                **base_cfg.to_dict(),
+        from reference.transformers.src.transformers.models.qwen3_vl.modeling_qwen3_vl_ross import (
+            Qwen3VLConfigROSS,
+            Qwen3VLForConditionalGenerationROSS,
+        )
+        from reference.transformers.src.transformers.models.qwen3_vl.processing_qwen3_vl import (
+            Qwen3VLProcessor,
+        )
+
+        model_class = Qwen3VLForConditionalGenerationROSS
+        base_cfg = Qwen3VLConfig.from_pretrained(
+            model_args.model_name_or_path, trust_remote_code=True
+        )
+        cfg_kwargs = base_cfg.to_dict()
+        if "enable_ross" in cfg_kwargs:
+            ross_cfg = Qwen3VLConfigROSS(**cfg_kwargs)
+        else:
+            ross_cfg = Qwen3VLConfigROSS(
+                **cfg_kwargs,
                 enable_ross=True,
                 extract_image_hidden=True,
                 extract_action_hidden=True,
                 sd_model_path=model_args.sd_model_path,
             )
+    else:
+        model_class = Qwen2_5_VLForConditionalGenerationROSS
+        base_cfg = Qwen2_5_VLConfig.from_pretrained(
+                model_args.model_name_or_path, trust_remote_code=True
+        )
+        if "enable_ross" in base_cfg.to_dict().keys():
+            ross_cfg = Qwen2_5_VLConfigROSS(
+                    **base_cfg.to_dict(),
+            )
+        else:
+            ross_cfg = Qwen2_5_VLConfigROSS(
+                    **base_cfg.to_dict(),
+                    enable_ross=True,
+                    extract_image_hidden=True,
+                    extract_action_hidden=True,
+                    sd_model_path=model_args.sd_model_path,
+                )
     # Resolve attention implementation. The vendored transformers ships an
     # Ascend NPU flash-attention path (integrations/npu_flash_attention.py), so
     # FA2 is usable on NPU even though the `flash-attn` package is CUDA-only.
     attn_type = getattr(training_args, "attn_type", "fa2")
     attn_impl = {"fa2": "flash_attention_2"}.get(attn_type, attn_type)
+    if _family == "qwen3vl" and attn_impl == "flash_attention_2":
+        # The vendored NPU FA2 integration is wired for Qwen2.5-VL's attention
+        # classes; Qwen3-VL runs on sdpa until that path is ported.
+        attn_impl = "sdpa"
     if attn_impl == "flash_attention_2" and not _npu_fa2_available():
         attn_impl = "sdpa"
         print(f"[Device] FA2 unavailable on {_device_type}, falling back to sdpa")
@@ -549,7 +590,12 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
 
     rank0_print(f"Loaded {model_class.__name__} from {model_args.model_name_or_path}")
 
-    image_processor = AutoProcessor.from_pretrained(model_args.model_name_or_path).image_processor
+    if _family == "qwen3vl":
+        image_processor = Qwen3VLProcessor.from_pretrained(
+            model_args.model_name_or_path
+        ).image_processor
+    else:
+        image_processor = AutoProcessor.from_pretrained(model_args.model_name_or_path).image_processor
 
     tokenizer.model_max_length = training_args.model_max_length
     tokenizer.padding_side = "right"
