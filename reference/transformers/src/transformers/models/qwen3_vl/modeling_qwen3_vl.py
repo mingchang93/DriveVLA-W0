@@ -19,6 +19,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Union
 
@@ -39,6 +40,9 @@ from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, is_torchdynamo_compiling
 from ...utils.deprecation import deprecate_kwarg
+
+# ROSS: project logits only at labeled positions (npu-port.md Step 17).
+_VALID_TOKEN_CE = os.getenv("ROSS_VALID_CE", "0") == "1"
 from ...utils.generic import check_model_inputs
 from .configuration_qwen3_vl import Qwen3VLConfig, Qwen3VLTextConfig, Qwen3VLVisionConfig
 
@@ -1359,11 +1363,37 @@ class Qwen3VLForConditionalGeneration(Qwen3VLPreTrainedModel, GenerationMixin):
 
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :])
-
+        logits = None
         loss = None
-        if labels is not None:
-            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size)
+        if (
+            labels is not None
+            and _VALID_TOKEN_CE
+            and logits_to_keep in (0, None)
+            and kwargs.get("shift_labels") is None
+        ):
+            # Project only the labeled positions: ~5% of tokens (Step 17).
+            shift_labels = F.pad(labels, (0, 1), value=-100)[..., 1:].reshape(-1)
+            valid = shift_labels != -100
+            if valid.any():
+                hidden = hidden_states[:, slice_indices, :].reshape(-1, hidden_states.shape[-1])[valid]
+                valid_logits = self.lm_head(hidden).float()
+                num_items = kwargs.get("num_items_in_batch")
+                loss = F.cross_entropy(
+                    valid_logits, shift_labels[valid], reduction="sum" if num_items is not None else "mean"
+                )
+                if num_items is not None:
+                    loss = loss / (num_items.to(loss.device) if torch.is_tensor(num_items) else num_items)
+            else:
+                logits = self.lm_head(hidden_states[:, slice_indices, :])
+                loss = self.loss_function(
+                    logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size
+                )
+        else:
+            logits = self.lm_head(hidden_states[:, slice_indices, :])
+            if labels is not None:
+                loss = self.loss_function(
+                    logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size
+                )
 
         return Qwen3VLCausalLMOutputWithPast(
             loss=loss,
