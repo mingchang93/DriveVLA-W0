@@ -2111,6 +2111,7 @@ Two MFU conventions are reported:
 | L1774 / bs20 | 903,168 | 10.384 | 15.41 | 27,335 | 40.9% / 41.2% | 34.4% / 36.8% | 68.3 GB |
 | L1774 / bs24 | 903,168 | 12.399 | 15.48 | 27,470 | 41.1% / 41.2% | 33.0% / 37.0% | 75.2 GB |
 | L2309 / bs16 | 1,204,224 | 11.156 | 11.47 | 26,494 | 40.8% / 40.8% (est.) | 33.5% / 35.7% (est.) | 69.6 GB |
+| L1774 / bs28 | 903,168 | — | — | — | OOM at step 9 (3.78 GiB workspace, 2.63 GiB free) | — | ~91 GB |
 
 Notes:
 
@@ -2128,3 +2129,13 @@ Notes:
 - The length ceiling is `model_max_length=4096`: past it the collator truncates
   and cuts the ROSS `boa…eoa` action segments. The 1920×1080 source images cap
   the grid at 2,040 tokens/image, so ~L4,100 is the absolute maximum.
+
+**Best MFU: L≈1774 (max_pixels 903,168) with bs 20–24 — 41.1–41.2% project
+MFU** (mean), 27.3–27.5k tokens/s. bs=24 is the memory ceiling (75.2 GB; bs=28
+OOMs at step 9) and bs=20 is the safer point (68.3 GB, same mean MFU). The curve
+is flat between L≈1774 and L≈2309 (40.8%) and falls at both ends: L≈348 gives
+32.5% and bs≈48 at L1210 gives 39.5%. Zhao's convention tracks it at 33–37%.
+
+Samples/s is a different objective: the old L≈348/bs48 config remains the
+throughput winner at 63.8 samples/s, while the MFU winner trades samples for
+tokens (21.7 → 15.5 samples/s at 27.5k tokens/s).
