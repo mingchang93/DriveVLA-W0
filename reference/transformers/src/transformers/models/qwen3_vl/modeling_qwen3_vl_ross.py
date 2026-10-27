@@ -9,6 +9,7 @@ denoiser is derived from ``image_grid_thw``.
 
 import torch
 from torch import nn
+from dataclasses import dataclass
 from typing import Optional, Tuple
 from einops import rearrange
 from diffusers import AutoencoderKL
@@ -21,6 +22,7 @@ from .configuration_qwen3_vl import Qwen3VLConfig
 from ..qwen2_5_vl.modeling_ross.denoiser_sd import RossStableDiffusionXOmni
 
 
+@dataclass
 class Qwen3VLROSSOutput(Qwen3VLCausalLMOutputWithPast):
     image_hidden_states: Optional[torch.FloatTensor] = None
     action_hidden_states: Optional[torch.FloatTensor] = None
