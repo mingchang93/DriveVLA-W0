@@ -23,9 +23,24 @@ import os
 import os.path as osp
 import pickle
 import argparse
+from dataclasses import dataclass
 import numpy as np
 from tqdm import tqdm
 import yaml
+
+
+@dataclass
+class NormStats:
+    """Action normalization stats.
+
+    Module-level so the instance can be pickled for ``normalizer_*/stat.pkl``;
+    a class defined inside ``main()`` cannot be serialized.
+    """
+
+    mean: np.ndarray
+    std: np.ndarray
+    q01: np.ndarray
+    q99: np.ndarray
 
 # project-specific imports (from the navsim devkit)
 from pyquaternion import Quaternion
@@ -216,15 +231,6 @@ def main():
 
     # --- Phase 3: Normalize actions ---
     # Inline minimal normalize_pi0 (module not available in this repo)
-    from dataclasses import dataclass
-
-    @dataclass
-    class NormStats:
-        mean: np.ndarray
-        std: np.ndarray
-        q01: np.ndarray
-        q99: np.ndarray
-
     class RunningStats:
         """Accumulate per-element running statistics for action normalization."""
         def __init__(self):
