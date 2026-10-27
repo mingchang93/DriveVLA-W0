@@ -58,10 +58,6 @@ class FlopsCounter:
     def __init__(self):
         self.mm_trainable = 0.0
         self.mm_frozen = 0.0
-        # Linear-only buckets: the MFU convention of 408235117's Emu3 port
-        # (nn.Linear hooks only, no Conv/attention). See npu-port.md Step 37.
-        self.linear_trainable = 0.0
-        self.linear_frozen = 0.0
         self.attn_trainable = 0.0       # causal-adjusted
         self.attn_frozen = 0.0
         self.attn_full_trainable = 0.0  # no masking adjustment
@@ -106,7 +102,6 @@ class FlopsCounter:
 
     def reset(self):
         self.mm_trainable = self.mm_frozen = 0.0
-        self.linear_trainable = self.linear_frozen = 0.0
         self.attn_trainable = self.attn_frozen = 0.0
         self.attn_full_trainable = self.attn_full_frozen = 0.0
 
@@ -139,10 +134,6 @@ class FlopsCounter:
                 return
             rows = inputs[0].numel() // in_features
             flops = 2.0 * rows * in_features * module.out_features
-            if self._trainable.get(id(module), False):
-                self.linear_trainable += flops
-            else:
-                self.linear_frozen += flops
         else:
             if not torch.is_tensor(output):
                 return
@@ -196,11 +187,6 @@ class FlopsCounter:
 
     # -- results -----------------------------------------------------------
     @property
-    def flops_linear(self):
-        """Linear-only training FLOPs (3x trainable + 1x frozen)."""
-        return 3.0 * self.linear_trainable + self.linear_frozen
-
-    @property
     def flops_mm(self):
         return 3.0 * self.mm_trainable + self.mm_frozen
 
@@ -218,7 +204,6 @@ class FlopsCounter:
 
     def snapshot(self):
         return {
-            "flops_linear": self.flops_linear,
             "flops_mm": self.flops_mm,
             "flops_attn": self.flops_attn,
             "flops_attn_full": self.flops_attn_full,
