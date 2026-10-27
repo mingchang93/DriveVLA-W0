@@ -173,9 +173,16 @@ def main():
             for j in idxs:
                 if 0 <= j < num_frames:
                     cam_path = scene[j]['cams']['CAM_F0']['data_path']
-                    # cam_path looks like: scene_token/CAM_F0/frame.jpg
-                    # Store as-is; the dataset replaces .jpg -> .npy, then resolves
-                    image_list.append(cam_path)
+                    # cam_path is "<log>/CAM_F0/<frame>.jpg". The Qwen dataloader
+                    # (and filter_pickle_by_images.py) take the last two path
+                    # components, insert "CAM_F0" and append ".jpg" — so store
+                    # "<log>/<frame>.npy", not the CAM_F0-qualified path.
+                    parts = cam_path.split('/')
+                    if 'CAM_F0' in parts and parts.index('CAM_F0') >= 1:
+                        log = parts[parts.index('CAM_F0') - 1]
+                    else:
+                        log = parts[-2]
+                    image_list.append(f"{log}/{osp.splitext(parts[-1])[0]}.npy")
                 else:
                     image_list.append(None)
             fi["image_vq_list"] = image_list
