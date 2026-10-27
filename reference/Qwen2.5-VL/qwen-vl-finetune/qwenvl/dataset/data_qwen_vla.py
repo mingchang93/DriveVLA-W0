@@ -1173,6 +1173,30 @@ class DataCollatorForSupervisedVLADataset(object):
         batch["pixel_values"] = concat_images
         batch["image_grid_thw"] = grid_thw
         batch["pixel_values_videos"] = concat_videos
+
+        # Diagnostic for image-placeholder vs vision-feature accounting.
+        # Enable with ROSS_DEBUG_TOKENS=1; prints only on rank 0.
+        if os.getenv("ROSS_DEBUG_TOKENS", "0") == "1" and int(os.getenv("LOCAL_RANK", 0)) == 0:
+            _tid = self.tokenizer.convert_tokens_to_ids("<|image_pad|>")
+            _tok_total = int((input_ids == _tid).sum())
+            _feat_total = 0
+            for _i, _inst in enumerate(instances):
+                _ids = _inst["input_ids"].squeeze(0)
+                _tok = int((_ids == _tid).sum())
+                _g = _inst.get("image_grid_thw")
+                _feat = int((_g.prod(dim=1) // 4).sum()) if _g is not None else 0
+                _feat_total += _feat
+                if _tok != _feat:
+                    print(
+                        f"[tokens] sample {_i}: placeholders={_tok} vision_rows={_feat} "
+                        f"grids={_g.tolist() if _g is not None else None}",
+                        flush=True,
+                    )
+            print(
+                f"[tokens] batch={len(instances)} placeholders={_tok_total} "
+                f"vision_rows={_feat_total}",
+                flush=True,
+            )
         batch["video_grid_thw"] = video_grid_thw
         batch["position_ids"] = position_ids
         
