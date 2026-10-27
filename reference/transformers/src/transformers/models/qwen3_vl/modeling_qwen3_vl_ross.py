@@ -306,8 +306,8 @@ class Qwen3VLForConditionalGenerationROSS(Qwen3VLForConditionalGeneration):
         assert action_hidden.shape[1] == 2, "Currently only support 2 images for each sample"
         assert raw_pixel_values_vae.shape[0] == 2, "Currently only support 2 images for each sample"
 
-        image_hidden = image_hidden[:, 0].squeeze()             # [bsz, seq_len, dim]
-        action_hidden = action_hidden.mean(2)[:, 0].squeeze()   # [bsz, dim]
+        image_hidden = image_hidden[:, 0]                       # [bsz, seq_len, dim]
+        action_hidden = action_hidden.mean(2)[:, 0]             # [bsz, dim]
         cond_pixel_values = raw_pixel_values_vae[0]
         raw_pixel_values_vae = raw_pixel_values_vae[1]          # [bsz, 3, h, w]
 
