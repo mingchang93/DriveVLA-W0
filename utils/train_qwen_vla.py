@@ -491,6 +491,7 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
             if _json.load(_cfg_f).get("model_type") == "qwen3_vl":
                 _family = "qwen3vl"
     rank0_print(f"[model] backbone family: {_family}")
+    model_type = "qwen3vl_ross" if _family == "qwen3vl" else "qwen2.5vl_ross"
 
     tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path)
 
