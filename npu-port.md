@@ -2108,21 +2108,23 @@ Two MFU conventions are reported:
 | L1210 / bs16 | 602,112 | 6.054 | 21.14 | 25,583 | 37.4% / 37.3% | 31.4% / 34.4% | 54.0 GB |
 | L1210 / bs24 | 602,112 | 8.838 | 21.72 | 26,286 | 38.5% / 38.8% | 30.8% / 35.4% | 63.8 GB |
 | L1210 / bs32 | 602,112 | 11.481 | 22.30 | 26,981 | 39.5% / 39.4% | 31.3% / 36.3% | 73.6 GB |
-| L1820 / bs20 | 903,168 | 10.384 | 15.41 | 28,042 | 42.3% / 42.5% (est.) | 35.3% / 37.8% (est.) | 68.3 GB |
+| L1774 / bs20 | 903,168 | 10.384 | 15.41 | 27,335 | 40.9% / 41.2% | 34.4% / 36.8% | 68.3 GB |
+| L1774 / bs24 | 903,168 | 12.399 | 15.48 | 27,470 | 41.1% / 41.2% | 33.0% / 37.0% | 75.2 GB |
+| L2309 / bs16 | 1,204,224 | 11.156 | 11.47 | 26,494 | 40.8% / 40.8% (est.) | 33.5% / 35.7% (est.) | 69.6 GB |
 
 Notes:
 
-- The L1820 FLOPs are extrapolated from the L1210 counting run (linear term
-  constant per token, attention term ∝ L); every other row uses its own
-  counting run. Run a counting pass at L1820 if it wins.
+- The L1774 rows use an exact counting pass (seq 1774: project 2.0660e14 /
+  Zhao 1.8600e14 per card at bs=2). The L2309 row is extrapolated from the
+  L1210 counting run (linear per-token constant, attention ∝ L).
 - Counting runs (`ROSS_COUNT_FLOPS=1`, bs=2, one step, L=420 pickle):
   L348 project 3.9625e13 / Zhao 3.6232e13; L586 6.5831e13 / 6.1248e13;
   L1210 1.3767e14 / 1.2677e14 (per card per step at bs=2).
 - **L > 2048 needed a fix** (`72fd940`): sparse_mode 2/3 requires the causal
   mask to be exactly [2048, 2048] for any length; the integration grew it to
   `max(L, 2048)`, so L=2309 failed with `Invalid_Argument_Tensor_Shape
-  (EZ0010)`. The kernel's length ceiling is therefore not 2048; the rerun at
-  L≈2366 is pending.
+  (EZ0010)`. With the fixed mask, L≈2309 runs normally, so the kernel's
+  ceiling is above 2048; the real ceiling is `model_max_length=4096`.
 - The length ceiling is `model_max_length=4096`: past it the collator truncates
   and cuts the ROSS `boa…eoa` action segments. The 1920×1080 source images cap
   the grid at 2,040 tokens/image, so ~L4,100 is the absolute maximum.
