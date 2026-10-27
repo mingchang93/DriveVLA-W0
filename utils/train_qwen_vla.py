@@ -21,6 +21,7 @@ from collections import defaultdict
 from torch.utils.data import SequentialSampler, RandomSampler
 
 from utils.flops import FlopsCounter
+from utils.flops_zhao import FlopsCounterZhao
 
 try:  # PyTorch's dispatch-level counter, for the independent forward cross-check
     from torch.utils.flop_counter import FlopCounterMode
@@ -257,6 +258,9 @@ class RossTrainer(Trainer):
         # compute_loss, i.e. after accelerator.prepare().
         self._flops = FlopsCounter() if os.getenv("ROSS_COUNT_FLOPS", "0") == "1" else None
         self._last_flops = None
+        # Independent Linear-only counter, Zhao's MFU convention (utils/flops_zhao.py).
+        self._zhao = FlopsCounterZhao() if os.getenv("ROSS_COUNT_FLOPS", "0") == "1" else None
+        self._last_zhao = None
         # PyTorch's own counter, for an independent check of the forward count.
         # Note: on torch_npu 2.11 the backward is invisible to it (npu:: kernels).
         self._torch_flops = (
@@ -319,6 +323,10 @@ class RossTrainer(Trainer):
             if not self._flops.attached:
                 self._flops.attach(self.accelerator.unwrap_model(model))
             self._flops.reset()
+        if self._zhao is not None:
+            if not self._zhao.attached:
+                self._zhao.attach(self.accelerator.unwrap_model(model))
+            self._zhao.reset()
 
         if self._torch_flops:
             with FlopCounterMode(display=False) as mode:
@@ -340,6 +348,8 @@ class RossTrainer(Trainer):
         if self._flops is not None:
             self._last_flops = self._flops.snapshot()
             self._flops.accumulate()
+        if self._zhao is not None:
+            self._last_zhao = self._zhao.snapshot()
         return loss
 
     def training_step(self, model, inputs, num_items_in_batch=None):
@@ -384,6 +394,8 @@ class RossTrainer(Trainer):
             if self._last_flops is not None:
                 logs.update(self._last_flops)
                 logs["seq_len"] = float(seq_len)
+            if self._last_zhao is not None:
+                logs.update(self._last_zhao)
             if self._last_flops_torch is not None:
                 logs["flops_torch_fwd"] = float(self._last_flops_torch)
 
@@ -820,6 +832,18 @@ def train():
             )
         )
         rank0_print(f"[flops] by class per step (raw forward FLOPs): {parts}")
+
+    if getattr(trainer, "_last_zhao", None) is not None:
+        z = trainer._last_zhao
+        ours = trainer._last_flops["flops_total"] if trainer._last_flops else float("nan")
+        rank0_print(
+            f"[flops-zhao] per-card last step: linear fwd trainable={z['zhao_linear_trainable']:.6e} "
+            f"frozen={z['zhao_linear_frozen']:.6e} -> 3x/1x={z['zhao_flops']:.6e}"
+        )
+        rank0_print(
+            f"[flops-both] per-card last step: project flops_total={ours:.6e} "
+            f"zhao_linear_3x1x={z['zhao_flops']:.6e}"
+        )
 
     # Always write trainer_state.json (metrics only, a few KB).
     trainer.save_state()
