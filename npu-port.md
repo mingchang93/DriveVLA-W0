@@ -2084,3 +2084,45 @@ smaller per-device batch.
 
 Runs: `a38_bs32_v2_20261027`, `a38_bs40_20261027`, `a38_bs48_v3_20261027`
 (failed), `a38_diag_20261027` (2-step bs=8, blocking mode).
+
+---
+
+## Appendix — Qwen3-VL-8B MFU / seq-len × batch search (2026-10-27, branch `qwen3vl-backbone`)
+
+8×950DT, Qwen3-VL-8B, fa2, valid-token CE, fused RMSNorm+RoPE, expandable
+segments, pinning, real NAVSIM 20× subset, 50 steps per point. `L` is the
+sequence length the image processor produces at that `--max_pixels`
+(`tokens/image ≈ max_pixels/1024`, two images per ROSS sample).
+
+Two MFU conventions are reported:
+
+- **project**: `utils/flops.py` — Linear + Conv + attention, 3× trainable +
+  1× frozen, device-synced per-step median/mean, peak 486 TFLOPS.
+- **Zhao**: `utils/flops_zhao.py` — `nn.Linear` only, 3×/1×, wall-clock step
+  time, peak 486.354 TFLOPS (the 408235117 Emu3-port convention).
+
+| config | max_pixels | median s | samples/s | tokens/s | project MFU (med/mean) | Zhao MFU (wall/dev) | peak HBM |
+|---|---|---|---|---|---|---|---|
+| L348 / bs48 | 150,528 | 6.016 | 63.83 | 22,213 | 32.5% / 29.4% | 20.4% / 29.7% | 63.3 GB |
+| L586 / bs32 | 301,056 | 6.684 | 38.30 | 22,444 | 32.4% / 32.4% | 24.3% / 30.1% | 59.2 GB |
+| L1210 / bs16 | 602,112 | 6.054 | 21.14 | 25,583 | 37.4% / 37.3% | 31.4% / 34.4% | 54.0 GB |
+| L1210 / bs24 | 602,112 | 8.838 | 21.72 | 26,286 | 38.5% / 38.8% | 30.8% / 35.4% | 63.8 GB |
+| L1210 / bs32 | 602,112 | 11.481 | 22.30 | 26,981 | 39.5% / 39.4% | 31.3% / 36.3% | 73.6 GB |
+| L1820 / bs20 | 903,168 | 10.384 | 15.41 | 28,042 | 42.3% / 42.5% (est.) | 35.3% / 37.8% (est.) | 68.3 GB |
+
+Notes:
+
+- The L1820 FLOPs are extrapolated from the L1210 counting run (linear term
+  constant per token, attention term ∝ L); every other row uses its own
+  counting run. Run a counting pass at L1820 if it wins.
+- Counting runs (`ROSS_COUNT_FLOPS=1`, bs=2, one step, L=420 pickle):
+  L348 project 3.9625e13 / Zhao 3.6232e13; L586 6.5831e13 / 6.1248e13;
+  L1210 1.3767e14 / 1.2677e14 (per card per step at bs=2).
+- **L > 2048 needed a fix** (`72fd940`): sparse_mode 2/3 requires the causal
+  mask to be exactly [2048, 2048] for any length; the integration grew it to
+  `max(L, 2048)`, so L=2309 failed with `Invalid_Argument_Tensor_Shape
+  (EZ0010)`. The kernel's length ceiling is therefore not 2048; the rerun at
+  L≈2366 is pending.
+- The length ceiling is `model_max_length=4096`: past it the collator truncates
+  and cuts the ROSS `boa…eoa` action segments. The 1920×1080 source images cap
+  the grid at 2,040 tokens/image, so ~L4,100 is the absolute maximum.
