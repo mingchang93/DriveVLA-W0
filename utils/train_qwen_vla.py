@@ -544,10 +544,6 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
     # FA2 is usable on NPU even though the `flash-attn` package is CUDA-only.
     attn_type = getattr(training_args, "attn_type", "fa2")
     attn_impl = {"fa2": "flash_attention_2"}.get(attn_type, attn_type)
-    if _family == "qwen3vl" and attn_impl == "flash_attention_2":
-        # The vendored NPU FA2 integration is wired for Qwen2.5-VL's attention
-        # classes; Qwen3-VL runs on sdpa until that path is ported.
-        attn_impl = "sdpa"
     if attn_impl == "flash_attention_2" and not _npu_fa2_available():
         attn_impl = "sdpa"
         print(f"[Device] FA2 unavailable on {_device_type}, falling back to sdpa")

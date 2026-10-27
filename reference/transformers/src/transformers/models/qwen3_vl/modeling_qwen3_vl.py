@@ -43,6 +43,14 @@ from ...utils.deprecation import deprecate_kwarg
 
 # ROSS: project logits only at labeled positions (npu-port.md Step 17).
 _VALID_TOKEN_CE = os.getenv("ROSS_VALID_CE", "0") == "1"
+
+# ROSS: optional Ascend fused kernels, shared with the Qwen2.5-VL path.
+from ..qwen2_5_vl.npu_fused_ops import (  # noqa: E402
+    fused_add_rms_norm,
+    fused_rms_norm,
+    fused_rotary_mul,
+    fused_swiglu,
+)
 from ...utils.generic import check_model_inputs
 from .configuration_qwen3_vl import Qwen3VLConfig, Qwen3VLTextConfig, Qwen3VLVisionConfig
 
@@ -120,6 +128,11 @@ def rotate_half(x):
 def apply_rotary_pos_emb_vision(
     q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    if q.dtype == torch.bfloat16:
+        fused_q = fused_rotary_mul(q, cos.unsqueeze(-2).to(q.dtype), sin.unsqueeze(-2).to(q.dtype))
+        fused_k = fused_rotary_mul(k, cos.unsqueeze(-2).to(k.dtype), sin.unsqueeze(-2).to(k.dtype))
+        if fused_q is not None and fused_k is not None:
+            return fused_q, fused_k
     orig_q_dtype = q.dtype
     orig_k_dtype = k.dtype
     q, k = q.float(), k.float()
@@ -349,6 +362,9 @@ class Qwen3VLTextRMSNorm(nn.Module):
         self.variance_epsilon = eps
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        fused = fused_rms_norm(hidden_states, self.weight, self.variance_epsilon)
+        if fused is not None:
+            return fused
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
@@ -381,8 +397,12 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
+    q_embed = fused_rotary_mul(q, cos.to(q.dtype), sin.to(q.dtype))
+    if q_embed is None:
+        q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = fused_rotary_mul(k, cos.to(k.dtype), sin.to(k.dtype))
+    if k_embed is None:
+        k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
 
@@ -473,7 +493,10 @@ class Qwen3VLTextMLP(nn.Module):
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        fused = fused_swiglu(gate, up)
+        down_proj = self.down_proj(fused if fused is not None else self.act_fn(gate) * up)
         return down_proj
 
 
@@ -513,6 +536,18 @@ class Qwen3VLTextDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             **kwargs,
         )
+        fused = fused_add_rms_norm(
+            residual,
+            hidden_states,
+            self.post_attention_layernorm.weight,
+            self.post_attention_layernorm.variance_epsilon,
+        )
+        if fused is not None:
+            hidden_states, residual = fused
+            hidden_states = self.mlp(hidden_states)
+            hidden_states = residual + hidden_states
+            return hidden_states
+
         hidden_states = residual + hidden_states
 
         # Fully Connected
