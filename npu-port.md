@@ -2016,3 +2016,71 @@ DeepSpeed ZeRO-3 + `torch_npu`, device-aware autocast, and the 180-token grid.
 Generated but not committed: `logs/synth_qwen_data/` (gitignored) and
 `/mnt/sfs_turbo/lmc/navsim_openscene/navsim_flops_L420.pkl` (Step 24; regenerate
 from the recipe there).
+
+---
+
+## Appendix — ott9-a38: 16 × Ascend910 bring-up (2026-10-27)
+
+A second box, `ott9-a38` (`liteserver-ott9-a3-00008`): 8 cards × 2 chips =
+**16 Ascend910**, 64 GB HBM per chip, 2 TB host RAM, container `drivevla-w0`
+(CANN 9.1.0 image), host network namespace. Same repo path and `lmc-w0` tmux
+session name as the 950DT box.
+
+### Setup
+
+- **Repo:** git smart-HTTP is filtered from this box (`info/refs` times out);
+  codeload tarballs work. Final state is a shallow **SSH** clone
+  (`git@github.com:mingchang93/DriveVLA-W0.git`, `navsim-real-data`) at
+  `6066202`, so pulls work normally. The tarball snapshot is kept as
+  `DriveVLA-W0-snapshot-6066202`.
+- **Env:** `pip install -r requirements_qwen.txt` with
+  `-i https://mirrors.aliyun.com/pypi/simple` (the configured Huawei mirror
+  returns 429). Verified `torch 2.11.0+cpu`, `torch_npu 2.11.0`,
+  `transformers 4.56.0`, `torch.npu.device_count() == 16`.
+- **Weights:** Qwen2.5-VL-7B and SD1.5 via `modelscope download`.
+- **Data:** official OpenScene metadata, **not** liyingyan's pickle —
+  `openscene_metadata_trainval.tgz` (6.6 GB, 8-way parallel range download from
+  hf-mirror) for scene logs, plus camera shard 0 via
+  `tools/pickle_gen/download_openscene_camera.sh --start 0 --end 0`. Seven
+  shard-0 scenes intersect the metadata; `pickle_generation_navsim_mini.py`
+  produced 2,795 samples, all kept by `filter_pickle_by_images.py`, ×20 =
+  55,900 for throughput.
+
+### Two generator fixes (both pushed)
+
+| commit | bug |
+|---|---|
+| `4e44e41` | `NormStats` defined inside `main()` → `pickle.dump` raised "Can't pickle local object" before the main pickle was written |
+| `57f194b` | stored image paths kept the metadata's `<log>/CAM_F0/<frame>.jpg`; the dataloader and filter insert `CAM_F0` themselves, so paths doubled and filtered to 0 samples |
+
+### Environment gotchas (each cost a failed run)
+
+1. **HCCL interface.** Auto-selection picked the wrong NIC; rank 11 timed out
+   in `HcclAllreduce`. Fix: `HCCL_SOCKET_IFNAME=enp23s0f3` (the host's
+   default-route NIC, 172.168.4.212/24) plus `HCCL_CONNECT_TIMEOUT=120`.
+2. **Hugepages starved host RAM.** `HugePages_Total: 480000 × 2 MB = 960 GB`
+   was reserved (free but unavailable to normal allocations), leaving ~1 TB for
+   the 16 ranks' checkpoint-load transients. The kernel OOM-killed ranks, which
+   surfaced as rank SIGSEGV/SIGKILL rather than a clean allocator error. Fix:
+   `sysctl -w vm.nr_hugepages=0`, after which 1.99 TB is available.
+3. **Device OOM also presents as SIGSEGV** on this CANN/Soc: bs=48 dies in the
+   first step on the 64 GB chips with no allocator message. Use the `[mem]`
+   peak print plus a sweep, not the exception type.
+
+### Throughput — 16 ranks, 50 steps, real subset
+
+fa2, ZeRO-2, valid CE, fused RMSNorm + RoPE, `expandable_segments`, pinning.
+
+| bs | median s | mean s | CV | outliers | samples/s (median) | samples/s (mean) | peak HBM |
+|---|---|---|---|---|---|---|---|
+| **32** | **8.507** | 8.586 | 3.8% | 0 | **60.18** | 59.64 | 45.3 GB |
+| 40 | 10.668 | 10.717 | 3.6% | 0 | 59.99 | 59.72 | 50.1 GB |
+| 48 | — | — | — | — | SIGSEGV in step 1 | — | — |
+
+bs=32 is the best median and leaves ~19 GB headroom; bs=40 is within noise.
+Step-time CV is ~3.7% with **zero outliers**, versus 14–25% on the 8×950DT box.
+60.18 samples/s beats the 950DT best (57.52 at bs=48) with twice the chips and a
+smaller per-device batch.
+
+Runs: `a38_bs32_v2_20261027`, `a38_bs40_20261027`, `a38_bs48_v3_20261027`
+(failed), `a38_diag_20261027` (2-step bs=8, blocking mode).
