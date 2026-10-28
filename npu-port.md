@@ -2139,3 +2139,49 @@ is flat between L≈1774 and L≈2309 (40.8%) and falls at both ends: L≈348 gi
 Samples/s is a different objective: the old L≈348/bs48 config remains the
 throughput winner at 63.8 samples/s, while the MFU winner trades samples for
 tokens (21.7 → 15.5 samples/s at 27.5k tokens/s).
+
+### Ported Emu3-port optimizations — A/B (L≈1774)
+
+Each arm 50 steps; base config otherwise (fa2, valid CE, fused RMSNorm+RoPE,
+expandable segments, real subset). Flags: `ROSS_GC_SKIP_LAST_LAYERS=N`,
+`ROSS_FUSED_GATEUP=1` (one MatMul on `[W_gate; W_up]` + `npu_swiglu`),
+`ROSS_FUSED_QKV=1` (one MatMul on `[Wq; Wk; Wv]`, 767fb6a fixed the head
+counts).
+
+| arm | bs | median s | project MFU | peak HBM | verdict |
+|---|---|---|---|---|---|
+| base | 24 | 12.399 | 41.1% | 75.2 GB | reference |
+| fused gate/up | 24 | 12.325 | 41.4% | 74.3 GB | +0.3 pp, marginal |
+| fused QKV | 24 | 12.464 | 40.9% | 75.2 GB | no win |
+| GC-skip 6 | 24 | — | OOM | 90.2 GiB | does not fit |
+| base | 16 | 8.434 | 40.3% | 61.5 GB | bs16 reference |
+| GC-skip 3 | 16 | 8.339 | **40.8%** | 75.3 GB | +0.5 pp for +13.8 GB |
+| GC-skip 6 | 16 | — | OOM | — | does not fit |
+
+BSH attention was **not** ported: our FA2 path handles padded batches via
+varlen `cu_seqlens` (`_upad_input` in `modeling_flash_attention_utils.py`), so
+dropping the layout transposes without that rework would let padding tokens
+attend. The Emu3 path has no padding, which is why the same trick is safe there.
+
+### MindSpeed-MM-methodology number (for cross-project comparison)
+
+`utils/flops_mindspeed.py` reproduces Ascend/MindSpeed-MM's analytical
+Qwen3-VL counter (text + ViT, full LM head, text attention 7×, ViT attention
+14×), and — because our model has parts that stock Qwen3-VL does not — adds a
+measured ROSS term: the custom SD1.5 UNet (dense ×3, attention ×3.5) and the
+frozen VAE encode (dense ×2, attention ×1). `--no_ross` restores the stock
+scope.
+
+At L=1774, per-device bs=24, measured step 12.399 s, peak 486 TFLOPS:
+
+| quantity | value |
+|---|---|
+| text + ViT (MindSpeed scope) | 2.8241e15 FLOPs/sample |
+| ROSS UNet + VAE (measured) | 2.4355e12 FLOPs/sample |
+| **total per device** | **2.3248e14 FLOP/s** |
+| **MFU** | **47.84%** |
+
+Without the ROSS term the same point gives 46.87%; the project's measured
+counter gives 41.1% (valid-token head, 3× attention, device time). The three
+numbers answer different questions; the MindSpeed-method one is the
+ecosystem-comparable figure.
