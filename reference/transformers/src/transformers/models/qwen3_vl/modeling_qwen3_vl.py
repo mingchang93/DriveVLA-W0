@@ -467,8 +467,8 @@ class Qwen3VLTextAttention(nn.Module):
                 [self.q_proj.weight, self.k_proj.weight, self.v_proj.weight], dim=0
             )
             qkv = F.linear(hidden_states, w_qkv)
-            hq = self.num_heads * self.head_dim
-            hkv = self.num_key_value_heads * self.head_dim
+            hq = self.config.num_attention_heads * self.head_dim
+            hkv = self.config.num_key_value_heads * self.head_dim
             q = qkv[..., :hq].contiguous()
             k = qkv[..., hq : hq + hkv].contiguous()
             v = qkv[..., hq + hkv :].contiguous()
