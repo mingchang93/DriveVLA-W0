@@ -2127,9 +2127,30 @@ Notes:
   `max(L, 2048)`, so L=2309 failed with `Invalid_Argument_Tensor_Shape
   (EZ0010)`. With the fixed mask, L≈2309 runs normally, so the kernel's
   ceiling is above 2048; the real ceiling is `model_max_length=4096`.
-- The length ceiling is `model_max_length=4096`: past it the collator truncates
-  and cuts the ROSS `boa…eoa` action segments. The 1920×1080 source images cap
-  the grid at 2,040 tokens/image, so ~L4,100 is the absolute maximum.
+- The length ceiling is `model_max_length=4096`: past it the collator hard-slices
+  `input_ids` / `labels` / `position_ids` to the tail
+  (`data_qwen_vla.py:1143-1145`), which cuts the ROSS `boa…eoa` action segments.
+  That is not a graceful degradation: the cut `eoa` never closes its mask, so
+  `action_future_masks` has T=1 and the head's `shape[1] == 2` asserts fire.
+- **Why ~L4,100 is the absolute maximum, even if the config is raised.** The
+  sequence is 2 images + prompt + 8 future action steps, and the head
+  hard-requires 2 images. At the dataset's native 1920×1080:
+
+  | step | value |
+  |---|---|
+  | resize to a multiple of 32 | 1088 × 1920 |
+  | patches at 16 px | 68 × 120 = 8,160 |
+  | after 2×2 merge | 2,040 tokens/image |
+  | two images | 4,080 |
+  | prompt + two action segments | ~56 |
+  | **sample total** | **~4,136** |
+
+  So the task's own content already grazes 4096 at maximum source resolution.
+  The only levers are more frames (forbidden by the assert), a higher-resolution
+  source (the dataset is 1080p), or a longer action horizon (a task change, not
+  a config change). The model is not the limit — `max_position_embeddings` is
+  262,144 and L=2309 already runs at 40.8% MFU; the sweep stopped at L≈2309
+  because it was pushing `max_pixels`, not the length cap.
 
 **Best MFU: L≈1774 (max_pixels 903,168) with bs 20–24 — 41.1–41.2% project
 MFU** (mean), 27.3–27.5k tokens/s. bs=24 is the memory ceiling (75.2 GB; bs=28
