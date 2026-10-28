@@ -1936,6 +1936,7 @@ file's commit and the box `HEAD` are noted.
 | `abx_base2_20261026` | 36 | `7c769e7` | 50 |
 | `abx_tq2_20261026` | 36 | `7c769e7` | 50 |
 | `profile_l1_tq2_20261026` | 36 | `7c769e7` | 32 (L1 trace, step 28, `TASK_QUEUE_ENABLE=2`) |
+| `profile_l1_gateup_bs27_20261028` | appendix | `fad8401` | 32 (Qwen3-VL L1 trace, step 28, bs=27, fused gate/up, no weights) |
 
 `train_qwen_vla_20261019_085720` and `_090116` are earlier failed attempts
 with no `trainer_state.json`.
@@ -2192,3 +2193,44 @@ ecosystem-comparable figure.
 At the final best point (L≈1774, fused gate/up, bs=27, median 13.815 s) the
 same method gives **48.30%** (per-sample total 1.2010e14 FLOPs ×27 /13.815
 /486e12). Project MFU there is 41.5%.
+
+### L1 profile of the final best point (2026-10-28)
+
+Run `logs/profile_l1_gateup_bs27_20261028`, 32 steps, step 28 traced, per-device
+bs=27, `--max_pixels 903168` (L≈1774), `ROSS_FUSED_GATEUP=1`, `ROSS_STEP_TIMING=0`,
+real 20× subset, code `fad8401`. Archive:
+`logs/profile_traces_20261028/profile_l1_gateup_bs27_20261028.tar.gz`
+(2.2 GB → 272 MB, README in the same directory).
+
+Step 28, all 8 ranks: Stage 13.359–13.389 s, Computing 12.67–12.78 s,
+Communication (not overlapped) 0.237–0.340 s, Overlapped **0.000 s**,
+Free 0.35–0.40 s. Kernel mix (rank 0, 13.163 s total op time):
+
+| category | time | share |
+|---|---|---|
+| MatMul (AI_CORE + MIX_AIC) | 8.515 s | 64.7% |
+| FlashAttention fwd+bwd | 2.316 s | 17.6% |
+| Elementwise/layout | 1.647 s | 12.5% |
+| HCCL launch kernels (788) | 0.402 s | 3.1% |
+| Conv fwd/bwd | 0.283 s | 2.2% |
+
+FA split: `FlashAttentionScore` 1.128 s forward, `FlashAttentionScoreGrad`
+1.157 s backward, plus 0.031 s of slice/transpose side kernels.
+
+Notes:
+
+- The step-28 stage (13.37 s) is 3% under the unprofiled median (13.815 s), so
+  the trace is representative; the 27.5 s/it reported at step 29–30 is profiler
+  export, not the step.
+- **Attention is the second bucket here** (17.6%), versus 7.5% on the
+  Qwen2.5-VL L≈348 trace. At L≈1774 the text attention is L² and the ViT
+  attention is dense over 2 × 3432 patch tokens, so FA time grows while its
+  share of linear-layer FLOPs stays small (~11% of training FLOPs: text
+  9.3e11 + ViT 2.9e12 forward per sample, ×3 trainable).
+- **The unpad/pad gathers measure 0.099 s** (`aclnnIndex` 0.046 s / 372 calls +
+  `aclnnIndexPut` 0.053 s / 118 calls) = 0.7% of the step. That is the
+  BSH-layout opportunity estimated at 0.5–1% on 2026-10-28: the estimate holds,
+  and it is not worth the padded-batch causal-mask rework.
+- No compute/communication overlap (Overlapped 0.000 s on every rank), same as
+  the Step 36 Qwen2.5 trace. HCCL launch count is 788 (vs 389 on Qwen2.5-7B):
+  36 text + 27 ViT layers per pass.
