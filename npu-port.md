@@ -2157,6 +2157,9 @@ counts).
 | base | 16 | 8.434 | 40.3% | 61.5 GB | bs16 reference |
 | GC-skip 3 | 16 | 8.339 | **40.8%** | 75.3 GB | +0.5 pp for +13.8 GB |
 | GC-skip 6 | 16 | — | OOM | — | does not fit |
+| fused gate/up | 26 | 13.326 | 41.5% | 77.6 GB | bs sweep |
+| fused gate/up | 27 | 13.815 | **41.5%** | 79.3 GB | bs sweep ceiling |
+| fused gate/up | 28 | — | OOM | — | does not fit |
 
 BSH attention was **not** ported: our FA2 path handles padded batches via
 varlen `cu_seqlens` (`_upad_input` in `modeling_flash_attention_utils.py`), so
@@ -2185,3 +2188,7 @@ Without the ROSS term the same point gives 46.87%; the project's measured
 counter gives 41.1% (valid-token head, 3× attention, device time). The three
 numbers answer different questions; the MindSpeed-method one is the
 ecosystem-comparable figure.
+
+At the final best point (L≈1774, fused gate/up, bs=27, median 13.815 s) the
+same method gives **48.30%** (per-sample total 1.2010e14 FLOPs ×27 /13.815
+/486e12). Project MFU there is 41.5%.
