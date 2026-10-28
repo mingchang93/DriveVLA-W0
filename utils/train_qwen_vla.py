@@ -415,6 +415,42 @@ class RossTrainer(Trainer):
         return loss
 
 
+class SkipLastLayersCheckpointCallback(TrainerCallback):
+    """Keep the last N decoder layers out of gradient checkpointing.
+
+    Zhao's Emu3-port optimisation (npu-port.md Step 37): the last layers are
+    reached first in backward, so holding their activations costs little peak
+    HBM and removes their recompute. Runs on on_train_begin, which the trainer
+    calls after gradient_checkpointing_enable().
+    """
+
+    def __init__(self, n: int):
+        self.n = max(0, int(n))
+
+    def on_train_begin(self, args, state, control, model=None, **kwargs):
+        if self.n <= 0 or model is None:
+            return
+        m = model
+        layers = None
+        for _ in range(6):
+            lm = getattr(getattr(m, "model", m), "language_model", None)
+            if lm is not None and hasattr(lm, "layers"):
+                layers = lm.layers
+                break
+            if hasattr(m, "module"):
+                m = m.module
+            else:
+                break
+        if layers is None:
+            rank0_print("[gc] skip-last: could not locate decoder layers")
+            return
+        n = min(self.n, len(layers))
+        for layer in layers[-n:]:
+            if hasattr(layer, "gradient_checkpointing"):
+                layer.gradient_checkpointing = False
+        rank0_print(f"[gc] skipping checkpoint on last {n}/{len(layers)} decoder layers")
+
+
 class NpuProfilerCallback(TrainerCallback):
     """Wrap the HF Trainer loop with torch_npu.profiler (NPU only, opt-in).
 
@@ -783,6 +819,10 @@ def train():
             rank0_print(f"[NpuProfiler] level {lvl} active - traces -> {trace_dir}")
         else:
             rank0_print(f"[NpuProfiler] requires NPU (got {_device_type}); ignored")
+
+    _gc_skip = int(os.getenv("ROSS_GC_SKIP_LAST_LAYERS", "0"))
+    if _gc_skip > 0:
+        trainer.add_callback(SkipLastLayersCheckpointCallback(_gc_skip))
 
     # Print dataloader len
     if torch.distributed.get_rank() == 0:

@@ -44,6 +44,17 @@ from ...utils.deprecation import deprecate_kwarg
 # ROSS: project logits only at labeled positions (npu-port.md Step 17).
 _VALID_TOKEN_CE = os.getenv("ROSS_VALID_CE", "0") == "1"
 
+# ROSS: Zhao's Emu3-port speedups (npu-port.md Step 37). Default off.
+#   ROSS_FUSED_GATEUP=1: one MatMul on [W_gate; W_up] + npu_swiglu
+#   ROSS_FUSED_QKV=1:    one MatMul on [Wq; Wk; Wv], then split
+_FUSED_GATEUP = os.getenv("ROSS_FUSED_GATEUP", "0") == "1"
+_FUSED_QKV = os.getenv("ROSS_FUSED_QKV", "0") == "1"
+try:
+    import torch_npu as _npu
+except ImportError:  # CUDA / CPU
+    _npu = None
+_HAS_NPU_SWIGLU = _npu is not None and hasattr(_npu, "npu_swiglu")
+
 # ROSS: optional Ascend fused kernels, shared with the Qwen2.5-VL path.
 from ..qwen2_5_vl.npu_fused_ops import (  # noqa: E402
     fused_add_rms_norm,
@@ -449,9 +460,25 @@ class Qwen3VLTextAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        if _FUSED_QKV and _npu is not None:
+            # One MatMul on [Wq; Wk; Wv]; the last-dim slices are made
+            # contiguous before view().
+            w_qkv = torch.cat(
+                [self.q_proj.weight, self.k_proj.weight, self.v_proj.weight], dim=0
+            )
+            qkv = F.linear(hidden_states, w_qkv)
+            hq = self.num_heads * self.head_dim
+            hkv = self.num_key_value_heads * self.head_dim
+            q = qkv[..., :hq].contiguous()
+            k = qkv[..., hq : hq + hkv].contiguous()
+            v = qkv[..., hq + hkv :].contiguous()
+        else:
+            q = self.q_proj(hidden_states)
+            k = self.k_proj(hidden_states)
+            v = self.v_proj(hidden_states)
+        query_states = self.q_norm(q.view(hidden_shape)).transpose(1, 2)
+        key_states = self.k_norm(k.view(hidden_shape)).transpose(1, 2)
+        value_states = v.view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
@@ -493,6 +520,12 @@ class Qwen3VLTextMLP(nn.Module):
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
+        if _FUSED_GATEUP and _HAS_NPU_SWIGLU:
+            # One MatMul on [W_gate; W_up]; autograd splits the grad back to the
+            # two parameters. Removes the [gate, up] activation Cat.
+            w = torch.cat([self.gate_proj.weight, self.up_proj.weight], dim=0)
+            gu = F.linear(x, w)
+            return self.down_proj(_npu.npu_swiglu(gu, dim=-1))
         gate = self.gate_proj(x)
         up = self.up_proj(x)
         fused = fused_swiglu(gate, up)
