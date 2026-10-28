@@ -28,6 +28,7 @@ import argparse
 from transformers import PretrainedConfig
 
 
+
 class Qwen3VLFlopsCounter:
     """Estimate training FLOPs for dense and MoE Qwen3-VL models."""
 
@@ -144,6 +145,107 @@ class Qwen3VLFlopsCounter:
         return self._estimate_qwen3_vl_flops(tokens_sum, batch_seqlens, **kwargs) / step_time
 
 
+def _measure_forward_flops(module, call, dense_coeff, attn_coeff):
+    """Forward FLOPs of ``call()`` with hooks, weighted by MindSpeed rates.
+
+    dense_coeff applies to nn.Linear/nn.Conv*; attn_coeff to diffusers
+    ``Attention`` modules (the score matmuls; their projections are Linear
+    hooks). Returns FLOPs already multiplied by the coefficients.
+    """
+    import torch
+    import torch.nn as nn
+
+    dense = [0.0]
+    attn = [0.0]
+    handles = []
+
+    def linear_hook(m, inputs, output):
+        if inputs and torch.is_tensor(inputs[0]) and m.in_features:
+            rows = inputs[0].numel() // m.in_features
+            dense[0] += 2.0 * rows * m.in_features * m.out_features
+
+    def conv_hook(m, inputs, output):
+        if not torch.is_tensor(output):
+            return
+        k = 1
+        for size in m.kernel_size:
+            k *= size
+        dense[0] += 2.0 * output.numel() * (m.in_channels // m.groups) * k
+
+    def attn_hook(m, args, kwargs, output):
+        hidden = args[0] if args and torch.is_tensor(args[0]) else kwargs.get("hidden_states")
+        if hidden is None or not torch.is_tensor(hidden) or hidden.dim() != 3:
+            return
+        b, lq, c = hidden.shape
+        heads = getattr(m, "heads", None)
+        if not heads:
+            return
+        head_dim = c // int(heads)
+        enc = kwargs.get("encoder_hidden_states")
+        lk = enc.shape[1] if torch.is_tensor(enc) else lq
+        attn[0] += 4.0 * b * int(heads) * lq * lk * head_dim
+
+    for m in module.modules():
+        name = type(m).__name__
+        if isinstance(m, nn.Linear):
+            handles.append(m.register_forward_hook(linear_hook))
+        elif isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+            handles.append(m.register_forward_hook(conv_hook))
+        elif "attention" in name.lower() and hasattr(m, "heads"):
+            handles.append(m.register_forward_hook(attn_hook, with_kwargs=True))
+    try:
+        with torch.no_grad():
+            call()
+    finally:
+        for h in handles:
+            h.remove()
+    return dense[0] * dense_coeff + attn[0] * attn_coeff
+
+
+def measure_ross_flops(sd_path, batch=1, latent=(35, 63), z_channels=320,
+                       txt_len=77, txt_dim=768, device=None):
+    """Forward-measured SD1.5 UNet (trainable) + VAE encode (frozen) FLOPs.
+
+    UNet: dense x3, attention x3.5 (MindSpeed trainable rates).
+    VAE : dense x2, attention x1 (MindSpeed frozen rates).
+    """
+    import torch
+
+    if device is None:
+        try:
+            import torch_npu  # noqa: F401
+            device = "npu" if torch.npu.is_available() else "cpu"
+        except ImportError:
+            device = "cpu"
+    dtype = torch.bfloat16 if device != "cpu" else torch.float32
+
+    from reference.transformers.src.transformers.models.qwen2_5_vl.modeling_ross.unet_2d_condition import (
+        UNet2DConditionModel,
+    )
+    from diffusers import AutoencoderKL
+
+    unet = UNet2DConditionModel.from_pretrained(f"{sd_path}/unet", torch_dtype=dtype).to(device).eval()
+    vae = AutoencoderKL.from_pretrained(f"{sd_path}/vae", torch_dtype=dtype).to(device).eval()
+
+    h, w = latent
+    sample = torch.randn(batch, 4, h, w, device=device, dtype=dtype)
+    timestep = torch.full((batch,), 500, device=device, dtype=torch.long)
+    enc = torch.randn(batch, txt_len, txt_dim, device=device, dtype=dtype)
+    z = torch.randn(batch, z_channels, h, w, device=device, dtype=dtype)
+
+    unet_flops = _measure_forward_flops(
+        unet,
+        lambda: unet(sample, timestep, enc, class_labels=None, return_dict=False, z=z),
+        dense_coeff=3.0,
+        attn_coeff=3.5,
+    )
+    vae_in = torch.randn(batch, 3, 280, 504, device=device, dtype=dtype)
+    vae_flops = _measure_forward_flops(
+        vae, lambda: vae.encode(vae_in), dense_coeff=2.0, attn_coeff=1.0
+    )
+    return unet_flops + vae_flops
+
+
 def get_args():
     p = argparse.ArgumentParser(description="Qwen3-VL FLOPs/MFU, MindSpeed-MM method")
     p.add_argument("--llm_seqlens", type=int, nargs="+", default=[1774],
@@ -157,6 +259,12 @@ def get_args():
     p.add_argument("--vit_freeze", action="store_true")
     p.add_argument("--hardware_flops", type=float, default=486e12,
                    help="per-device peak FLOP/s (default 486 TFLOPS)")
+    p.add_argument("--sd_path", type=str,
+                   default="/mnt/sfs_turbo/models/stable-diffusion-v1-5",
+                   help="SD1.5 dir holding unet/ and vae/ (ROSS head)")
+    p.add_argument("--no_ross", action="store_true",
+                   help="exclude the ROSS SD UNet + VAE (stock Qwen3-VL scope)")
+    p.add_argument("--latent_hw", type=int, nargs=2, default=[35, 63])
     return p.parse_args()
 
 
@@ -167,13 +275,17 @@ def main():
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
 
     counter = Qwen3VLFlopsCounter(Qwen3VLConfig.from_pretrained(args.hf_path))
-    flops = counter.estimate_flops(
+    per_sample = counter.estimate_flops(
         batch_seqlens=args.llm_seqlens,
         images_seqlens=args.vit_seqlens,
         vit_freeze=args.vit_freeze,
-        step_time=args.step_time,
+        step_time=1.0,
     )
-    flops = flops * args.gbs / args.device_num
+    extra = 0.0
+    if not args.no_ross:
+        extra = measure_ross_flops(args.sd_path, latent=tuple(args.latent_hw))
+        print(f"ROSS (UNet x3/x3.5 + VAE x2/x1) per sample: {extra:.4e} FLOPs")
+    flops = (per_sample + extra) * args.gbs / args.device_num / args.step_time
     mfu = flops / args.hardware_flops
     print(f"flops/s per device: {flops:.4e}")
     print(f"MFU: {mfu * 100:.2f}%")
