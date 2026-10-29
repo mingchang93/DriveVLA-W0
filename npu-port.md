@@ -2095,8 +2095,13 @@ segments, pinning, real NAVSIM 20× subset, 50 steps per point. `L` is the
 sequence length the image processor produces at that `--max_pixels`
 (`tokens/image ≈ max_pixels/1024`, two images per ROSS sample).
 
-Two MFU conventions are reported:
+MFU in this appendix is reported with the **MindSpeed-MM** method, the
+ecosystem-comparable figure. The per-L table also keeps the project counter,
+because the MindSpeed per-sample FLOPs was evaluated only at L≈1774; the A/B and
+batch-sweep tables below are all at that length and are converted to MindSpeed.
 
+- **MindSpeed-MM**: `utils/flops_minspeed.py` — text + ViT (their attention
+  multipliers) plus a measured ROSS term, wall-clock step time, peak 486 TFLOPS.
 - **project**: `utils/flops.py` — Linear + Conv + attention, 3× trainable +
   1× frozen, device-synced per-step median/mean, peak 486 TFLOPS.
 - **Zhao**: `utils/flops_zhao.py` — `nn.Linear` only, 3×/1×, wall-clock step
@@ -2149,14 +2154,16 @@ Notes:
   The only levers are more frames (forbidden by the assert), a higher-resolution
   source (the dataset is 1080p), or a longer action horizon (a task change, not
   a config change). The model is not the limit — `max_position_embeddings` is
-  262,144 and L=2309 already runs at 40.8% MFU; the sweep stopped at L≈2309
+  262,144 and L=2309 already runs at 40.8% project MFU; the sweep stopped at L≈2309
   because it was pushing `max_pixels`, not the length cap.
 
-**Best MFU: L≈1774 (max_pixels 903,168) with bs 20–24 — 41.1–41.2% project
-MFU** (mean), 27.3–27.5k tokens/s. bs=24 is the memory ceiling (75.2 GB; bs=28
-OOMs at step 9) and bs=20 is the safer point (68.3 GB, same mean MFU). The curve
-is flat between L≈1774 and L≈2309 (40.8%) and falls at both ends: L≈348 gives
-32.5% and bs≈48 at L1210 gives 39.5%. Zhao's convention tracks it at 33–37%.
+**Best MFU: L≈1774 (max_pixels 903,168), per-device bs 24–27 — 48.4%
+MindSpeed-MM** (the table's project counter reads 41.1–41.5% for the same
+points), 27.3–27.8k tokens/s. bs=24 is the memory ceiling (75.2 GB; bs=28
+OOMs at step 9) and bs=20 is the safer point (68.3 GB, same project MFU). The
+project curve is flat between L≈1774 and L≈2309 (40.8%) and falls at both ends:
+L≈348 gives 32.5% and bs≈48 at L1210 gives 39.5%. Zhao's convention tracks it
+at 33–37%.
 
 Samples/s is a different objective: the old L≈348/bs48 config remains the
 throughput winner at 63.8 samples/s, while the MFU winner trades samples for
@@ -2170,13 +2177,13 @@ fa2, ZeRO-2, real 20× subset, `--save_model false`), per-device bs from 1 to
 Logs: `logs/sweep_bs_20261029/bs{1,8,16,24,27}.log` (driver
 `run_sweep.sh` in the same directory).
 
-| bs | mean step (s) | median (s) | s/sample | samples/s | tokens/s | slow steps in window |
-|---|---|---|---|---|---|---|
-| 1 | 1.018 | 1.018 | 1.018 | 7.86 | 13,920 | 0 |
-| 8 | 4.391 | 4.392 | 0.549 | 14.57 | 25,826 | 0 |
-| 16 | 8.323 | 8.338 | 0.520 | 15.38 | 27,253 | 1 |
-| 24 | 12.264 | 12.276 | 0.511 | 15.66 | 27,741 | 1 |
-| 27 | 13.779 | 13.768 | 0.510 | 15.68 | 27,778 | 1 |
+| bs | mean step (s) | median (s) | s/sample | samples/s | tokens/s | MindSpeed MFU | slow steps in window |
+|---|---|---|---|---|---|---|---|
+| 1 | 1.018 | 1.018 | 1.018 | 7.86 | 13,920 | 24.3% | 0 |
+| 8 | 4.391 | 4.392 | 0.549 | 14.57 | 25,826 | 45.0% | 0 |
+| 16 | 8.323 | 8.338 | 0.520 | 15.38 | 27,253 | 47.5% | 1 |
+| 24 | 12.264 | 12.276 | 0.511 | 15.66 | 27,741 | 48.4% | 1 |
+| 27 | 13.779 | 13.768 | 0.510 | 15.68 | 27,778 | 48.4% | 1 |
 
 - **Step time is linear in batch**: t ≈ 0.49·bs + 0.5 s. A fit from bs=8 and
   bs=24 predicts bs=1 at 0.946 s (measured 1.018), bs=16 at 8.33 (8.323) and
@@ -2205,17 +2212,17 @@ expandable segments, real subset). Flags: `ROSS_GC_SKIP_LAST_LAYERS=N`,
 `ROSS_FUSED_QKV=1` (one MatMul on `[Wq; Wk; Wv]`, 767fb6a fixed the head
 counts).
 
-| arm | bs | median s | project MFU | peak HBM | verdict |
+| arm | bs | median s | MindSpeed MFU | peak HBM | verdict |
 |---|---|---|---|---|---|
-| base | 24 | 12.399 | 41.1% | 75.2 GB | reference |
-| fused gate/up | 24 | 12.325 | 41.4% | 74.3 GB | +0.3 pp, marginal |
-| fused QKV | 24 | 12.464 | 40.9% | 75.2 GB | no win |
+| base | 24 | 12.399 | 47.8% | 75.2 GB | reference |
+| fused gate/up | 24 | 12.325 | 48.1% | 74.3 GB | +0.3 pp, marginal |
+| fused QKV | 24 | 12.464 | 47.6% | 75.2 GB | no win |
 | GC-skip 6 | 24 | — | OOM | 90.2 GiB | does not fit |
-| base | 16 | 8.434 | 40.3% | 61.5 GB | bs16 reference |
-| GC-skip 3 | 16 | 8.339 | **40.8%** | 75.3 GB | +0.5 pp for +13.8 GB |
+| base | 16 | 8.434 | 46.9% | 61.5 GB | bs16 reference |
+| GC-skip 3 | 16 | 8.339 | **47.4%** | 75.3 GB | +0.5 pp for +13.8 GB |
 | GC-skip 6 | 16 | — | OOM | — | does not fit |
-| fused gate/up | 26 | 13.326 | 41.5% | 77.6 GB | bs sweep |
-| fused gate/up | 27 | 13.815 | **41.5%** | 79.3 GB | bs sweep ceiling |
+| fused gate/up | 26 | 13.326 | 48.2% | 77.6 GB | bs sweep |
+| fused gate/up | 27 | 13.815 | **48.3%** | 79.3 GB | bs sweep ceiling |
 | fused gate/up | 28 | — | OOM | — | does not fit |
 
 BSH attention was **not** ported: our FA2 path handles padded batches via
@@ -2248,7 +2255,8 @@ ecosystem-comparable figure.
 
 At the final best point (L≈1774, fused gate/up, bs=27, median 13.815 s) the
 same method gives **48.30%** (per-sample total 1.2010e14 FLOPs ×27 /13.815
-/486e12). Project MFU there is 41.5%.
+/486e12), and 48.42% at the 2026-10-29 sweep's 13.779 s. The project counter
+reads 41.5% there.
 
 ### L1 profile of the final best point (2026-10-28)
 
