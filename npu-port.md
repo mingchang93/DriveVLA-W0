@@ -2162,6 +2162,41 @@ Samples/s is a different objective: the old L≈348/bs48 config remains the
 throughput winner at 63.8 samples/s, while the MFU winner trades samples for
 tokens (21.7 → 15.5 samples/s at 27.5k tokens/s).
 
+### Batch-size sweep of step time (2026-10-29)
+
+Best config held fixed (L≈1774, `--max_pixels 903168`, `ROSS_FUSED_GATEUP=1`,
+fa2, ZeRO-2, real 20× subset, `--save_model false`), per-device bs from 1 to
+27, 80 steps each, `ROSS_STEP_TIMING=1`, mean over steps 31–80, single tenant.
+Logs: `logs/sweep_bs_20261029/bs{1,8,16,24,27}.log` (driver
+`run_sweep.sh` in the same directory).
+
+| bs | mean step (s) | median (s) | s/sample | samples/s | tokens/s | slow steps in window |
+|---|---|---|---|---|---|---|
+| 1 | 1.018 | 1.018 | 1.018 | 7.86 | 13,920 | 0 |
+| 8 | 4.391 | 4.392 | 0.549 | 14.57 | 25,826 | 0 |
+| 16 | 8.323 | 8.338 | 0.520 | 15.38 | 27,253 | 1 |
+| 24 | 12.264 | 12.276 | 0.511 | 15.66 | 27,741 | 1 |
+| 27 | 13.779 | 13.768 | 0.510 | 15.68 | 27,778 | 1 |
+
+- **Step time is linear in batch**: t ≈ 0.49·bs + 0.5 s. A fit from bs=8 and
+  bs=24 predicts bs=1 at 0.946 s (measured 1.018), bs=16 at 8.33 (8.323) and
+  bs=27 at 13.74 (13.779). The ~0.5 s fixed term is why bs=1 costs 1.0 s per
+  sample.
+- **Per-sample cost is flat from bs=16**: 0.520 → 0.511 → 0.510 s. The
+  asymptote is 8 / 0.491 ≈ 16.3 samples/s, so bs=27 reaches 96.5% of it and
+  bs=16 → 27 buys +2% samples/s for ~14 GB of HBM.
+- **The single slow step per run is the dataloader epoch wrap**, not jitter:
+  worst steps 74 / 50 / 45 at bs 16/24/27 against epoch boundaries at
+  73.0 / 48.6 / 43.2 (9,340 samples × 8 devices). bs≤8 never crosses one
+  inside 80 steps, hence no spike. Medians are unaffected.
+- `step_time_full_s` (adds the optimizer step) tracks `step_time_s` within 0.5%
+  at every batch size.
+- Reproducibility against the recorded points: bs16 8.434 → 8.323, bs24 12.399
+  → 12.264 (fusion now on), bs27 13.815 → 13.779 — all within 1%.
+- bs=1 runs despite the launcher's `--batch_size < 2` warning: that warning is
+  stale (it names `modeling_qwen2_5_vl_ross.py:339`), and the Qwen3-VL head
+  keeps the batch dim since `3a3d0c6`.
+
 ### Ported Emu3-port optimizations — A/B (L≈1774)
 
 Each arm 50 steps; base config otherwise (fa2, valid CE, fused RMSNorm+RoPE,
