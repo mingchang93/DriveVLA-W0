@@ -2298,3 +2298,55 @@ Notes:
 - No compute/communication overlap (Overlapped 0.000 s on every rank), same as
   the Step 36 Qwen2.5 trace. HCCL launch count is 788 (vs 389 on Qwen2.5-7B):
   36 text + 27 ViT layers per pass.
+
+---
+
+## Appendix — speedup features kept in Qwen3-VL backbone training (2026-11-04)
+
+Scope: the Qwen3-VL-8B ROSS configuration at the MFU-best point (L≈1774,
+`--max_pixels 903168`, per-device bs 24–27, real NAVSIM 20× subset). The Qwen3
+wrapper reuses the Qwen2.5-VL `npu_fused_ops` wrappers and the launcher
+defaults, so features measured on the Qwen2.5 path are live here and are marked
+*(Q2.5)*; only fused gate/up was re-measured on Qwen3-VL *(Q3)*.
+
+### Kept
+
+| feature | switch | where | measured effect |
+|---|---|---|---|
+| Valid-token CE | `ROSS_VALID_CE=1` (launcher default) | LM head | *(Q2.5)* +2.6% at bs40; fp32 logits transient 10.3 GB → 0.55 GB; stable batch 40 → 64 (200/200; bs72 failed a logging all-gather) |
+| NPU FlashAttention-2 | `--attn_type fa2` | text TND + ViT dense | *(Q2.5)* 26.58 → 48.05 samples/s at bs40 (+83%); *(Q3)* causal-mask fix for L>2048 (`72fd940`) |
+| Fused RMSNorm | `ROSS_NPU_RMSNORM=1` | text RMSNorm | *(Q2.5, bs48)* −6.4% median step, +6.8% throughput (A-B-A) |
+| Fused RoPE | `ROSS_NPU_ROPE=1` | text + ViT RoPE | *(Q2.5, bs48)* −5.9% step, +6.3% throughput |
+| Fused gate/up | `ROSS_FUSED_GATEUP=1` | text MLP | *(Q3, bs24)* 12.399 → 12.325 s, 47.8 → 48.1% MFU; kept at the bs27 best (13.779 s, 48.4%) |
+| Expandable segments | `PYTORCH_NPU_ALLOC_CONF=expandable_segments:True` | allocator | *(Q2.5)* trace comm 4.317 → 0.234 s, step 12.194 → 6.996 s; unprofiled mean +0.4%, CV 20.7 → 15.8% |
+| CPU affinity | `CPU_AFFINITY_CONF=1` | host | same throughput, step-time CV 12.88% → 2.38% (~5× lower) |
+| Pinned loader + memlock | `--pin_memory true`, `ulimit -l unlimited` | dataloader | removes pageable host-to-device stalls |
+| ZeRO-2 | `--zero_stage 2`, `zero2.json` (`overlap_comm`, `contiguous_gradients`) | DeepSpeed | beats ZeRO-3 at equal batch: no per-step parameter all-gather; params replicated, grads/optimizer sharded |
+| No checkpoint writes | `--save_model false` | trainer | avoids ~18 GB final model + ~137 GB optimizer checkpoint on sweep runs |
+| Step timing | `ROSS_STEP_TIMING=1` | trainer | measurement only (device-synced `step_time_s`) |
+
+Canonical env set by the launcher: `CPU_AFFINITY_CONF=1`,
+`PYTORCH_NPU_ALLOC_CONF=expandable_segments:True`, `ulimit -l unlimited`,
+`ASCEND_LAUNCH_BLOCKING=0`, `ROSS_STEP_TIMING=1`, `ROSS_NPU_RMSNORM=1`,
+`ROSS_NPU_ROPE=1`, `ROSS_VALID_CE=1`, `--attn_type fa2`, `--zero_stage 2`.
+
+### Deliberately off
+
+| feature | switch | reason |
+|---|---|---|
+| Fused SwiGLU | `ROSS_NPU_SWIGLU` | −3.2% (Step 14), −2.6% (Step 33) |
+| Fused QKV | `ROSS_FUSED_QKV=1` | *(Q3, bs24)* 12.464 s / 47.6% vs 12.399 s / 47.8% — no win |
+| GC-skip last N layers | `ROSS_GC_SKIP_LAST_LAYERS=N` | *(Q3)* +0.5 pp at bs16 for +13.8 GB; OOM at bs24; not in the best config |
+| Disable recomputation | `--gradient_checkpointing False` | OOM above bs8; 1.51× slower at bs8 (Step 31) |
+| BSH attention layout | — | would let padded tokens attend; not ported |
+| Fused AdamW | `adamw_torch_fused` | −3.6% (Step 14) |
+| Add-RMSNorm v2 / selective CE / `TASK_QUEUE_ENABLE=2` | — | neutral (Step 36) |
+
+### Best point with these features
+
+L≈1774, `--max_pixels 903168`, fused gate/up, fa2, ZeRO-2, valid CE, fused
+RMSNorm+RoPE, expandable segments, pinning, real 20× subset: **bs 24–27,
+48.4% MindSpeed MFU, 27.8k tokens/s**. Counting the checkpointing forward with
+`utils/flops_mindspeed.py --include_recompute` raises this to **62.19%
+executed MFU at bs27** (+13.77 pp) — the ceiling recomputation-off cannot
+reach because it does not fit above bs8.
