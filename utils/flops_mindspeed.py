@@ -13,6 +13,12 @@ Scope is exactly MindSpeed-MM's: Qwen3-VL **text + ViT** only.
 It does NOT include the ROSS SD denoiser or action path, so its number is a
 lower bound for our full training step but is the method other projects quote.
 
+``--include_recompute`` additionally counts the forward pass that gradient
+checkpointing re-runs for every checkpointed text decoder layer and ViT block
+(the LM head, embeddings, patch embed, mergers and ROSS head are not
+checkpointed), so the same method can report the executed-FLOPs MFU alongside
+the useful-FLOPs MFU.
+
 Usage (our canonical point: L=1774, per-device bs=24, one image = 3432 ViT
 patch tokens; ``--gbs`` is the number of samples and the result is divided by
 ``--device_num``):
@@ -62,37 +68,47 @@ class Qwen3VLFlopsCounter:
         return attn_linear_N, head_dim, num_attention_heads
 
     @staticmethod
-    def _estimate_text_flops(config, tokens_sum, batch_seqlens):
-        hidden_size = config.hidden_size
-        vocab_size = config.vocab_size
-        num_hidden_layers = config.num_hidden_layers
-
+    def _text_linear_components(config):
+        """Weight counts for the text stack: (attn, mlp, lm_head, head_dim, heads)."""
         attn_linear_N, head_dim, num_attention_heads = Qwen3VLFlopsCounter._compute_attn_params(config)
 
         moe_layer_count = Qwen3VLFlopsCounter._get_moe_layer_count(config)
-        dense_layer_count = num_hidden_layers - moe_layer_count
+        dense_layer_count = config.num_hidden_layers - moe_layer_count
 
-        dense_mlp_N = hidden_size * config.intermediate_size * 3
+        dense_mlp_N = config.hidden_size * config.intermediate_size * 3
         mlp_N = dense_mlp_N * dense_layer_count
         if moe_layer_count:
-            router_N = hidden_size * config.num_experts
+            router_N = config.hidden_size * config.num_experts
             active_expert_N = (
-                hidden_size * config.moe_intermediate_size * config.num_experts_per_tok * 3
+                config.hidden_size * config.moe_intermediate_size * config.num_experts_per_tok * 3
             )
             mlp_N += (router_N + active_expert_N) * moe_layer_count
 
-        lm_head_N = hidden_size * vocab_size
+        lm_head_N = config.hidden_size * config.vocab_size
+        return attn_linear_N, mlp_N, lm_head_N, head_dim, num_attention_heads
+
+    @staticmethod
+    def _estimate_text_flops(config, tokens_sum, batch_seqlens, include_recompute=False):
+        attn_linear_N, mlp_N, lm_head_N, head_dim, num_attention_heads = (
+            Qwen3VLFlopsCounter._text_linear_components(config)
+        )
         linear_N = attn_linear_N + mlp_N + lm_head_N
         linear_flops = 6 * linear_N * tokens_sum
 
         seqlen_square_sum = sum(seqlen * seqlen for seqlen in batch_seqlens)
         attention_flops = (
-            7 * seqlen_square_sum * head_dim * num_attention_heads * num_hidden_layers
+            7 * seqlen_square_sum * head_dim * num_attention_heads * config.num_hidden_layers
         )
-        return linear_flops + attention_flops
+        total = linear_flops + attention_flops
+        if include_recompute:
+            # Gradient checkpointing re-runs each decoder block's forward once.
+            # The LM head sits outside the checkpointed blocks and is not rerun.
+            total += 2 * (attn_linear_N + mlp_N) * tokens_sum
+            total += 2 * seqlen_square_sum * head_dim * num_attention_heads * config.num_hidden_layers
+        return total
 
     @staticmethod
-    def _estimate_qwen3_vit_flop(images_seqlens, config, vit_freeze=False):
+    def _estimate_qwen3_vit_flop(images_seqlens, config, vit_freeze=False, include_recompute=False):
         if config is None:
             return 0
         tokens_sum = sum(images_seqlens)
@@ -116,7 +132,8 @@ class Qwen3VLFlopsCounter:
         deepstack_merger_N = merger_N * len(
             getattr(config, "deepstack_visual_indexes", ()) or ()
         )
-        dense_N = patch_embed_N + (mlp_N + attn_linear_N) * depth + deepstack_merger_N + merger_N
+        block_dense_N = (mlp_N + attn_linear_N) * depth
+        dense_N = patch_embed_N + block_dense_N + deepstack_merger_N + merger_N
 
         if vit_freeze:
             dense_rate, attn_rate = 2, 4
@@ -126,14 +143,25 @@ class Qwen3VLFlopsCounter:
         linear_flops = dense_rate * dense_N * tokens_sum
         seqlen_square_sum = sum(seqlen * seqlen for seqlen in images_seqlens)
         attention_flops = attn_rate * seqlen_square_sum * head_dim * num_heads * depth
-        return linear_flops + attention_flops
+        total = linear_flops + attention_flops
+        if include_recompute and not vit_freeze:
+            # Only the ViT blocks are checkpointed; patch embed and mergers are not.
+            total += 2 * block_dense_N * tokens_sum
+            total += 4 * seqlen_square_sum * head_dim * num_heads * depth
+        return total
 
     def _estimate_qwen3_vl_flops(self, tokens_sum, batch_seqlens, **kwargs):
-        text_flops = self._estimate_text_flops(self.config.text_config, tokens_sum, batch_seqlens)
+        include_recompute = kwargs.get("include_recompute", False)
+        text_flops = self._estimate_text_flops(
+            self.config.text_config, tokens_sum, batch_seqlens, include_recompute=include_recompute
+        )
         images_seqlens = kwargs.get("images_seqlens")
         vit_flops = (
             self._estimate_qwen3_vit_flop(
-                images_seqlens, self.config.vision_config, kwargs.get("vit_freeze", False)
+                images_seqlens,
+                self.config.vision_config,
+                vit_freeze=kwargs.get("vit_freeze", False),
+                include_recompute=include_recompute,
             )
             if images_seqlens
             else 0
@@ -264,6 +292,8 @@ def get_args():
                    help="SD1.5 dir holding unet/ and vae/ (ROSS head)")
     p.add_argument("--no_ross", action="store_true",
                    help="exclude the ROSS SD UNet + VAE (stock Qwen3-VL scope)")
+    p.add_argument("--include_recompute", action="store_true",
+                   help="also report MFU counting the extra forward pass gradient checkpointing runs")
     p.add_argument("--latent_hw", type=int, nargs=2, default=[35, 63])
     return p.parse_args()
 
@@ -275,20 +305,37 @@ def main():
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
 
     counter = Qwen3VLFlopsCounter(Qwen3VLConfig.from_pretrained(args.hf_path))
-    per_sample = counter.estimate_flops(
+
+    extra = 0.0
+    if not args.no_ross:
+        extra = measure_ross_flops(args.sd_path, latent=tuple(args.latent_hw))
+        print(f"ROSS (UNet x3/x3.5 + VAE x2/x1) per sample: {extra:.4e} FLOPs")
+
+    def _report(label, per_sample):
+        flops = (per_sample + extra) * args.gbs / args.device_num / args.step_time
+        mfu = flops / args.hardware_flops
+        print(f"flops/s per device ({label}): {flops:.4e}")
+        print(f"MFU ({label}): {mfu * 100:.2f}%")
+        return mfu
+
+    useful = counter.estimate_flops(
         batch_seqlens=args.llm_seqlens,
         images_seqlens=args.vit_seqlens,
         vit_freeze=args.vit_freeze,
         step_time=1.0,
     )
-    extra = 0.0
-    if not args.no_ross:
-        extra = measure_ross_flops(args.sd_path, latent=tuple(args.latent_hw))
-        print(f"ROSS (UNet x3/x3.5 + VAE x2/x1) per sample: {extra:.4e} FLOPs")
-    flops = (per_sample + extra) * args.gbs / args.device_num / args.step_time
-    mfu = flops / args.hardware_flops
-    print(f"flops/s per device: {flops:.4e}")
-    print(f"MFU: {mfu * 100:.2f}%")
+    useful_mfu = _report("useful", useful)
+    if args.include_recompute:
+        executed = counter.estimate_flops(
+            batch_seqlens=args.llm_seqlens,
+            images_seqlens=args.vit_seqlens,
+            vit_freeze=args.vit_freeze,
+            include_recompute=True,
+            step_time=1.0,
+        )
+        print(f"recompute FLOPs per sample: {executed - useful:.4e}")
+        exec_mfu = _report("executed incl. recompute", executed)
+        print(f"MFU delta: {(exec_mfu - useful_mfu) * 100:+.2f} pp")
 
 
 if __name__ == "__main__":
