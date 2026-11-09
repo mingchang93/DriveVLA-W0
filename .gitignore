@@ -107,3 +107,7 @@ debug_output/
 
 *.pyc
 .vscode/
+
+AGENTS.md
+CLAUDE.md
+.codegraph/
