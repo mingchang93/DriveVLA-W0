@@ -140,17 +140,40 @@ EPDMS v2 is not in this checkout. Rope verified: Qwen3's `get_rope_index` and th
 dataset's `get_rope_index_2` give bit-identical positions for single-image samples
 (same token ids 151652/151655/151656, merge 2) — maxdiff 0.
 
-Still missing for a navtest run: the test pickle from
-`tools/pickle_gen/pickle_generation_navsim_pre_1s.py` over `navsim_logs/test`, and
-the `{tokens: [...]}` yaml naming output files (derive from the navtest scene
-filter). Image sizing is inherited from the checkpoint's `preprocessor_config.json`
+Smoke plumbing: `/mnt/sfs_turbo/lmc/smoke_qwen3vl_2b/make_eval_smoke_pkl.py`
+builds a navsim-format pickle directly from log pickles (no nuPlan fallback, no VQ
+codes), and `run_eval_smoke.sh` runs the ported runner on one NPU rank. Image
+sizing is inherited from the checkpoint's `preprocessor_config.json`
 (`max_pixels` 150528, `min_pixels` 12544), so no CLI flags are needed.
+
+Still missing for a real navtest run: the navtest pickle over
+`navsim_logs/test` with the true scene-token list (`tools/pickle_gen/`'s script
+hardcodes its author's paths and needs the nuPlan pre-1s fallback, so it needs the
+same treatment the smoke builder got), and the PDMS scoring step.
 
 ## Experiment log
 
 | # | Date | What | Config | Log | Result |
 |---|------|------|--------|-----|--------|
-| 1 | 2026-11-09 | Qwen3-VL-2B + ROSS startup smoke, 20 steps | NAVSIM subset (467 samples), 8 NPUs x bs 2, `zero2.json`, `max_pixels` 150528, `cur_frame_idx` 3, `future_nums` 8, lr 5e-5, grad ckpt on | `/mnt/sfs_turbo/lmc/smoke_qwen3vl_2b/train.log` | **PASS**: 20/20 steps, `TRAIN_EXIT=0`, ~1.26 it/s (~21 s); loss 21.14 -> 6.41, grad_norm 556 -> 38, `action_loss` 7.8 -> 6.1, `ross_loss` 0.03-0.34 |
+| 1 | 2026-11-09 | Qwen3-VL-2B + ROSS startup smoke, 20 steps | NAVSIM subset (467 samples), 8 NPUs x bs 2, `zero2.json`, `max_pixels` 150528, `cur_frame_idx` 3, `future_nums` 8, lr 5e-5, grad ckpt on | `/mnt/sfs_turbo/lmc/smoke_qwen3vl_2b/train.log` (kept as `train_exp1.log`) | **PASS**: 20/20 steps, `TRAIN_EXIT=0`, ~1.26 it/s (~21 s); loss 21.14 -> 6.41, grad_norm 556 -> 38, `action_loss` 7.8 -> 6.1, `ross_loss` 0.03-0.34 |
+| 2 | 2026-11-09 | Eval smoke of the ported runner, 1 NPU rank | 6 scenes from extracted trainval logs, 2 images/sample, `cur_frame_idx` 3, `future_nums` 8, bf16, sdpa, `model_max_length` 2048, `--use_previous_actions` | `/mnt/sfs_turbo/lmc/smoke_qwen3vl_2b/eval_smoke/infer.log` | **PASS**: `EVAL_EXIT=0`, 6/6 JSONs, action 8x3 finite; constant dx across the horizon (20-step checkpoint) |
+| 3 | 2026-11-09 | Training smoke rerun at `24a3db3` | same config as exp 1 | `/mnt/sfs_turbo/lmc/smoke_qwen3vl_2b/train.log` | **PASS**: 20/20 steps, 27.9 s (1.39 s/it, network contention from downloads), train_loss 9.23, `TRAIN_EXIT=0` |
+
+Eval-smoke findings (all outside the model code):
+- The exported SFT checkpoint has no `video_preprocessor_config.json`, so
+  `Qwen3VLProcessor.from_pretrained(checkpoint)` falls back to `AutoConfig` and
+  fails on `qwen3_vl`. Worked around by copying the base model's file; the runner
+  now loads `AutoImageProcessor` only.
+- `preprocess_qwen_2_visual_vla_sources` inserts action segments unconditionally;
+  with `--use_previous_actions` off all three are `None` and it raises
+  `AttributeError: 'NoneType' object has no attribute 'tolist'`. Fixed in the
+  runner. The passing run above used `--use_previous_actions`.
+- The pickle's image path must be `<log>/<frame>.npy` (two components). A
+  three-component `<log>/CAM_F0/<frame>.npy` makes the rewrite produce
+  `<raw_img_root>/CAM_F0/<frame>.jpg` and silently falls through to `None`.
+- Navtest itself is not downloaded yet; this smoke used trainval-derived scenes to
+  exercise the same code path. The navtest pickle + token yaml + PDMS run follow
+  the test split.
 
 Blockers found and fixed on the way to the smoke (all landed on `qwen-hif8`):
 - `b691a7e` vendored `transformers.data` collator shim (the 4.56 tree omits it)

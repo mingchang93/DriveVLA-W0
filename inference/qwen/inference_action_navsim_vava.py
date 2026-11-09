@@ -41,6 +41,7 @@ from qwenvl.train.argument import DataArguments
 from transformers import (
     Qwen2VLForConditionalGeneration,
     Qwen2_5_VLForConditionalGeneration,
+    AutoImageProcessor,
     AutoProcessor,
     Qwen2VLImageProcessor,
 )
@@ -222,14 +223,12 @@ def resolve_backbone(qwen_hub: str):
         from reference.transformers.src.transformers.models.qwen3_vl.modeling_qwen3_vl import (
             Qwen3VLForConditionalGeneration,
         )
-        from reference.transformers.src.transformers.models.qwen3_vl.processing_qwen3_vl import (
-            Qwen3VLProcessor,
-        )
-
+        # Only the image processor is needed; building the full processor also
+        # requires the video config, which exported SFT checkpoints do not carry.
         return (
             Qwen3VLForConditionalGeneration,
             "qwen3vl",
-            Qwen3VLProcessor.from_pretrained(qwen_hub).image_processor,
+            AutoImageProcessor.from_pretrained(qwen_hub),
             "sdpa",
         )
 
@@ -408,16 +407,19 @@ def main():
         grid_thw_image_flat.extend(pre_grid_thw_merged)
         grid_thw_image_flat.extend(grid_thw_merged)
 
-        action_segments = [pre_user_action_token_ids, pre_wrapped_action_token_ids, user_action_token_ids]
-        action_roles = ["user", "assistant", "user"]
+        if data_args.use_previous_actions:
+            action_segments = [pre_user_action_token_ids, pre_wrapped_action_token_ids, user_action_token_ids]
+            action_roles = ["user", "assistant", "user"]
+        else:
+            action_segments, action_roles = None, None
         
         # Prompt ids and position ids
         data_dict = preprocess_qwen_2_visual_vla_sources(
             sources=user_content,
             tokenizer=tokenizer,
             grid_thw_image=grid_thw_image_flat,
-            action_segments=action_segments if len(action_segments) > 0 else None,
-            action_roles=action_roles if len(action_roles) > 0 else None,
+            action_segments=action_segments,
+            action_roles=action_roles,
         )   
         input_ids: torch.Tensor = data_dict["input_ids"][0]  # (seq,)
         # Remove the last two tokens ("<|im_end|>", "\n") to position at assistant content start
