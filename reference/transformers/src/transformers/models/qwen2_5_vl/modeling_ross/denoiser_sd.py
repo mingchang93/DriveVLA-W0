@@ -1,4 +1,5 @@
 import math
+import os
 
 import numpy as np
 import torch
@@ -21,7 +22,7 @@ class RossStableDiffusionXOmni(nn.Module):
         z_channel,
         mlp_depth,
         n_patches=576,
-        negative_prompt_path="/mnt/vdb1/yingyan.li/repo/VLA/reference/transformers/src/transformers/models/qwen2_5_vl/modeling_ross/negative_prompt_sd15.pt",
+        negative_prompt_path=os.path.join(os.path.dirname(__file__), "negative_prompt_sd15.pt"),
     ):
         super().__init__()
         self.ln_pre = nn.LayerNorm(z_channel, elementwise_affine=False)
