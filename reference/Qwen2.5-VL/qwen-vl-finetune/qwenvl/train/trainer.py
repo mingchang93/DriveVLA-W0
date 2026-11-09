@@ -4,7 +4,10 @@ from typing import Dict, List, Optional, Sequence
 # import datasets
 import torch
 import torch.nn as nn
-from flash_attn.flash_attn_interface import flash_attn_varlen_func
+try:
+    from flash_attn.flash_attn_interface import flash_attn_varlen_func
+except ImportError:  # CUDA-only; NPU runs with sdpa
+    flash_attn_varlen_func = None
 from torch.utils.data import DataLoader, Sampler
 from torch.utils.data import RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler

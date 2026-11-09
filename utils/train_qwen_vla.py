@@ -10,6 +10,11 @@ import pathlib
 import pickle
 from pathlib import Path
 import torch
+
+try:  # registers the "npu" backend on Ascend; ImportError on CUDA-only hosts
+    import torch_npu  # noqa: F401
+except ImportError:
+    pass
 import transformers
 from typing import Dict
 from collections import defaultdict
@@ -110,7 +115,10 @@ def rank0_print(*args):
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
     """Collects the state dict and dump to disk."""
     if trainer.deepspeed:
-        torch.cuda.synchronize()
+        if hasattr(torch, "npu") and torch.npu.is_available():
+            torch.npu.synchronize()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
         trainer.save_model(output_dir)
         return
 
@@ -125,32 +133,70 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
     Complete VLA model setup: load model, configure training parameters, and set up tokenizer
     """
     
-    model_type = "qwen2.5vl_ross"
-
-    model_class = Qwen2_5_VLForConditionalGenerationROSS
+    import json as _json
+    _cfg_path = os.path.join(model_args.model_name_or_path, "config.json")
+    _family = "qwen25"
+    if os.path.exists(_cfg_path):
+        with open(_cfg_path) as _cfg_f:
+            if _json.load(_cfg_f).get("model_type") == "qwen3_vl":
+                _family = "qwen3vl"
+    model_type = "qwen3vl_ross" if _family == "qwen3vl" else "qwen2.5vl_ross"
+    rank0_print(f"[model] backbone family: {_family}")
 
     tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path)
 
-    base_cfg = Qwen2_5_VLConfig.from_pretrained(
-            model_args.model_name_or_path, trust_remote_code=True
-    )
-    if "enable_ross" in base_cfg.to_dict().keys():
-        ross_cfg = Qwen2_5_VLConfigROSS(
-                **base_cfg.to_dict(),
+    if _family == "qwen3vl":
+        from reference.transformers.src.transformers.models.qwen3_vl.configuration_qwen3_vl import (
+            Qwen3VLConfig,
         )
-    else:
-        ross_cfg = Qwen2_5_VLConfigROSS(
-                **base_cfg.to_dict(),
+        from reference.transformers.src.transformers.models.qwen3_vl.modeling_qwen3_vl_ross import (
+            Qwen3VLConfigROSS,
+            Qwen3VLForConditionalGenerationROSS,
+        )
+        from reference.transformers.src.transformers.models.qwen3_vl.processing_qwen3_vl import (
+            Qwen3VLProcessor,
+        )
+
+        model_class = Qwen3VLForConditionalGenerationROSS
+        base_cfg = Qwen3VLConfig.from_pretrained(
+                model_args.model_name_or_path, trust_remote_code=True
+        )
+        cfg_kwargs = base_cfg.to_dict()
+        if "enable_ross" in cfg_kwargs:
+            ross_cfg = Qwen3VLConfigROSS(**cfg_kwargs)
+        else:
+            ross_cfg = Qwen3VLConfigROSS(
+                **cfg_kwargs,
                 enable_ross=True,
                 extract_image_hidden=True,
                 extract_action_hidden=True,
                 sd_model_path=model_args.sd_model_path,
             )
+        # The vendored NPU FA2 path is wired to Qwen2.5-VL's attention classes.
+        attn_impl = "sdpa"
+    else:
+        model_class = Qwen2_5_VLForConditionalGenerationROSS
+        base_cfg = Qwen2_5_VLConfig.from_pretrained(
+                model_args.model_name_or_path, trust_remote_code=True
+        )
+        if "enable_ross" in base_cfg.to_dict().keys():
+            ross_cfg = Qwen2_5_VLConfigROSS(
+                    **base_cfg.to_dict(),
+            )
+        else:
+            ross_cfg = Qwen2_5_VLConfigROSS(
+                    **base_cfg.to_dict(),
+                    enable_ross=True,
+                    extract_image_hidden=True,
+                    extract_action_hidden=True,
+                    sd_model_path=model_args.sd_model_path,
+                )
+        attn_impl = "flash_attention_2"
     model = model_class.from_pretrained(
             model_args.model_name_or_path,
             config=ross_cfg,
             cache_dir=training_args.cache_dir,
-            attn_implementation="flash_attention_2",
+            attn_implementation=attn_impl,
             torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
             trust_remote_code=True,
     )
@@ -167,7 +213,12 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
     
     rank0_print(f"Loaded {model_class.__name__} from {model_args.model_name_or_path}")
 
-    image_processor = AutoProcessor.from_pretrained(model_args.model_name_or_path).image_processor
+    if _family == "qwen3vl":
+        image_processor = Qwen3VLProcessor.from_pretrained(
+            model_args.model_name_or_path
+        ).image_processor
+    else:
+        image_processor = AutoProcessor.from_pretrained(model_args.model_name_or_path).image_processor
 
     tokenizer.model_max_length = training_args.model_max_length
     tokenizer.padding_side = "right"
