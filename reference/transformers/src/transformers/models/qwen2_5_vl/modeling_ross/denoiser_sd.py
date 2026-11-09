@@ -74,7 +74,7 @@ class RossStableDiffusionXOmni(nn.Module):
         noisy_model_input = self.noise_scheduler.add_noise(target, noise, timesteps)
 
         # Obtain hidden states
-        encoder_hidden_states = torch.load(self.negative_prompt_path).to(target.device).to(target.dtype)
+        encoder_hidden_states = torch.load(self.negative_prompt_path, map_location="cpu", weights_only=False).to(target.device).to(target.dtype)
         encoder_hidden_states = encoder_hidden_states.repeat(bsz, 1, 1)
 
         # interpolate
@@ -188,7 +188,7 @@ class RossStableDiffusionXOmni(nn.Module):
 
         # 0. Obtain hidden states
         # 0.1 Negative prompt embeddings
-        prompt_embeds = torch.load(self.negative_prompt_path).to(z.device).to(z.dtype).repeat(z.shape[0], 1, 1)
+        prompt_embeds = torch.load(self.negative_prompt_path, map_location="cpu", weights_only=False).to(z.device).to(z.dtype).repeat(z.shape[0], 1, 1)
 
         # 4. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(
