@@ -14,9 +14,17 @@ from transformers import LogitsProcessor, AutoConfig
 from transformers.configuration_utils import PretrainedConfig
 from tqdm import tqdm
 
+try:
+    import torch_npu  # noqa: F401
+    _HAS_NPU = hasattr(torch, "npu") and torch.npu.is_available()
+except ImportError:
+    _HAS_NPU = False
+
 
 # Project root - dynamically get the project root directory
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 # Add train and qwen-vl reference paths
 train_dir = os.path.join(PROJECT_ROOT, "train")
@@ -97,11 +105,15 @@ def parse_args():
 
 def setup_distributed() -> Tuple[int, int, torch.device]:
     if not dist.is_initialized():
-        dist.init_process_group(backend='nccl')
+        dist.init_process_group(backend='hccl' if _HAS_NPU else 'nccl')
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    device = torch.device(f"cuda:{rank}")
-    torch.cuda.set_device(device)
+    if _HAS_NPU:
+        device = torch.device(f"npu:{rank}")
+        torch.npu.set_device(device)
+    else:
+        device = torch.device(f"cuda:{rank}")
+        torch.cuda.set_device(device)
     return rank, world_size, device
 
 
@@ -192,6 +204,43 @@ def make_generation_prompt_and_position_ids(
     return {"prompt_ids": prefix}
 
 
+def resolve_backbone(qwen_hub: str):
+    """Select policy class/processor for the checkpoint's backbone family.
+
+    Evaluation only needs the autoregressive FAST-token head, so the plain
+    causal-LM class is used: the ROSS wrapper runs its denoiser branch
+    unconditionally and fails when called without training masks.
+    """
+    cfg_path = os.path.join(qwen_hub, "config.json")
+    family = "qwen25"
+    if os.path.exists(cfg_path):
+        with open(cfg_path) as f:
+            if json.load(f).get("model_type") == "qwen3_vl":
+                family = "qwen3vl"
+
+    if family == "qwen3vl":
+        from reference.transformers.src.transformers.models.qwen3_vl.modeling_qwen3_vl import (
+            Qwen3VLForConditionalGeneration,
+        )
+        from reference.transformers.src.transformers.models.qwen3_vl.processing_qwen3_vl import (
+            Qwen3VLProcessor,
+        )
+
+        return (
+            Qwen3VLForConditionalGeneration,
+            "qwen3vl",
+            Qwen3VLProcessor.from_pretrained(qwen_hub).image_processor,
+            "sdpa",
+        )
+
+    return (
+        Qwen2_5_VLForConditionalGeneration,
+        "qwen2.5vl",
+        AutoProcessor.from_pretrained(qwen_hub).image_processor,
+        "sdpa" if _HAS_NPU else "flash_attention_2",
+    )
+
+
 def main():
     args = parse_args()
     rank, world_size, device = setup_distributed()
@@ -209,8 +258,8 @@ def main():
     )
 
     # Load model + tokenizer with VLA tokens
-    model_class = Qwen2_5_VLForConditionalGeneration
-    model_type = "qwen2.5vl"
+    model_class, model_type, image_processor, attn_implementation = resolve_backbone(args.qwen_hub)
+    print(f"[backbone] family={model_type} class={model_class.__name__} attn={attn_implementation}")
 
     torch_dtype = torch.bfloat16 if args.bf16 else None
 
@@ -219,11 +268,9 @@ def main():
         model_class=model_class,
         add_vla_tokens=False,
         torch_dtype=torch_dtype,
-        attn_implementation="flash_attention_2",
+        attn_implementation=attn_implementation,
         device_map=None,
     )
-
-    image_processor = AutoProcessor.from_pretrained(args.qwen_hub).image_processor
 
     tokenizer.model_max_length = args.model_max_length
     tokenizer.padding_side = "right"
