@@ -77,25 +77,38 @@ Exact sizes from the mirror API (`?blobs=true`): trainval camera **200 splits,
 1242.2 GB** (mean 6.21 GB); test camera **32 splits, 127.9 GB**; metadata_test
 0.48 GB; metadata_trainval 7.05 GB (extracted, 1310 log pickles). Total ≈ **1.37 TB**.
 
-Download status (2026-11-09, sessions on container `drivevla-w0-hif8-lmc`):
-- `lmc-dl2` runs `navsim_openscene/parallel_dl.sh` (6 workers): trainval camera
-  splits 2..199 → `sensor_blobs/trainval`, then test metadata → `navsim_logs/test`,
-  then test camera 0..31 → `sensor_blobs/test`, then `normalize_test` and 3 retry
-  passes over its own failed list.
-- `lmc-dl-retry` runs `navsim_openscene/retry_failed.sh` (4 workers) over splits
-  that failed in parallel_dl's first pass: per-file `wget -o _wget_logs/<name>.log`,
-  `--tries=3`, random backoff; success writes `_done/<name>.done` and removes the
-  `.fail` entry so parallel_dl's retry passes skip it.
-- Failure burst 13:06:40–13:07:14 UTC: two of six workers failed every fetch in
-  ~1 s and burned splits 31→77 into `_failed/`; both recovered at split 78.
-  Re-fetching the same splits individually succeeds (HTTP 206 from the xet CDN), so
-  this is transient per-connection throttling, not a bad object. The instrumented
-  retry pool has not reproduced it.
-- Throughput is an aggregate **~40 MB/s per-IP ceiling** (6 connections → 47 MB/s,
-  8 → 40, 10 → 39), so worker counts only decide which pool finishes last; 6 main
-  + 4 retry puts both at ~8 h. Remaining at 13:30 UTC ≈ 1154 GB.
-- Splits 0 and 1 came from the earlier sequential run; `_done` markers exist only
-  for splits finished by these two scripts.
+Download record — **complete 2026-11-09 22:58 UTC** (`DOWNLOAD COMPLETE
+trainval=1310 test=147 meta_test=147 failed=0`), ~11 h wall clock.
+- Producers: `lmc-dl2` ran `parallel_dl.sh` (6 workers: trainval camera 2..199,
+  test metadata, test camera 0..31, `normalize_test`, 3 retry passes);
+  `lmc-dl-retry` ran `retry_failed_v2.sh`, a converging sweeper over `_failed/`.
+- Failure root cause: **HTTP 429 Too Many Requests from `hf-mirror.com`**, which
+  `wget` treats as fatal, so throttled workers died in ~1 s and burned through the
+  queue. Individual probes succeeded (302 → 206 from the xet CDN), which is why it
+  looked transient. The sweeper handles it with
+  `--retry-on-http-error=429,500,502,503,504 --retry-on-host-error`,
+  `--waitretry=30`, per-file `wget -o _wget_logs/<name>.log` and random backoff;
+  it lost no splits.
+- Throughput was an aggregate **~40 MB/s per-IP ceiling** (6 connections → 47 MB/s,
+  8 → 40, 10 → 39), so worker counts only decided which pool finished last.
+- Splits 0 and 1 came from the earlier sequential run and have no `_done` marker;
+  they are covered by the content checks below.
+- Verification (`verify_download.py`, exit 0):
+
+```
+[splits] trainval done=198 +extra=[0,1] missing=0 []
+[splits] test done=32 missing=0 []
+[meta]   test=ok trainval=ok
+[logs:trainval] metadata=1310 camera_dirs=1310 missing=0 orphan=0
+[frames:trainval] checked=1310 short_logs=0
+[logs:test] metadata=147 camera_dirs=147 missing=0 orphan=0
+[frames:test] checked=147 short_logs=0
+RESULT: COMPLETE
+```
+
+Ops scripts live next to the data: `navsim_openscene/parallel_dl.sh`,
+`retry_failed_v2.sh`, `verify_download.py`; logs `parallel_dl.log`,
+`retry_v2.log`, `verify_final.log`.
 - Maps: `/root/.ssh/id_vultr` was authorized on `45.77.5.43` for the transfer, then
   the key and its `authorized_keys` line were deleted. Archive 970,997,691 B, sha256
   `444860429f9a3bcf89a6459d683fa82eb9219aa259d8d9b8cdefdb37f0b56b05`, extracted
@@ -156,7 +169,7 @@ same treatment the smoke builder got), and the PDMS scoring step.
 | # | Date | What | Config | Log | Result |
 |---|------|------|--------|-----|--------|
 | 1 | 2026-11-09 | Qwen3-VL-2B + ROSS startup smoke, 20 steps | NAVSIM subset (467 samples), 8 NPUs x bs 2, `zero2.json`, `max_pixels` 150528, `cur_frame_idx` 3, `future_nums` 8, lr 5e-5, grad ckpt on | `/mnt/sfs_turbo/lmc/smoke_qwen3vl_2b/train.log` (kept as `train_exp1.log`) | **PASS**: 20/20 steps, `TRAIN_EXIT=0`, ~1.26 it/s (~21 s); loss 21.14 -> 6.41, grad_norm 556 -> 38, `action_loss` 7.8 -> 6.1, `ross_loss` 0.03-0.34 |
-| 2 | 2026-11-09 | Eval smoke of the ported runner, 1 NPU rank | 6 scenes from extracted trainval logs, 2 images/sample, `cur_frame_idx` 3, `future_nums` 8, bf16, sdpa, `model_max_length` 2048, `--use_previous_actions` | `/mnt/sfs_turbo/lmc/smoke_qwen3vl_2b/eval_smoke/infer.log` | **PASS**: `EVAL_EXIT=0`, 6/6 JSONs, action 8x3 finite; constant dx across the horizon (20-step checkpoint) |
+| 2 | 2026-11-09 | Eval smoke of the ported runner, 1 NPU rank | 6 scenes from extracted trainval logs, 2 images/sample, `cur_frame_idx` 3, `future_nums` 8, bf16, sdpa, `model_max_length` 2048; passed both with `--use_previous_actions` on (pre-fix) and off (post-fix, `0d709e6`) | `/mnt/sfs_turbo/lmc/smoke_qwen3vl_2b/eval_smoke/infer.log` | **PASS**: `EVAL_EXIT=0`, 6/6 JSONs, action 8x3 finite; constant dx across the horizon (20-step checkpoint) |
 | 3 | 2026-11-09 | Training smoke rerun at `24a3db3` | same config as exp 1 | `/mnt/sfs_turbo/lmc/smoke_qwen3vl_2b/train.log` | **PASS**: 20/20 steps, 27.9 s (1.39 s/it, network contention from downloads), train_loss 9.23, `TRAIN_EXIT=0` |
 
 Eval-smoke findings (all outside the model code):
@@ -182,8 +195,12 @@ Blockers found and fixed on the way to the smoke (all landed on `qwen-hif8`):
 
 ## Next step
 
-When the download completes, run both smokes from `venv-hif8` in the `lmc-w0-hif8`
-pane: (1) the 20-step training smoke again, (2) an evaluation smoke — load the smoke
-checkpoint with the ported runner, generate on a handful of navtest scenes, then run
-`run_pdm_score.py` on those JSONs.
+Data is complete (1.37 TB, verified). Open items, in order:
+1. **Full SFT** on trainval: choose `use_previous_actions` (the smoke used off; the
+   reference runner/vocab path expects it on for history tokens), step count and
+   batch size, then run from `venv-hif8` in the `lmc-w0-hif8` pane.
+2. **Navtest eval artifacts**: generate the navtest pickle from `navsim_logs/test`
+   with the true scene-token list, and the `{tokens: [...]}` yaml.
+3. **PDMS run**: `run_pdm_score.py` with `agent=emu_vla_agent` once the devkit env
+   (`nuplan-devkit`, hydra) is verified in the venv.
 
