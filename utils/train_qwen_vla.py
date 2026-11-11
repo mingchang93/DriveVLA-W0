@@ -65,13 +65,30 @@ from token_utils import smart_load_model_and_tokenizer, prepare_action_tokenizer
 local_rank = None
 
 
+# 数据集无条件产出的 ROSS 专用键。阶段二用普通 Qwen3VL 类，它的 forward 把
+# 未知键塞进 **kwargs 再往下传，会在 decoder 层炸，所以必须显式剥掉。
+_ROSS_ONLY_KEYS = (
+    "raw_pixel_values_vae",
+    "image_token_masks",
+    "action_future_masks",
+    "frame_image_counts",
+)
+
+
 class RossTrainer(Trainer):
 
     def __init__(self, *args, **kwargs):
+        self._strip_ross_keys = bool(kwargs.pop("strip_ross_keys", False))
         super().__init__(*args, **kwargs)
         self._acc_sum = defaultdict(float)
         self._acc_n = 0
         self._micro_in_accum = 0  # 当前累积里的 micro-step 计数
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kw):
+        if self._strip_ross_keys:
+            for k in _ROSS_ONLY_KEYS:
+                inputs.pop(k, None)
+        return super().compute_loss(model, inputs, return_outputs=return_outputs, **kw)
 
     def _log_mean_and_reset(self):
         if self._acc_n == 0:
@@ -112,6 +129,77 @@ def rank0_print(*args):
     if local_rank == 0:
         print(*args)
 
+# ===================== 确定性与固定种子 =====================
+# HiF8 精度对比要求两条臂只差量化这一个变量。`--seed` 只让 HF Trainer 设
+# python/numpy/torch 的 RNG，不保证算子级数值可复现（NPU 的 reduction 顺序、
+# 原子加、非确定性 kernel 都会引入逐步差异）。下面这套照搬 zjj 在 Emu3 路径上
+# 验证过的实现，不依赖 msprobe（venv-hif8 未安装）。
+import random as _random
+import numpy as _np
+
+try:
+    import torch_npu as _torch_npu  # noqa: F401
+    _DEV_TYPE = "npu" if torch.npu.is_available() else "cpu"
+except Exception:
+    _DEV_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _device_manual_seed_all(seed: int):
+    if _DEV_TYPE == "npu":
+        torch.npu.manual_seed_all(seed)
+    elif _DEV_TYPE == "cuda":
+        torch.cuda.manual_seed_all(seed)
+
+
+def set_reproducibility(seed: int, deterministic: bool = True):
+    """固定种子 + 开确定性。返回 seed 便于调用方串联。
+
+    注意 PYTHONHASHSEED 必须在任何 dict/set 操作之前生效；在进程内 setdefault
+    只能影响后续 fork 出来的子进程（dataloader worker），主进程的 hash 种子
+    已经定了。要完全严格，得在 launcher 里 export。这里仍然设，因为
+    dataloader_num_workers>0 时 worker 会继承。
+    """
+    os.environ.setdefault("PYTHONHASHSEED", str(seed))
+    _random.seed(seed)
+    _np.random.seed(seed)
+    torch.manual_seed(seed)
+    _device_manual_seed_all(seed)
+
+    if deterministic:
+        # warn_only=True：遇到没有确定性实现的算子时告警而不是抛错，
+        # 否则 Qwen3-VL / SD UNet 里个别算子会直接把训练打断。
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        if _DEV_TYPE == "cuda":
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cuda.matmul.allow_tf32 = False
+            os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+            os.environ.setdefault("NCCL_DETERMINISTIC", "TRUE")
+        # HCCL 确定性通信（NPU）
+        os.environ.setdefault("HCCL_DETERMINISTIC", "TRUE")
+        # 非饱和模式：溢出产生 Inf/NaN 而不是饱和到最大值，与 GPU 行为一致。
+        # 这一条对 FP8 尤其重要——饱和模式会把溢出静默吃掉，掩盖量化问题。
+        os.environ.setdefault("INF_NAN_MODE_ENABLE", "1")
+    return seed
+
+
+def disable_model_dropout(model: torch.nn.Module) -> None:
+    """把所有 Dropout 的 p 置 0。
+
+    Qwen3-VL 的 config 里 attention_dropout=0.1，SD UNet 里也有 dropout。
+    两条臂即使同种子，dropout mask 也可能因算子调度不同而发散，所以显式关掉。
+    等价于 msprobe.pytorch.seed_all(rm_dropout=True)。
+    """
+    n = 0
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.modules.dropout._DropoutNd):
+            if module.p != 0.0:
+                module.p = 0.0
+                n += 1
+    rank0_print(f"[Reproducibility] 关掉 {n} 个 Dropout")
+# ===================== 确定性设置结束 =====================
+
+
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
     """Collects the state dict and dump to disk."""
     if trainer.deepspeed:
@@ -141,7 +229,9 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
             if _json.load(_cfg_f).get("model_type") == "qwen3_vl":
                 _family = "qwen3vl"
     model_type = "qwen3vl_ross" if _family == "qwen3vl" else "qwen2.5vl_ross"
-    rank0_print(f"[model] backbone family: {_family}")
+    # 阶段开关:True=阶段一(联合损失,带世界模型);False=阶段二(只动作损失)
+    _wm = bool(getattr(model_args, "enable_world_model", True))
+    rank0_print(f"[model] backbone family: {_family}  world_model: {_wm}")
 
     tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path)
 
@@ -157,21 +247,31 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
             Qwen3VLProcessor,
         )
 
-        model_class = Qwen3VLForConditionalGenerationROSS
         base_cfg = Qwen3VLConfig.from_pretrained(
                 model_args.model_name_or_path, trust_remote_code=True
         )
-        cfg_kwargs = base_cfg.to_dict()
-        if "enable_ross" in cfg_kwargs:
-            ross_cfg = Qwen3VLConfigROSS(**cfg_kwargs)
-        else:
-            ross_cfg = Qwen3VLConfigROSS(
-                **cfg_kwargs,
-                enable_ross=True,
-                extract_image_hidden=True,
-                extract_action_hidden=True,
-                sd_model_path=model_args.sd_model_path,
+        if not _wm:
+            # 阶段二:普通因果 LM 类。ROSS 的 forward 无条件走 denoiser 分支,
+            # 且 assert image_hidden.shape[1] == 2,没有 masks 时必然失败,
+            # 所以这里换类而不是给 ROSS 类加开关(评测 runner 用的也是这个类)。
+            from reference.transformers.src.transformers.models.qwen3_vl.modeling_qwen3_vl import (
+                Qwen3VLForConditionalGeneration,
             )
+            model_class = Qwen3VLForConditionalGeneration
+            ross_cfg = base_cfg
+        else:
+            model_class = Qwen3VLForConditionalGenerationROSS
+            cfg_kwargs = base_cfg.to_dict()
+            if "enable_ross" in cfg_kwargs:
+                ross_cfg = Qwen3VLConfigROSS(**cfg_kwargs)
+            else:
+                ross_cfg = Qwen3VLConfigROSS(
+                    **cfg_kwargs,
+                    enable_ross=True,
+                    extract_image_hidden=True,
+                    extract_action_hidden=True,
+                    sd_model_path=model_args.sd_model_path,
+                )
         # The vendored NPU FA2 path is wired to Qwen2.5-VL's attention classes.
         attn_impl = "sdpa"
     else:
@@ -200,16 +300,26 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
             torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
             trust_remote_code=True,
     )
-    from diffusers import AutoencoderKL
-    from reference.transformers.src.transformers.models.qwen2_5_vl.modeling_ross.unet_2d_condition import UNet2DConditionModel   
-    model.vae = AutoencoderKL.from_pretrained(model_args.sd_model_path.replace("/unet", "/vae"), torch_dtype=model.dtype)
-    model.vae.eval()
-    model.vae.requires_grad_(False)
-    model.denoiser.unet = UNet2DConditionModel.from_pretrained(model_args.sd_model_path, torch_dtype=model.dtype)
-    model.denoiser.unet.train()
-    model.denoiser.unet.requires_grad_(True)
+    if _wm:
+        from diffusers import AutoencoderKL
+        from reference.transformers.src.transformers.models.qwen2_5_vl.modeling_ross.unet_2d_condition import UNet2DConditionModel
+        model.vae = AutoencoderKL.from_pretrained(model_args.sd_model_path.replace("/unet", "/vae"), torch_dtype=model.dtype)
+        model.vae.eval()
+        model.vae.requires_grad_(False)
+        model.denoiser.unet = UNet2DConditionModel.from_pretrained(model_args.sd_model_path, torch_dtype=model.dtype)
+        model.denoiser.unet.train()
+        model.denoiser.unet.requires_grad_(True)
+    else:
+        rank0_print("World model: DISABLED (阶段二,只动作损失;不实例化 denoiser/vae)")
 
     tokenizer, model, _ = check_and_add_vla_tokens(tokenizer, model)
+
+    # 确定性：固定种子 + 关 dropout（HiF8 对比的前置条件）
+    _det = bool(getattr(model_args, "deterministic", True))
+    set_reproducibility(int(getattr(training_args, "seed", 42)), deterministic=_det)
+    rank0_print(f"[Reproducibility] seed={training_args.seed} deterministic={_det} device={_DEV_TYPE}")
+    if bool(getattr(model_args, "remove_dropout", True)):
+        disable_model_dropout(model)
     
     rank0_print(f"Loaded {model_class.__name__} from {model_args.model_name_or_path}")
 
@@ -265,15 +375,15 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
         model.lm_head.requires_grad = False
         rank0_print("Language model: FROZEN")
     
-    # Denoiser
-    for n, p in model.denoiser.named_parameters():
-        p.requires_grad = True
-    rank0_print("Denoiser: TRAINABLE")
+    # Denoiser / VAE 只在阶段一存在
+    if _wm:
+        for n, p in model.denoiser.named_parameters():
+            p.requires_grad = True
+        rank0_print("Denoiser: TRAINABLE")
 
-    # VAE
-    for n, p in model.vae.named_parameters():
-        p.requires_grad = False
-    rank0_print("VAE: FROZEN")
+        for n, p in model.vae.named_parameters():
+            p.requires_grad = False
+        rank0_print("VAE: FROZEN")
     
     def count(m):
         tot = sum(p.numel() for p in m.parameters())
@@ -360,6 +470,7 @@ def train():
         model=model,
         processing_class=tokenizer,
         args=training_args,
+        strip_ross_keys=not bool(getattr(model_args, "enable_world_model", True)),
         **data_module
     )
     

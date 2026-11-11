@@ -32,7 +32,7 @@ class HumanAgent(AbstractAgent):
         """Inherited, see superclass."""
         return SensorConfig.build_no_sensors()
 
-    def compute_trajectory(self, agent_input: AgentInput, scene: Scene) -> Trajectory:
+    def compute_trajectory(self, agent_input: AgentInput, scene: Scene, action_type=None) -> Trajectory:
         """
         Computes the ego vehicle trajectory.
         :param current_input: Dataclass with agent inputs.

@@ -13,6 +13,13 @@ class ModelArguments:
     tune_mm_vision: bool = field(default=False)
     model_type: str = field(default="qwen2.5vl")
     sd_model_path: Optional[str] = field(default=None)
+    # 阶段开关:True=阶段一(联合损失,带扩散世界模型);False=阶段二(只动作损失)
+    enable_world_model: bool = field(default=True)
+    # 确定性：HiF8 与 bf16 两条臂必须只差量化这一个变量
+    deterministic: bool = field(default=True)
+    remove_dropout: bool = field(default=True)
+    # 阶段开关:True=阶段一(联合损失,带扩散世界模型);False=阶段二(只动作损失)
+    enable_world_model: bool = field(default=True)
 
 @dataclass
 class DataArguments:
