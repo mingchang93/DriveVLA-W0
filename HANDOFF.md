@@ -1012,6 +1012,56 @@ against 39 segments net -100 (120 of the 136 segments involved, largest single n
 | **PDMS** | 0.84066 | 0.83970 (−0.11 %) | 0.83999 (−0.08 %) | 0.83738 (−0.39 %) |
 | PDMS paired t | — | −0.43 | −0.30 | −1.41 |
 
+### Loss trajectory, 2B `aligned_bf16` vs `aligned_hif8_168`: EMA(β=0.9), 4000 steps
+
+Added 2026-11-13. Both runs log one `{'loss': …}` line per step, 4000 each, so the
+two series pair by step index:
+
+| source | path |
+|---|---|
+| bf16 | `/mnt/sfs_turbo/zyc/drivevla-w0-zyc/runs/aligned_bf16/train.log` |
+| HiF8-168 | `/mnt/sfs_turbo/zyc/drivevla-w0-zyc/runs/aligned_hif8_168/train.log` |
+
+Pairing check: `corr(loss_bf16, loss_168) = 0.9999`; sd of the step-wise difference
+0.0173 against sd of the loss 0.381 after warmup. The arms saw the same batch order,
+so what follows is the quantisation difference, not data order.
+
+Definitions, because the two "EMA" numbers are not interchangeable:
+
+- `rel_t = (L_168,t − L_bf16,t) / L_bf16,t` (signed, per step)
+- `E_1 = L_1`, `E_t = 0.9·E_{t−1} + 0.1·L_t` — EMA of the loss
+- **rel of the EMA** = `(E_168,t − E_bf16,t) / E_bf16,t` — this is the "EMA diff"
+- **EMA of the rel** = `EMA(rel_t)` — a different number, quoted below for contrast
+
+| quantity | value |
+|---|---|
+| **EMA(0.9) rel difference, mean over 4000 steps** | **+0.3045 %** |
+| EMA(0.9) rel, endpoint (step 4000) | +0.7500 % |
+| EMA(0.9) rel, min … max | −0.4327 % … +1.1114 % |
+| EMA(0.9) rel, mean over last 500 steps | +0.4748 % |
+| EMA(0.9) rel, mean over last 100 steps | +0.5731 % |
+| EMA of `rel_t`, mean / endpoint | +0.3081 % / +0.7463 % |
+| EMA(β=0.99) rel, mean / endpoint | +0.2723 % / +0.5380 % |
+| per-step `rel_t`, signed mean / absolute mean | +0.3108 % / 0.6728 % (ratio 2.17) |
+| per-step `rel_t`, median / p95 / p99 / max | 0.5501 % / 1.7593 % / 2.3030 % / 4.2399 % |
+| mean Δ in nats; `exp(Δ)−1` | +0.00579 nats; +0.5805 % |
+| EMA(0.9) steps outside the 0.25 % band | 2400 / 4000 (60.0 %) |
+| post-warmup (201–4000) EMA rel, mean | +0.3245 % |
+
+Drift, mean of `rel of the EMA` inside each window: 1–500 +0.1056 % → 501–1000
++0.2922 % → 1001–2000 +0.2168 % → 2001–3000 +0.3435 % → 3001–3500 +0.4428 % →
+3501–4000 +0.4748 %. Final printed loss 1.8703 (bf16) vs 1.8910 (168), i.e. +1.1068 %
+on the last step.
+
+Reading the loss: the offset is one-directional (HiF8 strictly higher,
+`abs/signed = 2.17`), it grows through training, and it fails the 0.25 % EMA band on
+60 % of steps. In absolute terms it is small — the step-wise difference is 4.5 % of
+the loss sd — so this is the same optimisation trajectory with a slight upward bias,
+not a diverged run. It is also *not* the explanation of the PDMS delta below: the
+2B bf16→168 PDMS shift is −0.56 % and is carried by hard-flag membership, while the
+7B 168 arm ends at a **larger** final-loss gap (+1.26 %, 1.6984 → 1.7198) yet a
+**smaller** PDMS shift (−0.08 %), so loss and PDMS are not proportional here.
+
 ### Reading, and what these numbers do not support
 
 - `aligned_hif8_196_dts` is the only arm in either family that moves PDMS outside
@@ -1048,7 +1098,8 @@ against 39 segments net -100 (120 of the 136 segments involved, largest single n
   (ii) quantisation noise acting as a regulariser in a short schedule (4000
   steps x 48 = 192 k draws over 103,288 windows, i.e. 1.86 passes per distinct
   window but only **1,192 distinct driving behaviours**) — consistent with the sign
-  pattern, higher teacher-forced loss (1.8844 vs 1.8703) yet fewer hard-flag
+  pattern, higher teacher-forced loss (1.8844 vs 1.8703; the 168 arm shows the same
+  sign at +0.30 % mean / +0.75 % final, see the loss-trajectory section) yet fewer hard-flag
   zeros; (iii) DTS scale refresh cutting late-training scale staleness — the
   cts -> dts swing on the same ignore list is 0.81026 -> 0.81971, but this presumes
   the refresh schedule ran. The single-knob contrasts from the scope table above
