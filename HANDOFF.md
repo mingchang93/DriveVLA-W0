@@ -243,6 +243,16 @@ same treatment the smoke builder got), and the PDMS scoring step.
 | 7 | 2026-11-12 | same, **HiF8 edge3** (`cts`, + layers 0-2/25-27 kept bf16) | same as exp 4 | `.../runs/night_hif8_edge3/train.log` | **PASS**: 4000/4000, `TRAIN_EXIT=0` 08:15:22, loss 1.8088; **navtest PDMS 67.55** |
 | 8 | 2026-11-12 | Stage-1 nuPlan 2VA trial, 50 steps, bf16 | `_full` pickle (5,385 segments), 8 NPUs x mb 12 (gb 96), `zero1.json`, 50 steps | `.../runs/pretrain_trial50/train.log` | **PASS**: 50/50, `TRAIN_EXIT=0`, final loss 4.729, 6.4 GB checkpoint |
 | 9 | 2026-11-12 | Stage-1 nuPlan 2VA trial, 50 steps, HiF8 | same as exp 8 + `HIF8=cts` | `.../runs/pretrain_trial50_hif8/train.log` | **KILLED**: SIGTERM ~2 min 45 s in, no checkpoint |
+| 10 | 2026-11-12 | 2B SFT, **bf16**, second recipe (`aligned` family) | same data/bs/zero1/seed as exp 4, but **lr 1e-5, warmup 200** (read off the run's own lr series) | `.../runs/aligned_bf16/train.log` | **PASS**: 4000/4000, 120 min, loss 1.8703; **navtest PDMS 81.20** |
+| 11 | 2026-11-12 | same, **HiF8 196** (`cts`, ignore `lm_head`) | as exp 10 | `.../runs/aligned_hif8_196/train.log` | **PASS**: 120 min, loss 1.8915; **PDMS 81.03** |
+| 12 | 2026-11-13 | same, **HiF8 168** (`cts`, ignore `lm_head,o_proj`) | as exp 10 | `.../runs/aligned_hif8_168/train.log` | **PASS**: 120 min, loss 1.8910; **PDMS 80.75** |
+| 13 | 2026-11-13 | same, **HiF8 132** (`cts`, + layers 0-2/25-27 bf16) | as exp 10 | `.../runs/aligned_hif8_132/train.log` | **PASS**: 120 min, loss 1.8816; **PDMS 80.98** |
+| 14 | 2026-11-13 | same, **HiF8-DTS 132** (`dts`, interval 10, same ignore as exp 13) | as exp 10 | `.../runs/aligned_hif8_132_dts/train.log` | **PASS**: 125 min, loss 1.8927; **PDMS 80.99** |
+| 15 | 2026-11-13 | same, **HiF8-DTS 196** (`dts`, interval 10, ignore `lm_head`) | as exp 10 | `.../runs/aligned_hif8_196_dts/train.log` | **PASS**: 129 min, loss 1.8844; **PDMS 81.97** (+0.95 % vs bf16, paired t 2.65) |
+| 16 | 2026-11-13 | 7B SFT, **bf16** (Qwen2.5-VL-7B-Instruct) | same recipe as exp 10, 8 NPUs x bs 6 (gb 48), 4000 steps, seed 42 | `.../runs/w7b_bf16/train.log` | **PASS**: 143 min, loss 1.6984; **PDMS 84.07** |
+| 17 | 2026-11-13 | same, **HiF8 132** (`cts`, + layers 0-2/25-27 bf16) | as exp 16 | `.../runs/w7b_hif8_132/train.log` | **PASS** on 2nd attempt (first `TRAIN_EXIT=1`), 139 min, loss 1.6932; **PDMS 83.97** |
+| 18 | 2026-11-13 | same, **HiF8 168** (`cts`, ignore `lm_head,o_proj`) | as exp 16 | `.../runs/w7b_hif8_168/train.log` | **PASS**: 137 min, loss 1.7198; **PDMS 84.00** |
+| 19 | 2026-11-13 | same, **HiF8 196** (`cts`, ignore `lm_head`) | as exp 16 | `.../runs/w7b_hif8_196/train.log` | **PASS**: 137 min, loss 1.7092; **PDMS 83.74** |
 
 Eval-smoke findings (all outside the model code):
 - The exported SFT checkpoint has no `video_preprocessor_config.json`, so
@@ -838,4 +848,208 @@ so the per-arm `run_pdm_score.log` and CSV are the record.
    to step 50.
 3. Repeat at least one arm with a different seed before quoting any PDMS delta.
 4. Finish the camera backfill (shards 20-199) against 1.9 T of free space.
+
+## 2026-11-13 — 2B `aligned` family (incl. HiF8-DTS) and 7B family: full navtest PDMS + sub-metrics
+
+Exp 10-19. Still produced in **ZYC's checkout** (`/mnt/sfs_turbo/zyc/DriveVLA-W0`,
+branch `zyc-hif8` @ `63898d1` + the same uncommitted HiF8/determinism edits).
+Every number below was read on 2026-11-13 09:59 CST from that box, not re-run.
+
+Per-arm records: `one_<tag>.log` (train summary + HBM), `runs/<tag>/train.log`,
+`runs/<tag>/trainer_state.json`, `eval_<tag>.log` (eval windows + final PDMS),
+per-scene CSVs at `navsim_workspace/exp/eval_<tag>_full/<timestamp>/<timestamp>.csv`,
+and `submetrics.py` (stdlib; reads those CSVs, intersects the scene sets, prints
+means and paired t against a chosen baseline).
+
+### The `aligned` / `w7b` families are not on the exp 4-7 recipe
+
+Read off each run's own lr series (`trainer_state.json` -> `log_history`):
+
+| family | first logged lr | peak lr | implied warmup |
+|---|---|---|---|
+| `night_*` (exp 4-7) | 1.6e-6 | 8e-5 | 50 steps |
+| `aligned_*`, `w7b_*` (exp 10-19) | 5e-8 | 1e-5 | 200 steps |
+
+So the **0.68 -> 0.81 level shift between the two families is not a quantisation
+result**, and the two families must not be compared with each other. Which knob
+drives the shift is **not established**: the run record carries the lr ladder
+only, and the launcher (`tools/zyc/run_sft_navsim.sh`, mtime 11-13 03:46) postdates
+the 11-12 arms so it cannot be cited for them. Everything below compares arms
+inside one family, where data order, seed, batch and schedule are shared.
+
+### 2B (Qwen3-VL-2B-Instruct): 4000 steps, 8 NPUs x bs 6 (gb 48), seed 42, zero1, world model on
+
+| Arm | HiF8 | Quantised Linear | Final loss | Train | Eval (cards) | mini | **full PDMS** | vs bf16 |
+|---|---|---|---|---|---|---|---|---|
+| `aligned_bf16` | off | 0 | 1.8703 | 120 min | 11-12 19:36-20:15 (4) | 0.5776 | **0.81203** | — |
+| `aligned_hif8_168` | `cts`, ignore `lm_head,o_proj` | 168 | 1.8910 | 120 min | 11-13 06:32-06:55 (8) | 0.5703 | **0.80748** | −0.56 % |
+| `aligned_hif8_132` | `cts`, + layers 0-2/25-27 bf16 | 132 | 1.8816 | 120 min | 11-13 07:29-07:54 (8) | 0.6168 | **0.80980** | −0.28 % |
+| `aligned_hif8_196` | `cts`, ignore `lm_head` | 196 | 1.8915 | 120 min | 11-12 19:36-20:15 (4) | 0.6113 | **0.81026** | −0.22 % |
+| `aligned_hif8_132_dts` | `dts`, interval 10, ignore as 132 | 132 | 1.8927 | 125 min | 11-13 09:18-09:42 (8) | 0.6525 | **0.80985** | −0.27 % |
+| `aligned_hif8_196_dts` | `dts`, interval 10, ignore `lm_head` | 196 | 1.8844 | 129 min | 11-13 09:11-09:35 (8) | 0.6438 | **0.81971** | **+0.95 %** |
+
+### 7B (Qwen2.5-VL-7B-Instruct): same recipe as the 2B aligned family, 4000 steps, gb 48, seed 42
+
+| Arm | HiF8 | Quantised Linear | Final loss | Train | Eval (cards) | mini | **full PDMS** | vs bf16 |
+|---|---|---|---|---|---|---|---|---|
+| `w7b_bf16` | off | 0 | 1.6984 | 143 min | 11-13 06:39-07:03 (8) | 0.7006 | **0.84066** | — |
+| `w7b_hif8_132` | `cts`, + layers 0-2/25-27 bf16 | 132 | 1.6932 | 139 min | 11-13 08:04-08:27 (8) | 0.7462 | **0.83970** | −0.11 % |
+| `w7b_hif8_168` | `cts`, ignore `lm_head,o_proj` | 168 | 1.7198 | 137 min | 11-13 06:14-06:37 (8) | 0.8067 | **0.83999** | −0.08 % |
+| `w7b_hif8_196` | `cts`, ignore `lm_head` | 196 | 1.7092 | 137 min | 11-13 06:09-06:32 (8) | 0.7499 | **0.83738** | −0.39 % |
+
+`w7b_hif8_132` needed two attempts (first `TRAIN_EXIT=1`, then a clean 4000/4000).
+
+### Quantisation scope, confirmed in code
+
+`utils/train_qwen_vla.py:346-380` turns `--hif8_apply` / `--hif8_ignore` into dotted
+substring lists (defaults `model.language_model.layers.` / `lm_head,o_proj`), and
+`models/quant/hif8_cts.py:163-193` / `hif8_dts.py:404-434` apply the identical rule:
+a `nn.Linear` is replaced only if its FQN contains an `apply` substring, contains no
+`ignore` substring (ignore wins), and `min(in_features, out_features) >= 64`;
+everything else stays bf16 and is only recorded as skipped.
+
+Consequence: `apply` never reaches the head, so **`lm_head` is bf16 in every arm**
+(168, 196, 132, both DTS arms, and all four 7B arms). The `lm_head` entry in the
+ignore list is a guard, not the effective switch. The arms differ as follows:
+
+| arm | ignore list | quantised | composition |
+|---|---|---|---|
+| 168 | `lm_head, o_proj` | 168 | 28 layers x 6 (q, k, v, gate, up, down) |
+| 196 | `lm_head` | 196 | 28 layers x 7 (adds **o_proj**) |
+| 132 | `lm_head, o_proj, layers.0.,1.,2.,25.,26.,27.` | 132 | 22 layers x 6 |
+
+So the 196 arms differ from 168 by quantising `o_proj` (28 matrices), **not** by
+touching `lm_head`; the 132 arms additionally keep layers 0-2 / 25-27 in bf16.
+The code's own self-check maps `{lm_head}` -> 196, `{lm_head,o_proj}` -> 168,
+`{lm_head,down_proj}` -> 168, `{lm_head,o_proj,down_proj}` -> 140; the 132 arms carry
+an extra ignore prefix so no expected count is asserted, which is why only the 168
+and 196 logs print `[HiF8] 数量自检通过`. DTS uses the same scope with `interval=10`
+(the code rejects `interval < 2`; 1 would be CTS) and `amax_sample_last` in
+`1 .. interval-1`.
+
+Within the 2B family this gives two clean single-knob contrasts: 168 -> 196 isolates
+`o_proj` quantisation (0.80748 -> 0.81026), and 196 -> 196_dts isolates the refresh
+schedule (0.81026 -> 0.81971).
+
+### Sub-metrics, 2B family, 12,146 common scenes, paired against `aligned_bf16`
+
+`python3 submetrics.py aligned_bf16 aligned_hif8_132 aligned_hif8_132_dts aligned_hif8_196 aligned_hif8_196_dts aligned_hif8_168`
+
+| sub-metric | bf16 | 132 | 132-dts | 196 | **196-dts** | 168 |
+|---|---|---|---|---|---|---|
+| NC no-fault collision (hard) | 0.97427 | 0.97402 (−0.03 %) | 0.97411 (−0.02 %) | 0.97328 (−0.10 %) | **0.97604 (+0.18 %)** | 0.97143 (−0.29 %) |
+| DAC drivable area (hard) | 0.90277 | 0.90252 (−0.03 %) | 0.90227 (−0.06 %) | 0.90482 (+0.23 %) | **0.91092 (+0.90 %)** | 0.90186 (−0.10 %) |
+| DDC driving direction (hard) | 0.96690 | 0.96814 (+0.13 %) | 0.96600 (−0.09 %) | 0.96801 (+0.12 %) | **0.96913 (+0.23 %)** | 0.96723 (+0.03 %) |
+| EP ego progress (soft) | 0.75325 | 0.75202 (−0.16 %) | 0.75007 (−0.42 %) | 0.75193 (−0.18 %) | **0.75937 (+0.81 %)** | 0.74930 (−0.52 %) |
+| TTC within bound (soft) | 0.92985 | 0.92631 (−0.38 %) | 0.92730 (−0.27 %) | 0.92467 (−0.56 %) | **0.93101 (+0.12 %)** | 0.92351 (−0.68 %) |
+| comfort (soft) | 0.99992 | 0.99984 | 0.99984 | 0.99992 | 1.00000 | 0.99984 |
+| **PDMS** | 0.81203 | 0.80980 (−0.28 %) | 0.80985 (−0.27 %) | 0.81026 (−0.22 %) | **0.81971 (+0.95 %)** | 0.80748 (−0.56 %) |
+| PDMS paired t | — | −0.76 | −0.74 | −0.60 | **+2.65** | −1.53 |
+
+### Sub-metrics, 7B family, same 12,146 scenes, paired against `w7b_bf16`
+
+`python3 submetrics.py w7b_bf16 w7b_hif8_132 w7b_hif8_168 w7b_hif8_196`
+
+| sub-metric | bf16 | 132 | 168 | 196 |
+|---|---|---|---|---|
+| NC | 0.98230 | 0.98226 (−0.00 %) | 0.98012 (−0.22 %) | 0.98123 (−0.11 %) |
+| DAC | 0.92475 | 0.92335 (−0.15 %) | 0.92417 (−0.06 %) | 0.92269 (−0.22 %) |
+| DDC | 0.97394 | 0.97575 (+0.19 %) | 0.97477 (+0.09 %) | 0.97452 (+0.06 %) |
+| EP | 0.77838 | 0.77749 (−0.11 %) | 0.77784 (−0.07 %) | 0.77615 (−0.29 %) |
+| TTC | 0.94385 | 0.94443 (+0.06 %) | 0.94410 (+0.03 %) | 0.94097 (−0.31 %) |
+| comfort | 1.00000 | 1.00000 | 1.00000 | 1.00000 |
+| **PDMS** | 0.84066 | 0.83970 (−0.11 %) | 0.83999 (−0.08 %) | 0.83738 (−0.39 %) |
+| PDMS paired t | — | −0.43 | −0.30 | −1.41 |
+
+### Reading, and what these numbers do not support
+
+- `aligned_hif8_196_dts` is the only arm in either family that moves PDMS outside
+  noise (+0.95 %, paired t 2.65). Every other arm is a small negative
+  (−0.08 … −0.56 %, |t| < 1.6); on 7B nothing beats bf16 in any direction, largest
+  loss −0.39 % on the 196 arm. In the 11-12 `night` family two arms (168, 196)
+  were above bf16, but that family is a different recipe, so it is only the
+  **sign pattern** that repeats (the `196` config above bf16 in both families), not
+  the magnitude.
+- **Where the +0.95 % actually comes from** (decomposition over the per-scene CSVs;
+  groups defined by whether any of NC/DAC/DDC is 0 in an arm):
+
+  | group | n | contribution to Δ PDMS |
+  |---|---|---|
+  | both clean | 9,903 | −0.00100 |
+  | bf16 vetoed, arm not | 801 | +0.05500 |
+  | arm vetoed, bf16 not | 665 | −0.04636 |
+  | both vetoed | 777 | +0.00005 |
+  | **total** | 12,146 | **+0.00768** |
+
+  Hard-flag zeros, bf16 -> arm, are NC 276 -> 254, DAC 1,181 -> 1,082,
+  DDC 226 -> 206, i.e. 1,578 -> 1,442 scenes carrying any veto: **136 fewer**.
+  That surplus is the entire delta. Inside the 9,903 scenes where neither arm is
+  vetoed the quantised arm is slightly **worse** (EP −0.0033, TTC +0.0003,
+  comfort 0.0000), so the all-scene EP +0.81 % above is a membership effect — which
+  scenes carry a veto — not better progress where both arms drive cleanly.
+- The other three arms show the same two large opposing groups nearly cancelling
+  (196: 781 / 757; 132-dts: 771 / 762; 168: 763 / 786) and are likewise negative
+  inside both-clean scenes (−0.0019 … −0.0023). So "a quantised arm beats bf16"
+  is here a statement about 136 scenes out of 12,146 where bf16 takes a DAC/NC hit
+  and the quantised arm does not — not about a better policy.
+- Candidate causes for that surplus, **none established**: (i) training noise —
+  one run per arm, so the run-to-run spread of the veto count is unknown;
+  (ii) quantisation noise acting as a regulariser in a ~1.9-epoch schedule (4000
+  steps x 48 = 192 k samples over 103,288 scenes) — consistent with the sign
+  pattern, higher teacher-forced loss (1.8844 vs 1.8703) yet fewer hard-flag
+  zeros; (iii) DTS scale refresh cutting late-training scale staleness — the
+  cts -> dts swing on the same ignore list is 0.81026 -> 0.81971, but this presumes
+  the refresh schedule ran. The single-knob contrasts from the scope table above
+  (168 -> 196 = `o_proj` quantisation, +0.35 pt; 196 -> 196_dts = refresh, +1.17 pt)
+  put almost all of the swing on the refresh, not on the extra 28 matrices.
+  (i) vs (ii) separate with a second seed; (iii) needs the mechanism test.
+- **The DTS gain is not attributable yet.** ZYC's own `verify_dts.py` (11-13 09:45)
+  records that the refresh events never reached `train.log` (the `hif8_dts.py`
+  logger is unconfigured), so "delayed scaling is better" and "the schedule never
+  fired, so it quantised less" are both live. The mechanism test (optimizer
+  post-step hook, scales constant inside a window, refreshes == steps // interval)
+  was written but had produced no output file by 09:59.
+- One seed, one run per arm, no error bar. The 11-12 section's finding is confirmed
+  for these arms: a PDMS delta of this size is the net imbalance of ~800-scene
+  hard-flag groups swinging ±0.05 each, so a +0.95 % needs a second seed before it
+  is quoted as a gain.
+- `mini` (21 scenes) is not a comparison: it ranks 168 last on 2B and first on 7B.
+  It only proves the checkpoint loads and the chain runs.
+- Every eval line prints `valid results: 0`; the CSVs hold 12,146 real scenes and
+  reproduce the logged PDMS exactly, so it is a harness log quirk — cause not
+  established (the 11-12 four-arm run printed the same).
+- PDMS scores the action policy only: `denoiser.*`/`vae.*` load as unexpected keys
+  at inference, so the world model is exercised in training, not in this metric.
+
+### How these evals were run
+
+`bash tools/zyc/eval_ckpt.sh <runs/<tag>> <tag> full 8` — inference with
+`torchrun --nproc_per_node=8 inference/qwen/inference_action_navsim_vava.py
+--test_data_pkl navsim_workspace/navtest_qwen_2va.pkl --token_yaml
+navsim_workspace/navtest_tokens.yaml --norm_stats_path
+configs/normalizer_navsim_trainval/norm_stats.json --cur_frame_idx 3 --future_nums 8
+--model_max_length 1400 --use_previous_actions --bf16 --save_gt`, then
+`run_pdm_score.py train_test_split=navtest agent=emu_vla_agent` from
+`/mnt/sfs_turbo/zyc/miniconda3/envs/navsim`. Same pkl / token yaml / metric cache
+as the 11-12 run (pkl and yaml 11-11 09:38, cache 11-11 09:17), 22 min per full
+eval at 8 cards vs 38 min at 2 cards per arm.
+
+### Box state while this was recorded (11-13 09:59 CST)
+
+- No ZYC training or eval process alive on a54; nothing queued after the 09:42 eval.
+- `diskguard.log` still ticking (15.3 T free of 21 T); no extraction running.
+- The nuPlan data pipeline is blocked at step 3a: `pipeline/step3a_analyze_displacement_distribution.py:336`
+  calls `input()` for the threshold choice, so it dies with `EOFError` under a
+  non-interactive shell. Step 2 finished first (15,895 actions + waypoints).
+
+### Open (this section)
+
+1. Second seed on at least `aligned_hif8_196_dts` and `aligned_bf16` before quoting
+   +0.95 % — the veto decomposition (above) shows the delta is 136 scenes of hard-flag
+   surplus, and one seed cannot separate that from run noise.
+2. Finish `verify_dts.py` and record its output: the 196-dts result is not
+   interpretable until the refresh schedule is shown to have run.
+3. Publish the HiF8/DTS/determinism delta — still uncommitted in ZYC's checkout.
+4. Give step 3a a non-interactive threshold argument so the pipeline can run
+   unattended.
 
