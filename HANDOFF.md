@@ -931,6 +931,57 @@ Within the 2B family this gives two clean single-knob contrasts: 168 -> 196 isol
 `o_proj` quantisation (0.80748 -> 0.81026), and 196 -> 196_dts isolates the refresh
 schedule (0.81026 -> 0.81971).
 
+### The dataset's window design sets the resolution of every comparison here
+
+Loaded both pickles on 2026-11-13 (host `python3` for the eval pickle,
+`docker exec zyc-w0 python` for the 335 MB train pickle):
+
+| pickle | entries | segments | logs | windows/segment | windows/log |
+|---|---|---|---|---|---|
+| `navsim_emu_vla_256_144_trainval_pre_1s.pkl` | 103,288 | **1,192** | 162 | mean 86.7 (1 … 1,080) | 638 |
+| `navtest_qwen_2va.pkl` (ours) | 12,146 | **136** | 44 | mean 89.3 (8 … 568) | 276 |
+| `navsim_emu_vla_256_144_test_pre_1s.pkl` (zjj, official) | 12,146 | — | — | — | — |
+
+So "12,146 scenes" and "103,288 scenes" are **window counts**, not independent
+scenes: they are 136 and 1,192 NAVSIM scenes respectively, each expanded into ~87-89
+sliding windows. The windows inside a segment sit 0.5 s apart (`pre_1s_action` is the
+`action` array shifted by 2 rows, i.e. 2 Hz) and each carries a 12-step (6 s) horizon,
+so **adjacent windows share 11 of 12 future steps and 3 of 4 history images**. Segment
+and log sets of the two splits are disjoint (0 overlap on both), and our navtest pkl
+matches zjj's official test pkl entry-for-entry (nearest-neighbour max-abs action
+distance <= 0.017 over 150 sampled entries; only ordering and float32 rounding differ).
+
+What that does to the 196-dts vs bf16 comparison:
+
+| unit of analysis | n | mean Δ PDMS | t |
+|---|---|---|---|
+| windows (naive, what `submetrics.py` prints) | 12,146 | +0.00768 | 2.65 |
+| segment means | 136 | +0.00714 | 1.87 |
+| log means | 44 | +0.00693 | 1.46 |
+| log block bootstrap (4,000 resamples) | 44 | +0.00765, 95 % CI [+0.0010, +0.0145] | — |
+
+Window-level ICC of the PDMS delta is 0.01, design effect ~1.9, so clustering
+inflates the window-level t by ~1.4x rather than by sqrt(89). One SE at segment
+level is **0.38 PDMS points**, i.e. the eval resolves ~1-point differences at ~2.5 sigma
+and cannot resolve anything under ~0.5. All the non-DTS arms (-0.22 … -0.56 %) sit
+inside 1.2 SE. The +0.95 % survives the coarser units but only marginally (p ~ 0.06
+at segment level, 0.15 at log level) — it moves from "outside noise" to "borderline"
+and needs the second seed.
+
+Estimator choice moves the verdict on the same two checkpoints, so quote the unit:
+window-level t 2.65 (p 0.008); cluster-robust by segment t 2.50; cluster bootstrap on
+the window-weighted mean 95 % CI [+0.0016, +0.0137] (P(<=0) = 0.008); equal weight per
+scene CI [-0.0002, +0.0146] (P(<=0) = 0.030); sign-flip on scene means p 0.061; log
+level p 0.158. Segment size does not bias the delta (corr(log windows, delta) = +0.03),
+so the spread between estimators is variance, not a length effect. With a scene-level
+delta SD of 0.044 and 136 scenes, 80 % power is only reached at a **1.1-point** PDMS
+difference — a 0.8-point effect is expected to land on the boundary, which is exactly
+where this one sits.
+
+The hard-flag surplus behaves the same way: 68 segments net +236 vetoed scenes
+against 39 segments net -100 (120 of the 136 segments involved, largest single net
++14), so it is a broad, small shift rather than a handful of drives.
+
 ### Sub-metrics, 2B family, 12,146 common scenes, paired against `aligned_bf16`
 
 `python3 submetrics.py aligned_bf16 aligned_hif8_132 aligned_hif8_132_dts aligned_hif8_196 aligned_hif8_196_dts aligned_hif8_168`
@@ -994,8 +1045,9 @@ schedule (0.81026 -> 0.81971).
   and the quantised arm does not — not about a better policy.
 - Candidate causes for that surplus, **none established**: (i) training noise —
   one run per arm, so the run-to-run spread of the veto count is unknown;
-  (ii) quantisation noise acting as a regulariser in a ~1.9-epoch schedule (4000
-  steps x 48 = 192 k samples over 103,288 scenes) — consistent with the sign
+  (ii) quantisation noise acting as a regulariser in a short schedule (4000
+  steps x 48 = 192 k draws over 103,288 windows, i.e. 1.86 passes per distinct
+  window but only **1,192 distinct driving behaviours**) — consistent with the sign
   pattern, higher teacher-forced loss (1.8844 vs 1.8703) yet fewer hard-flag
   zeros; (iii) DTS scale refresh cutting late-training scale staleness — the
   cts -> dts swing on the same ignore list is 0.81026 -> 0.81971, but this presumes
@@ -1045,8 +1097,8 @@ eval at 8 cards vs 38 min at 2 cards per arm.
 ### Open (this section)
 
 1. Second seed on at least `aligned_hif8_196_dts` and `aligned_bf16` before quoting
-   +0.95 % — the veto decomposition (above) shows the delta is 136 scenes of hard-flag
-   surplus, and one seed cannot separate that from run noise.
+   +0.95 % — and report it with a segment- or log-level interval, not the window-level
+   t (see the window-design subsection: 12,146 windows are 136 segments / 44 drives).
 2. Finish `verify_dts.py` and record its output: the 196-dts result is not
    interpretable until the refresh schedule is shown to have run.
 3. Publish the HiF8/DTS/determinism delta — still uncommitted in ZYC's checkout.
