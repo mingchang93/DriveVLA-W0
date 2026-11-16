@@ -76,7 +76,7 @@ def main(base_dir, arms):
                 rest = [j for j in range(n) if j != i]
                 for k in range(n):
                     for S in itertools.combinations(rest, k):
-                        va = [av[i] if j == i or j in S else bv[j] for j in range(n)]
+                        va = [av[j] if j == i or j in S else bv[j] for j in range(n)]
                         vb = [av[j] if j in S else bv[j] for j in range(n)]
                         share[i] += wt[S] * (score(va) - score(vb))
         gap = (arm_mean - base_mean)
