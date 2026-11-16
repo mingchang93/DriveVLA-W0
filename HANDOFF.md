@@ -1420,16 +1420,91 @@ Readings that follow:
   moves DAC -0.095 / +0.031 / +0.142 (above base by 132) while TTC stays -0.148 / -0.184 /
   -0.185. The residue of a narrow quantised pretrain is shorter accepted TTC with drivable
   behaviour restored.
-- **Flat trajectory error and moving PDMS are compatible.** ADE 0.472-0.476 / FDE
-  0.498-0.505 across all eight arms, from own post-processing of `action` vs
-  `action_gt_denorm`, with the error almost entirely longitudinal (lateral 0.031 mean on
-  every arm). PDMS does not score those poses: `pdm_score.py` builds a proposal and runs it
-  through `PDMSimulator` / LQR, so the scored path is a tracking simulation sampled at 10 Hz
-  against agent boxes and the drivable map.
+- **Flat trajectory error and moving PDMS are compatible.** ADE 0.809-0.828 / FDE
+  1.762-1.803 across all eight arms, from own post-processing of `action` vs
+  `action_gt_denorm`, with the error predominantly longitudinal (lateral 0.214-0.219 m
+  against longitudinal 0.729-0.750 m). PDMS does not score that planned path:
+  `pdm_score.py` builds a proposal from it and runs it through `PDMSimulator` / LQR, so the
+  scored path is a tracking simulation sampled at 10 Hz against agent boxes and the
+  drivable map. See the erratum below: these are the corrected numbers, and the ones
+  quoted before it were computed on a misaligned window.
 
 Still missing to settle the diagonal: **PT-168 + bf16 SFT** and **PT-132 + bf16 SFT**. Both
 stages move together in every right-hand column, so the improvement 196 -> 168 -> 132 cannot
 currently be assigned to pretrain scope rather than SFT scope.
+
+### Seven requested metrics, and an erratum on the earlier ADE / FDE
+
+**The erratum first.** Every ADE / FDE / head / LDist figure quoted in this file before this
+subsection was computed on the wrong thing, in two independent ways. The dumps are per-step
+SE2 increments, not poses: `tools/pickle_gen/pickle_generation_navsim_pre_1s.py` builds
+`relative_action_list` as `rel_all[j, j+1]`, commented "only relative", and its `pre_1s`
+variant shifts that list by 2 frames, which fixes the frame spacing at 0.5 s. So
+
+1. increments expressed in a rotating frame have to be composed
+   (`pose[k+1] = pose[k] + R(theta[k]) . (dx, dy)`) before an error means anything;
+   differencing them raw measures a displacement difference, not a position error;
+2. the GT window is 12 increments spanning `[i-3, i+8]`, so its first three rows are *past*
+   intervals and the 8-step predicted horizon aligns with `gt[3:11]`, not `gt[0:8]`.
+
+The alignment is measured, not assumed: a shift search over 200 scenes gives a mean |d dx| of
+0.450 m at shift 0 against 0.230 m at shift +3. Both defects are fixed in
+`tools/zyc/traj_metrics.py` (`87f4235`), which now carries a `--selftest` covering
+composition, alignment and a turning case.
+
+Corrected, all eight arms, 12,146 scenes each. ADE / FDE / LDist in metres over the 4 s
+horizon, head in degrees:
+
+| arm | ADE | FDE | head | LDist | lateral |
+|---|---|---|---|---|---|
+| bf16/bf16 | 0.813 | 1.767 | 1.585 | 0.734 | 0.217 |
+| bf16/196 | 0.809 | 1.762 | 1.587 | 0.730 | 0.216 |
+| bf16/168 | 0.812 | 1.764 | 1.580 | 0.734 | 0.214 |
+| bf16/132 | 0.813 | 1.766 | 1.582 | 0.734 | 0.216 |
+| 196/bf16 | 0.828 | 1.803 | 1.590 | 0.750 | 0.217 |
+| 196/196 | 0.821 | 1.786 | 1.587 | 0.741 | 0.219 |
+| 168/168 | 0.813 | 1.762 | 1.578 | 0.736 | 0.214 |
+| 132/132 | 0.809 | 1.763 | 1.588 | 0.729 | 0.217 |
+
+The ranking and the spread are unchanged from the invalid version, so no conclusion in this
+section moves; the magnitudes roughly double and the lateral error is 0.217 m, not 0.031 m.
+One reading does change shape: `196/bf16`, the worst PDMS arm, is also the worst on ADE,
+FDE, head and LDist, which the broken version flattened into 0.472-0.476.
+
+The seven metrics for the two arms that were asked for (`tools/zyc/metrics7.py`):
+
+| metric | bf16/bf16 | bf16/DTS-168 | paired |
+|---|---|---|---|
+| ADE (m) | 0.8134 | 0.8118 | -0.0016, t -0.44 |
+| FDE (m) | 1.7672 | 1.7642 | -0.0030, t -0.37 |
+| Head Error (deg) | 1.5852 | 1.5803 | -0.0049, t -0.44 |
+| LDist (m) | 0.7339 | 0.7338 | -0.0001, t -0.04 |
+| Agent Coll | 1.375 % (167) | 1.490 % (181) | 62 vs 48 discordant, p 0.215 |
+| HB Coll | 0.000 % (0) | 0.000 % (0) | — |
+| Lane Cross | 6.356 % (772) | 6.068 % (737) | 253 vs 288 discordant, p 0.144 |
+
+Paired over the same scenes: t for the continuous rows, exact McNemar for the binary ones.
+Nothing here separates the arms. The only row with any motion is Lane Cross, and it points
+against the PDMS ordering. Three definitional notes are needed to read the binary rows:
+
+- **Agent Coll is `no_at_fault_collisions == 0.0`, and the column is ternary, not binary.**
+  `pdm_scorer.py:340` assigns `0.0` when the struck object is in `AGENT_TYPES` and `0.5` when
+  it is not, taking the minimum over the collisions of a proposal. `AGENT_TYPES` is
+  `{BICYCLE, EGO, PEDESTRIAN, VEHICLE}`, so `0.0` is exactly "vehicle, pedestrian or
+  cyclist" and the `0.5` rows -- 32 on the base arm, 26 on the 168 arm -- are static or
+  unknown objects. Counting `NC < 1` instead would give 199 vs 207 scenes, a different
+  metric; the mean-based rate, `100 - NC`, is 1.507 % / 1.597 % and mixes the two.
+- **HB Coll is degenerate at any defensible threshold.** It is 0 at 3 m/s^2 and also 0 at
+  2 m/s^2, for a mechanical reason: predicted deceleration has almost no mass above 2 m/s^2
+  (p99 = 1.99 on both arms; max 3.12 base / 2.98 arm), and among the 167 base collision
+  scenes the largest predicted deceleration is 1.99. At reachable thresholds 1.5 m/s^2 gives
+  10 base / 8 arm (p 0.727) and 1.0 m/s^2 gives 37 / 29 (p 0.185). The ground-truth
+  trajectories in the same dumps reach 9.32 m/s^2 with 29 scenes at or above 3.0, so the data
+  contains emergency braking that the model never plans. Why the predicted range stops near
+  3 is **not established**; the action tokenizer's quantile range is the candidate and it is
+  untested.
+- **Lane Cross is the drivable-map proxy**, `100 * (1 - mean DAC)`, i.e. 772 and 737 scenes.
+  It is not a painted-lane-line test and a normal lane change does not trip it.
 
 ### How these evals were run
 
