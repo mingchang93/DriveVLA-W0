@@ -35,7 +35,7 @@ def main(dirs):
         nc = out[0]
         print("%-30s %5d %7.3f %7.3f %7.3f %7.3f %7.3f %7.3f %6.2f" % (
             (os.path.basename(d.rstrip("/")).replace("eval_", "").replace("_full", ""),
-             len(rows)) + tuple(out[:6]) + (100.0 - nc,)))
+             len(rows), out[6], out[0], out[1], out[2], out[3], out[4], 100.0 - nc)))
 
 
 if __name__ == "__main__":
