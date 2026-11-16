@@ -1156,3 +1156,312 @@ eval at 8 cards vs 38 min at 2 cards per arm.
 4. Give step 3a a non-interactive threshold argument so the pipeline can run
    unattended.
 
+## 2026-11-16 — Pretrain x SFT precision 2x2, sub-metrics, EMA loss, and two SFT stages killed mid-run
+
+All four arms share the same outer recipe: nuPlan 2VA pretrain 8000 steps at lr 5e-5,
+gbs 96 (mb 12 x 8), then SFT 4000 steps at lr 1e-5, bs 6 x 8, seed 42, then full
+navtest (12,146 scenes / 36,438 json, PDMS v1). The pretrain-lr sweep that produced
+the 5e-5 setting is recorded in ZYC's `drivevla-w0-hif8-handoff.md` (08 section), not
+here — this section only covers the precision cross.
+
+"HiF8" below means the DTS variant with `interval=10` and `ignore=[lm_head,o_proj]`,
+which quantises **196 of 497 Linear layers** (301 left in bf16).
+
+### The four arms
+
+| cell | SFT run dir | pretrain init | chain / driver log |
+|---|---|---|---|
+| **1** BF/BF | `runs/sft_ptlr5e5` | `runs/pt_ptlr5e5` | `chain_ptlr5e5.log` |
+| **2** BF/HiF | `runs/sft_bfpt5e5_dts196sft` | `runs/pt_ptlr5e5` (same as 1) | `sftpt_bfpt5e5_dts196sft.log` |
+| **3** HiF/BF | `runs/sft_dtspt5e5_bfsft` | `runs/pt_dts196_lr5e5` | `sftpt_dtspt5e5_bfsft.log` |
+| **4** HiF/HiF | `runs/sft_dts196_lr5e5` | `runs/pt_dts196_lr5e5` | `chain_dts196_lr5e5.log` |
+
+Cells 2 and 4 reuse their column partner's pretrain checkpoint byte-for-byte, so the
+pretrain stage has only **two** distinct trajectories (1=2 and 3=4) while SFT has four.
+
+### Results
+
+| Pretrain \ SFT | bf16 | HiF8-DTS-196 |
+|---|---|---|
+| **bf16** | **1** 0.85473 | **2** 0.85499 |
+| **HiF8-DTS-196** | **3** 0.84810 | **4** 0.85044 |
+
+| metric | 1 BF/BF | 2 BF/HiF | 3 HiF/BF | 4 HiF/HiF |
+|---|---|---|---|---|
+| NC | 98.493 | 98.469 | 98.242 | 98.337 |
+| DAC | 93.644 | 93.776 | 93.150 | 93.430 |
+| DDC | 97.855 | 97.884 | 97.859 | 97.921 |
+| EP | 79.151 | 79.168 | 78.517 | 78.776 |
+| TTC | 95.077 | 94.937 | 94.764 | 94.607 |
+| comfort | 100.000 | 100.000 | 99.984 | 100.000 |
+| **PDMS** | **85.473** | **85.499** | **84.810** | **85.044** |
+
+The four single-knob contrasts (paired over the same 12,146 scenes, `submetrics.py`):
+
+| contrast | variable isolated | dPDMS | paired t |
+|---|---|---|---|
+| 2 - 1 | quantise SFT only, bf16 pretrain | +0.03 | +0.13 |
+| 4 - 3 | quantise SFT only, HiF8 pretrain | +0.23 | +1.10 |
+| 3 - 1 | quantise pretrain only, bf16 SFT | -0.66 | -2.73 |
+| 4 - 2 | quantise pretrain only, HiF8 SFT | -0.46 | -1.95 |
+
+### Reading
+
+- **Quantising the SFT stage is free.** Both SFT-only contrasts are positive and
+  statistically nil (t +0.13, +1.10); per-factor movement is under 0.3 points on
+  every metric. This closes the SFT-side quantisation axis rather than opening it.
+- **Quantising the pretrain stage is the only directional cost**, and it is broad:
+  EP -0.39 to -0.63, DAC -0.35 to -0.49, TTC -0.31 to -0.33, NC -0.13 to -0.25 all
+  move together, DDC does not move (+0.04 / +0.06, noise). So it is not a comfort or
+  direction artefact: the quantised-pretrain model drives slightly less far and
+  clips slightly more.
+- Magnitude is 0.46-0.66 points, about **one noise floor** (+-0.006 from the three
+  2e-4 replicates). One seed per cell, no repeats. The paired t is legitimate as a
+  within-split comparison of these two trained models; it is not a statement about
+  seed-to-seed variation. Report this as a trend, and **do not quote 0.85499 as
+  beating 0.85473** — they are tied (+0.03, t +0.13).
+- Practical rule for the pipeline: keep HiF8 out of nuPlan pretraining, put it
+  anywhere in SFT. Nothing here changes the lr finding; all four cells sit at
+  pretrain lr 5e-5 and all four are 4.5-5 points above the 2e-4 arms.
+
+### Loss trajectory: EMA(beta=0.9), action_loss
+
+Definitions as in the 11-13 section: `E_1 = L_1`, `E_t = 0.9 E_{t-1} + 0.1 L_t`,
+deviation reported as rel of the EMA against cell 1. Losses are `action_loss` from
+each run's `train.log` (the `ross_loss` field in the same dict was not used).
+
+Pretrain, two distinct trajectories:
+
+| EMA @ step | 1 BF | 3 HiF8-DTS-196 | rel |
+|---|---|---|---|
+| 500 | 1.7456 | 1.7501 | +0.26 % |
+| 1000 | 1.5758 | 1.5898 | +0.89 % |
+| 2000 | 1.3157 | 1.3100 | -0.43 % |
+| 4000 | 1.2196 | 1.2319 | +1.00 % |
+| 6000 | 1.2060 | 1.2034 | -0.22 % |
+| 8000 | 1.1165 | 1.1257 | +0.82 % |
+| mean, last 500 | 1.1185 | 1.1231 | +0.41 % |
+
+Signed mean over all 8000 steps +0.31 %, absolute mean 0.47 %; the sign flips six
+times across the run.
+
+SFT, four arms:
+
+| EMA @ step | 1 BF->BF | 2 BF->HiF | 3 HiF->BF | 4 HiF->HiF |
+|---|---|---|---|---|
+| 100 | 1.6779 | 1.6777 | 1.6786 | 1.6798 |
+| 200 | 1.5427 | 1.5443 | 1.5620 | 1.5628 |
+| 500 | 1.4234 | 1.4271 | 1.4204 | 1.4243 |
+| 1000 | 1.4483 | 1.4487 | 1.4418 | 1.4430 |
+| 2000 | 1.4147 | 1.4127 | 1.4241 | 1.4266 |
+| 3000 | 1.2242 | 1.2309 | 1.2496 | 1.2466 |
+| 4000 | 1.1917 | 1.1922 | 1.2062 | 1.2054 |
+| mean, last 500 | 1.2052 | 1.2101 | 1.2195 | 1.2230 |
+
+Relative EMA deviation against cell 1 (%):
+
+| | @100 | @500 | @2000 | @4000 | last 500 | signed mean | abs mean |
+|---|---|---|---|---|---|---|---|
+| cell 2 | -0.01 | +0.26 | -0.14 | **+0.05** | +0.41 | +0.17 | 0.22 |
+| cell 3 | +0.04 | -0.21 | +0.67 | **+1.22** | +1.21 | +0.83 | 0.95 |
+| cell 4 | +0.11 | +0.07 | +0.85 | **+1.15** | +1.51 | +0.96 | 1.06 |
+
+- The SFT loss ranks the arms **exactly as PDMS does**: cells 1 and 2 (1.1917 / 1.1922
+  -> 85.47 / 85.50) below cell 4 (1.2054 -> 85.04) below cell 3 (1.2062 -> 84.81).
+  The split is inherited from the pretrain stage and is already visible at **SFT step
+  200** (+1.25 / +1.30 % for cells 3 / 4), i.e. the quantised pretrain hands SFT a
+  measurably worse starting point before the optimiser has done any work.
+- **The pretrain loss does not detect the damage.** Cell 3's 8000-step EMA stays
+  inside +-1 % of cell 1 and changes sign six times, yet the same checkpoint
+  fine-tuned identically loses 0.66 PDMS. So pretrain action loss cannot be used as
+  an early-stopping or acceptance signal for a quantised pretrain, and the 2x2 PDMS
+  ranking cannot be predicted from the 8k-step curve. This is the opposite of the
+  pretrain-lr sweep, where loss and PDMS moved together.
+- The shared bump (minimum near step 1000, rise to 2000, drop at 3000) appears in all
+  four SFT curves, so it is a property of the SFT recipe / data order, not of an arm.
+
+### Two SFT stages were killed by SIGTERM this morning
+
+| chain | host | SFT killed at | last milestone |
+|---|---|---|---|
+| `chain_dts132_lr5e5` | a53 | 09:04:39 | SFT step 50 |
+| `chain_dts168_lr5e5` | a54 | 09:06:09 | SFT step 50 |
+
+Both `runs/sft_dts{132,168}_lr5e5/train.log` end in `got signal: 15` +
+`TRAIN_EXIT=1`, and the chain shells died with them (neither chain log has its
+stage-2 exit-code line). Stage-1 checkpoints (1569 tensors / 2 shards / 6.77 GB each)
+survived in `runs/pt_dts{132,168}_lr5e5`.
+
+**Cause not established.** Two different hosts, 90 s apart, with no matching entry in
+any local log: `diskguard.log` shows 14 TB free and `暂停=0` throughout, and both
+`release_*.log`s had finished at 08:44. These two are the "HiF8 pretrain + HiF8 SFT"
+arms at 168 / 132 granularity, i.e. not part of the 2x2 above.
+
+### SFT-side quantisation granularity: three placements, all inside noise
+
+The 132 arm's 08:43 eval produced only 5,292 of 36,438 json and was marked FAILED;
+both were re-scored by a 4-card eval-only rerun on a54 the same morning.
+
+| arm | SFT quantisation | PDMS |
+|---|---|---|
+| `bfpt5e5_dts168sft` | DTS, ignore `lm_head,o_proj` | 0.85552 |
+| `bfpt5e5_dts196sft` | DTS, ignore `lm_head,o_proj` (196 Linear) | 0.85499 |
+| `bfpt5e5_dts132sft` | DTS, ignore `lm_head,o_proj,layers.0-2,layers.25-27` | 0.85286 |
+
+All three start from the same bf16 pretrain checkpoint (`pt_ptlr5e5`) and differ only
+in SFT quantisation scope. Spread 0.8529-0.8555 = 0.27 points, every arm within
+|t| < 1.7 of cell 1's 0.85473, and 0.85552 is not a new best for the same reason
+0.85499 is not. Together with the 2x2 this says the SFT-side quantisation axis is
+flat, so further granularity sweeps there are not worth 8-card time.
+
+### All eight arms: the corrected table, and where each gap comes from
+
+Extends the three-placement subsection above to every arm with a full navtest score on the
+box, including the two the circulated table omits: `dtspt5e5_bfsft` (pretrain-only
+quantisation) and the 168 / 132 HiF8-HiF8 diagonal. Machine-generated from the per-scene
+CSVs, nothing re-scored — `tools/zyc/navsim_exp_stats.py <exp dirs>` for the components,
+`tools/zyc/pdm_attrib.py <base> <arms>` for the split.
+
+Units: PDMS and every component are means x100 over the 12,146 scenes. The CSV holds 12,147
+rows because `run_pdm_score.py` appends a `token=average` summary row; averaging a set
+together with its own mean leaves the mean unchanged, so no cell here is biased by it. A gap
+quoted in **pd** is one unit of that x100 scale, i.e. 85.473 -> 85.552 is +0.079 pd.
+
+| metric | type | bf16/bf16 | bf16/196 | bf16/168 | bf16/132 | 196/bf16 | 196/196 | 168/168 | 132/132 |
+|---|---|---|---|---|---|---|---|---|---|
+| NC | hard, mult | 98.49333 | 98.46863 | 98.40277 | 98.34102 | 98.24222 | 98.33690 | 98.35748 | 98.39865 |
+| DAC | hard, mult | 93.64400 | 93.77573 | 93.93216 | 93.61107 | 93.15001 | 93.42994 | 93.64400 | 93.77573 |
+| DDC | weight 0 | 97.85526 | 97.88408 | 97.85114 | 97.95818 | 97.85938 | 97.92113 | 97.92524 | 97.99111 |
+| EP | soft 5/12 | 79.15055 | 79.16768 | 79.18537 | 78.93541 | 78.51746 | 78.77616 | 78.99305 | 79.07991 |
+| TTC | soft 5/12 | 95.07657 | 94.93660 | 94.82957 | 94.92014 | 94.76371 | 94.60728 | 94.48378 | 94.55788 |
+| comfort | soft 2/12 | 100.00000 | 100.00000 | 99.99177 | 100.00000 | 99.98353 | 100.00000 | 99.98353 | 100.00000 |
+| **PDMS** | | **85.47303** | **85.49854** | **85.55184** | **85.28577** | **84.81018** | **85.04436** | **85.19759** | **85.35076** |
+| relative to base | | — | +0.030 % | +0.092 % | -0.219 % | **-0.776 %** | -0.502 % | -0.322 % | -0.143 % |
+| dPDMS (pd) | | 0.0000 | +0.0255 | +0.0788 | -0.1873 | **-0.6629** | -0.4287 | -0.2754 | -0.1223 |
+
+**The component means do not multiply back to PDMS, so do not reconstruct the last three
+rows by hand.** Feeding the column means into `NC * DAC * (5*EP + 5*TTC + 2*comfort) / 12`
+gives 82.33 for the base arm against the measured 85.47. The formula holds per scene, and the
+components correlate strongly (a scene that loses NC usually loses DAC too), so the mean of
+the per-scene products sits 3.1 pd above the product of the means. The same nonlinearity is
+why the first-order leverage split below sums to +0.095 pd against a real +0.079, and why the
+Shapley column, not the leverage column, is the one to quote when the gap is a few hundredths
+of a pd.
+
+Four corrections against the circulated version, none of which changes a digit of its seven
+present columns:
+
+1. **`196/bf16` was missing.** It is the only arm that isolates pretrain quantisation behind
+   a bf16 SFT, and it is the lowest score in the family (-0.66 pd). Without it the table
+   halves the pretrain cost.
+2. **comfort typo**: last column read `100000`, measured 100.00000.
+3. **DDC is not "hard".** The score is `NC * DAC * (5*EP + 5*TTC + 2*comfort) / 12` with
+   `driving_direction_weight = 0.0` in `PDMScorerConfig`, so DDC is reported but enters no
+   score. Keep the row, draw nothing from it. Formula checked per scene: it reproduces the
+   `score` column on 12,146 of 12,147 rows to 1e-9, the one miss being the average row.
+4. The three right-hand columns are a **diagonal**, not a grid: each pairs with the same SFT
+   granularity, so no off-diagonal cell (e.g. 196 pretrain + 132 SFT) exists.
+
+Paired against `bf16/bf16` over the same scenes, on the per-scene `score` column:
+
+| arm | dPDMS (pd) | t | 95 % CI (pd) |
+|---|---|---|---|
+| bf16/196 | +0.0255 | +0.13 | -0.373 … +0.424 |
+| bf16/168 | **+0.0788** | **+0.40** | **-0.309 … +0.467** |
+| bf16/132 | -0.1873 | -0.89 | -0.598 … +0.224 |
+| 196/bf16 | **-0.6629** | **-2.73** | **-1.138 … -0.187** |
+| 196/196 | -0.4287 | -1.82 | -0.891 … +0.033 |
+| 168/168 | -0.2754 | -1.18 | -0.733 … +0.183 |
+| 132/132 | -0.1223 | -0.52 | -0.581 … +0.337 |
+
+Only `196/bf16` clears |t| = 2. Everything on the bf16-pretrain row sits at |t| < 0.9 with a
+CI several times its own point estimate.
+
+**Why PDMS can rise while three of five components fall.** 1 percentage point of each
+component is worth, in pd (partial derivative at base values):
+
+| NC | DAC | EP | TTC | comfort |
+|---|---|---|---|---|
+| 85.75 | **88.96** | 38.44 | 38.44 | 15.37 |
+
+So for `bf16/168` the DAC gain of +0.288 pp is worth +0.256 pd while the TTC loss of
+-0.247 pp costs only -0.095 pd and NC's -0.091 pp costs -0.078 pd: a mid-sized DAC gain
+outweighs equal-sized EP / TTC losses by 2.3x. A score increase here is a property of the
+weighting, not evidence that the arm drives better.
+
+Exact Shapley split of each gap across the five scored components (sums to dPDMS by
+construction, pd):
+
+| arm | dPDMS | NC | DAC | EP | TTC | comfort |
+|---|---|---|---|---|---|---|
+| bf16/196 | +0.026 | -0.025 | +0.105 | -0.007 | -0.048 | 0.000 |
+| bf16/168 | +0.079 | -0.044 | **+0.204** | -0.015 | -0.065 | -0.001 |
+| bf16/132 | -0.187 | -0.075 | -0.006 | -0.061 | -0.045 | 0.000 |
+| 196/bf16 | -0.663 | -0.129 (20 %) | **-0.334 (50 %)** | -0.124 (19 %) | -0.073 (11 %) | -0.003 |
+| 196/196 | -0.429 | -0.097 (23 %) | -0.095 (22 %) | -0.089 (21 %) | -0.148 (35 %) | 0.000 |
+| 168/168 | -0.275 | -0.069 (25 %) | +0.031 (helps) | -0.052 (19 %) | **-0.184 (67 %)** | -0.002 |
+| 132/132 | -0.122 | -0.053 (43 %) | **+0.142 (helps)** | -0.026 (22 %) | **-0.185 (152 %)** | 0.000 |
+
+Readings that follow:
+
+- **`bf16/168` is a tie, not a win.** +0.079 pd with t = +0.40 and a CI six times the point
+  estimate; scene-level it is 4,052 higher, 4,206 lower, 3,888 identical, i.e. net -154
+  scenes with the mean positive only because the wins are individually larger. Quoting
+  0.85552 as beating 0.85473 is the same error as quoting 0.85499.
+- **The DAC and TTC moves are not one tradeoff.** corr(dDAC, dTTC) = +0.055 over the scenes,
+  with 511 scenes moving on DAC only, 326 on TTC only, 30 on both. Naming a mechanism
+  ("takes more margin, accepts shorter TTC") would be invention; what is measured is two
+  disjoint scene sets moving independently.
+- **The pretrain cost is drivable-compliance-led, not collision-led** in `196/bf16` (DAC half
+  the gap), and it is the one arm with a paired scene-level collision increase: 95 scenes
+  collide only with the arm vs 63 only with the base (McNemar p = 0.013), and 438 vs 378 on
+  drivable-area (p = 0.039, borderline across six tests).
+- **Narrowing the quantisation changes the shape, not just the size.** 196 -> 168 -> 132
+  moves DAC -0.095 / +0.031 / +0.142 (above base by 132) while TTC stays -0.148 / -0.184 /
+  -0.185. The residue of a narrow quantised pretrain is shorter accepted TTC with drivable
+  behaviour restored.
+- **Flat trajectory error and moving PDMS are compatible.** ADE 0.472-0.476 / FDE
+  0.498-0.505 across all eight arms, from own post-processing of `action` vs
+  `action_gt_denorm`, with the error almost entirely longitudinal (lateral 0.031 mean on
+  every arm). PDMS does not score those poses: `pdm_score.py` builds a proposal and runs it
+  through `PDMSimulator` / LQR, so the scored path is a tracking simulation sampled at 10 Hz
+  against agent boxes and the drivable map.
+
+Still missing to settle the diagonal: **PT-168 + bf16 SFT** and **PT-132 + bf16 SFT**. Both
+stages move together in every right-hand column, so the improvement 196 -> 168 -> 132 cannot
+currently be assigned to pretrain scope rather than SFT scope.
+
+### How these evals were run
+
+Full navtest via `bash tools/zyc/eval_ckpt.sh <runs/<tag>> <tag> full 8` (8 cards,
+~22 min per arm); the two re-scores used a 4-card eval-only variant, two arms in
+parallel on a54's 8 cards, ~31 min each. Sub-metrics and paired t from
+`python3 submetrics.py <base> <arm>...` run under
+`/mnt/sfs_turbo/zyc/miniconda3/envs/navsim/bin/python3`, which reads the per-scene CSVs
+under `navsim_workspace/exp/eval_<tag>_full/*/*.csv`. All six eval directories hold
+36,438 json (12,146 x 3), so every number above is the full split.
+
+### Box state while this was recorded (11-16 10:02 CST)
+
+- a54: the two 4-card eval-only jobs had just finished; no ZYC chain or queue alive.
+- a53: no ZYC process, and `npu-smi` reports 8 `Ascend950DT` chips with 0 % AICore and
+  0 MB HBM. On 11-15 the same host reported 8 `python3` processes at ~62 GB per card,
+  so either the box or its driver view changed; not investigated.
+- a52 and a51: another tenant's `VLLMWorker_DP` on all 8 cards each (91 GB / 83 GB).
+- a3 / a31 / a38: other tenants' serving containers, ~63 GB HBM resident per chip with
+  no process rows visible from the host. Do not treat these as idle.
+- a21 / a22: unreachable (`Permission denied (publickey)`).
+
+### Open (this section)
+
+1. Second seed on cells 1 and 3 before the pretrain-quantisation cost is quoted: at
+   0.46-0.66 points it is ~1 noise floor, and the entire claim rests on that one pair.
+2. Find the cause of the 09:04 / 09:06 SIGTERM. Two hosts 90 s apart with no log entry
+   is either a deliberate stop or an external sweeper; until it is identified, any
+   relaunch can be killed the same way.
+3. Relaunch the 132 / 168 SFT stages from their surviving stage-1 checkpoints if that
+   pretrain-quantisation placement still matters — nothing is queued for them.
+4. The pretrain loss being blind to the quantisation cost means a cheap acceptance
+   test for a quantised pretrain needs to be something other than its own loss curve;
+   a short SFT from the checkpoint is the obvious candidate and is untested.
+
