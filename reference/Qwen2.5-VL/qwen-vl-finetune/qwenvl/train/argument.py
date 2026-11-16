@@ -18,6 +18,16 @@ class ModelArguments:
     # 确定性：HiF8 与 bf16 两条臂必须只差量化这一个变量
     deterministic: bool = field(default=True)
     remove_dropout: bool = field(default=True)
+    # HiF8 量化："" 关闭；"cts" 用 current-tensor-scaling
+    hif8: str = field(default="")
+    # 量化范围，逗号分隔的 fqn 子串。默认照客户规格：
+    #   只量化 language_model 的 28 层，排除 lm_head 与 o_proj
+    #   （见 /mnt/sfs_turbo/zyc/hif8/hif8-cts-code-map.md 第 4 节，应为 168 个）
+    hif8_apply: str = field(default="model.language_model.layers.")
+    hif8_ignore: str = field(default="lm_head,o_proj")
+    # DTS（延迟缩放）的刷新间隔：每 interval 步重算一次 amax 并刷新 scale，
+    # 其余步复用缓存的 scale。仅在 --hif8 dts 时生效；cts 每步现算，与它无关。
+    hif8_interval: int = field(default=10)
     # 阶段开关:True=阶段一(联合损失,带扩散世界模型);False=阶段二(只动作损失)
     enable_world_model: bool = field(default=True)
 

@@ -78,6 +78,12 @@ class RossStableDiffusionXOmni(nn.Module):
         encoder_hidden_states = encoder_hidden_states.repeat(bsz, 1, 1)
 
         # interpolate
+        # z 来自 rearrange(...)，是非 contiguous 视图。开确定性后 F.interpolate 走
+        # torch._decomp 的分解实现，它会按输入的 suggest_memory_format 推断输出格式，
+        # 对非 contiguous 输入会推成 channels_last，然后调
+        # contiguous(memory_format=channels_last) —— NPU 的 contiguous 只支持默认格式。
+        # 这里先强制成标准 contiguous，只重排内存、不改数值。
+        z = z.contiguous()
         if z.shape[2] != noisy_model_input.shape[2] or z.shape[3] != noisy_model_input.shape[3]:
             z = F.interpolate(z, size=noisy_model_input.shape[-2:], mode="bilinear").contiguous()
         _, _, z_h, z_w = z.shape

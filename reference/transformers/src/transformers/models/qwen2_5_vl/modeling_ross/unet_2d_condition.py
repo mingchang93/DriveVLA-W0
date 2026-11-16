@@ -897,7 +897,9 @@ class UNet2DConditionModel(
             # This would be a good case for the `match` statement (Python 3.10+)
             is_mps = sample.device.type == "mps"
             if isinstance(timestep, float):
-                dtype = torch.float32 if is_mps else torch.float64
+                # NPU 不支持 float64，会静默 cast 成 float32 并告警。
+                # timestep 取值在 [0, 1000) 的整数范围，float32 可精确表示，降精度无损。
+                dtype = torch.float32
             else:
                 dtype = torch.int32 if is_mps else torch.int64
             timesteps = torch.tensor([timesteps], dtype=dtype, device=sample.device)
