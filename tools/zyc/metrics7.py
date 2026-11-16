@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """The seven navtest metrics, per arm, from the score csv + inference dumps.
 
-  ADE / FDE / head / LDist   post-processing of `action` vs `action_gt_denorm`
-                             via traj_metrics.scene_metrics: 8 ego-frame poses
-                             at 0.5 s. LDist = longitudinal axis (x).
+  ADE / FDE / head / LDist   from the increments in `action` vs `action_gt_denorm`,
+                             composed into poses by traj_metrics.scene_metrics
+                             (8 predicted steps x 0.5 s, aligned to gt rows 3..10).
+                             LDist = longitudinal axis (x).
   Agent Coll                 100 * (1 - mean no_at_fault_collisions), i.e. NAVSIM's
                              collision-with-agent test on the simulated rollout.
   Lane Cross                 100 * (1 - mean drivable_area_compliance). Proxy: an
                              ego-polygon vs drivable-map violation, NOT a test for
                              crossing a painted lane line.
-  HB Coll                    collision AND the predicted trajectory decelerates by
-                             >= HB_THRESHOLD m/s^2 between two 0.5 s samples.
-                             This is one operationalisation of "hard-braking
-                             collision", not a benchmark constant -- the threshold
-                             is a choice, and changing it rescales the count.
+  HB Coll                    collision AND a predicted deceleration of at least
+                             HB_THRESHOLD m/s^2 between two 0.5 s steps (speed =
+                             |(dx,dy)| / 0.5). This is one operationalisation of
+                             "hard-braking collision", not a benchmark constant --
+                             the threshold is a choice, and changing it rescales
+                             the count.
 
 Usage: metrics7.py <exp dir> <json_output dir> [<exp dir> <json_output dir> ...]
 Reads both sources read-only. Prints one row per arm, then paired comparisons
@@ -29,16 +31,15 @@ import sys
 from traj_metrics import scene_metrics
 
 HB_THRESHOLD = 3.0  # m/s^2
-DT = 0.5            # s, dump spacing
+DT = 0.5            # s between dumped steps
 
 
 def max_decel(pred):
     """Largest deceleration of the predicted trajectory, m/s^2 (>= 0)."""
-    if len(pred) < 3:
+    if len(pred) < 2:
         return 0.0
-    x = [p[0] for p in pred]
-    v = [x[0] / DT] + [(x[i] - x[i - 1]) / DT for i in range(1, len(x))]
-    return max([0.0] + [-(v[i] - v[i - 1]) / DT for i in range(1, len(v))])
+    v = [math.hypot(p[0], p[1]) / DT for p in pred]
+    return max([0.0] + [(v[i - 1] - v[i]) / DT for i in range(1, len(v))])
 
 
 def load_csv(exp_dir, cols):

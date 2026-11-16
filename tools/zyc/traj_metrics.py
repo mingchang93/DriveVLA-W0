@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
 """Open-loop trajectory metrics from the per-scene VLA inference dumps.
 
-Pred and GT are the 8 cumulative ego-frame poses (x, y, theta) at 0.5 s spacing
-that inference/qwen/inference_action_navsim_vava.py writes as `action` /
-`action_gt_denorm`. Nothing is re-inferred: this is post-processing of jsons.
+Pred and GT are *not* poses. Each row of `action` / `action_gt_denorm` is one
+step's SE2 increment (dx, dy, dtheta) expressed in that step's ego frame --
+`tools/pickle_gen/pickle_generation_navsim_pre_1s.py` builds it as
+`rel_all[j, j+1]` "only relative", and the `pre_1s` variant shifts by 2 frames,
+so the spacing is 0.5 s. 8 predicted increments = 4 s of future motion.
 
-  ADE    mean_t ||p_t - g_t||            FDE   ||p_8 - g_8||
-  head   mean_t |dtheta| (deg)           headF |dtheta| at step 8 (deg)
-  lon    mean_t |x_p - x_g| (m)          lonF  |x_p - x_g| at step 8 (m)   <- LDist
-  lat    mean_t |y_p - y_g| (m)          latF  |y_p - y_g| at step 8 (m)
+The GT window is 12 increments spanning [i-3, i+8], so gt rows 0-2 are the three
+*past* intervals and the predicted horizon lines up with gt rows 3..10. Comparing
+pred[i] against gt[i] instead is off by 1.5 s; measured by shift search over 200
+scenes, mean |dx| error is 0.450 m at shift 0 and 0.230 m at shift +3.
+
+Increments are composed into poses before any error is taken, because a
+displacement in a rotated frame is not a displacement in the ego frame:
+
+  pose[0] = (0,0,0),  pose[k+1] = pose[k] + R(theta[k]) . (dx,dy),  theta[k+1] = theta[k] + dtheta
+
+  ADE    mean_t ||p_t - g_t|| for t = 1..8
+  FDE    ||p_8 - g_8||
+  head   mean_t |theta_p - theta_g| (deg)      headF  same at t = 8
+  lon    mean_t |x_p - x_g| (m)                lonF   same at t = 8   <- LDist
+  lat    mean_t |y_p - y_g| (m)                latF   same at t = 8
   lbias  mean_t (y_p - y_g)  (m, signed; + = pred right of GT in ego frame)
-
-x is the ego longitudinal axis and y the lateral one in these dumps.
 
 Usage: traj_metrics.py <out dir> <json_output dir> [<dir> ...]
 Prints one row per arm and writes per-scene values to <out dir>/<arm>.csv.
@@ -19,16 +30,35 @@ Reads the arms' json_output dirs read-only; nothing is written beside them.
 """
 import csv
 import json
+import math
 import os
 import sys
 
 STEPS = 8
+GT_OFFSET = 3   # gt rows 0-2 are past intervals; the horizon starts at row 3
 D2R = 3.141592653589793 / 180.0
 
 
+def to_poses(steps):
+    """Compose per-step (dx, dy, dtheta) increments into ego-frame poses."""
+    x = y = th = 0.0
+    out = [(0.0, 0.0, 0.0)]
+    for dx, dy, dth in steps:
+        c, s = math.cos(th), math.sin(th)
+        x += c * dx - s * dy
+        y += s * dx + c * dy
+        th += dth
+        out.append((x, y, th))
+    return out
+
+
 def scene_metrics(pred, gt):
-    n = min(len(pred), len(gt), STEPS)
-    d = [(pred[i][0] - gt[i][0], pred[i][1] - gt[i][1], pred[i][2] - gt[i][2]) for i in range(n)]
+    n = min(len(pred), len(gt) - GT_OFFSET, STEPS)
+    if n < 1:
+        raise ValueError("trajectory too short")
+    pp = to_poses(pred[:n])[1:]
+    gp = to_poses(gt[GT_OFFSET:GT_OFFSET + n])[1:]
+    d = [(pp[i][0] - gp[i][0], pp[i][1] - gp[i][1], pp[i][2] - gp[i][2]) for i in range(n)]
     ade = sum((dx * dx + dy * dy) ** 0.5 for dx, dy, _ in d) / n
     fde = (d[-1][0] ** 2 + d[-1][1] ** 2) ** 0.5
     head = sum(abs(dd[2]) for dd in d) / n / D2R
@@ -39,6 +69,27 @@ def scene_metrics(pred, gt):
     lat_f = abs(d[-1][1])
     lat_bias = sum(dd[1] for dd in d) / n
     return ade, fde, head, head_f, lon, lon_f, lat, lat_f, lat_bias
+
+
+def selftest():
+    """Straight-line cases with hand-computable answers."""
+    past = [[9.0, 9.0, 0.9]] * GT_OFFSET          # gt rows 0-2 are past, must be ignored
+    future = [[1.0, 0.0, 0.0]] * STEPS            # 1 m per 0.5 s, straight
+    gt = past + future
+    ade, fde, head, _hf, lon, _lf, lat, _lf2, _lb = scene_metrics(future, gt)
+    assert (ade, fde, head, lon, lat) == (0.0, 0.0, 0.0, 0.0, 0.0), "identical horizon must be zero"
+
+    off = [[1.5, 0.0, 0.0]] * STEPS               # +0.5 m per step -> position error 0.5*t
+    ade, fde, _h, _hf, lon, _lf, _l, _l2, _lb = scene_metrics(off, gt)
+    assert abs(ade - 0.5 * 4.5) < 1e-12, ("ADE", ade)
+    assert abs(fde - 4.0) < 1e-12, ("FDE", fde)
+    assert abs(lon - 0.5 * 4.5) < 1e-12 and abs(lat) < 1e-12, ("lon/lat", lon, lat)
+
+    turn = [[1.0, 0.0, 0.1]] * STEPS              # 0.1 rad per step
+    _a, _f, head, head_f, _lo, _lof, _la, _laf, _lbi = scene_metrics(turn, gt)
+    assert abs(head - 0.1 * 4.5 / D2R) < 1e-9, ("head", head)
+    assert abs(head_f - 0.8 / D2R) < 1e-9, ("head_f", head_f)
+    print("selftest ok")
 
 
 def q(v, p):
@@ -95,4 +146,7 @@ def main(out_dir, dirs):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2:])
+    if "--selftest" in sys.argv:
+        selftest()
+    else:
+        main(sys.argv[1], sys.argv[2:])
