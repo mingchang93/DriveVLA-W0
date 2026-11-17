@@ -1471,53 +1471,59 @@ section moves; the magnitudes roughly double and the lateral error is 0.217 m, n
 One reading does change shape: `196/bf16`, the worst PDMS arm, is also the worst on ADE,
 FDE, head and LDist, which the broken version flattened into 0.472-0.476.
 
-The seven metrics for the three arms that were asked for (`tools/zyc/metrics7.py`, run
-2026-11-17 on the three score CSVs + json dumps):
+The seven metrics for the non-DTS (CTS) arms that were asked for (`tools/zyc/metrics7.py`,
+run 2026-11-17 on the 11-13 `aligned` family, which is the only family where the
+quantisation is CTS and nothing in the pretrain path is quantised):
 
-| metric | bf16/bf16 | bf16/168 | 168/168 | bf16/168 vs base | 168/168 vs base |
+| metric | bf16 | cts-168 | cts-196 | cts-168 vs base | cts-196 vs base |
 |---|---|---|---|---|---|
-| ADE (m) | 0.8134 | 0.8118 | 0.8134 | -0.0016, t -0.44 | -0.0001, t -0.01 |
-| FDE (m) | 1.7672 | 1.7642 | 1.7625 | -0.0030, t -0.37 | -0.0047, t -0.41 |
-| Head Error (deg) | 1.5852 | 1.5803 | 1.5778 | -0.0049, t -0.44 | -0.0074, t -0.44 |
-| LDist (m) | 0.7339 | 0.7338 | 0.7363 | -0.0001, t -0.04 | +0.0023, t +0.48 |
-| Agent Coll | 1.375 % (167) | 1.490 % (181) | 1.490 % (181) | 62 vs 48 discordant, p 0.215 | 83 vs 69 discordant, p 0.292 |
-| HB Coll | 0.000 % (0) | 0.000 % (0) | 0.000 % (0) | — | — |
-| Lane Cross | 6.356 % (772) | 6.068 % (737) | 6.356 % (772) | 253 vs 288 discordant, p 0.144 | 375 vs 375 discordant, p 1.000 |
+| ADE (m) | 1.0495 | 1.0400 | 1.0491 | -0.0095, t -1.40 | -0.0004, t -0.06 |
+| FDE (m) | 2.0930 | 2.0932 | 2.1025 | +0.0003, t +0.02 | +0.0095, t +0.69 |
+| Head Error (deg) | 2.0312 | 2.0439 | 2.0611 | +0.0128, t +0.67 | +0.0299, t +1.57 |
+| LDist (m) | 0.9455 | 0.9357 | 0.9438 | -0.0098, t -1.44 | -0.0017, t -0.25 |
+| Agent Coll | 2.272 % (276) | 2.528 % (307) | 2.330 % (283) | 169 vs 138, p 0.087 | 142 vs 135, p 0.719 |
+| HB Coll | 0.008 % (1) | 0.000 % (0) | 0.000 % (0) | 0 vs 1, p 1.000 | 0 vs 1, p 1.000 |
+| Lane Cross | 9.723 % (1,181) | 9.814 % (1,192) | 9.518 % (1,156) | 619 vs 608, p 0.775 | 599 vs 624, p 0.493 |
 
-Sources: `navsim_workspace/exp/eval_ptlr5e5_full` (= bf16/bf16, PDMS 85.47303),
-`eval_bfpt5e5_dts168sft_full` (= bf16/168, 85.55184), `eval_dts168_lr5e5_full`
-(= 168/168, 85.19759), each with its own `eval_<tag>_full/json_output`, 12,146 scenes per arm.
-`168/168` is the full diagonal arm (DTS-168 pretrain + DTS-168 SFT), not the DTS-196 arm of
-the 2x2.
+Sources: `navsim_workspace/exp/eval_aligned_bf16_full` (PDMS 81.20328),
+`eval_aligned_hif8_168_full` (80.74802), `eval_aligned_hif8_196_full` (81.02600), each with
+its own `eval_<tag>_full/json_output`, 12,146 scenes per arm. Run dirs `runs/aligned_bf16`,
+`runs/aligned_hif8_168`, `runs/aligned_hif8_196`; their launch lines read `hif8=off`,
+`hif8=cts ignore=lm_head,o_proj`, `hif8=cts ignore=lm_head`, i.e. no DTS anywhere.
+
+**This trio is not the 11-16 2x2/diagonal and must not be compared with it.** The `aligned`
+family is a different SFT recipe (lr 1e-5, 200-step warmup, no pretrain stage at all), which
+is why every absolute number here is ~0.2 m worse than the chain arms above; only the paired
+columns are meaningful.
 
 Paired over the same scenes: t for the continuous rows, exact McNemar for the binary ones.
-Nothing here separates the arms, in either direction. All four continuous rows move by less
-than 0.008 m / 0.008 deg with |t| < 0.5. Agent Coll is 14 scenes above base on **both**
-quantised arms (167 -> 181, p 0.215 / 0.292), while Lane Cross improves for bf16/168
-(-0.288 pp, p 0.144) yet is identical for 168/168 (same 772 scenes, 375 vs 375 discordant,
-p 1.000), which does not match that arm's -0.275 pd PDMS gap. So the open-loop trajectory
-metrics neither confirm nor rank the PDMS ordering of these three arms. Three definitional
+The ordering does match PDMS (168 lowest of the three, 196 in between), but the resolution is
+thin: 168 is 0.010 m shorter in ADE and LDist at |t| ~ 1.4, takes 31 more agent collisions
+(169 vs 138 discordant, p 0.087) and 11 more DAC zeroes; 196 moves head error the wrong way
+(+0.030 deg, t +1.57) while recovering both DAC (-0.21 pp, p 0.493) and collisions
+(p 0.719). Nothing crosses |t| = 2 and no binary row reaches p < 0.08. Three definitional
 notes are needed to read the binary rows:
 
 - **Agent Coll is `no_at_fault_collisions == 0.0`, and the column is ternary, not binary.**
   `pdm_scorer.py:340` assigns `0.0` when the struck object is in `AGENT_TYPES` and `0.5` when
   it is not, taking the minimum over the collisions of a proposal. `AGENT_TYPES` is
   `{BICYCLE, EGO, PEDESTRIAN, VEHICLE}`, so `0.0` is exactly "vehicle, pedestrian or
-  cyclist" and the `0.5` rows -- 32 on the base arm, 26 on bf16/168, 37 on 168/168 -- are
-  static or unknown objects. Counting `NC < 1` instead would give 199 / 207 / 218 scenes, a
-  different metric; the mean-based rate, `100 - NC`, is 1.507 % / 1.597 % / 1.643 % and mixes
+  cyclist" and the `0.5` rows -- 73 on the base arm, 80 on cts-168, 83 on cts-196 -- are
+  static or unknown objects. Counting `NC < 1` instead would give 349 / 387 / 366 scenes, a
+  different metric; the mean-based rate, `100 - NC`, is 2.573 % / 2.857 % / 2.672 % and mixes
   the two.
-- **HB Coll is degenerate at any defensible threshold.** It is 0 at 3 m/s^2 and also 0 at
-  2 m/s^2, for a mechanical reason: predicted deceleration has almost no mass above 2 m/s^2
-  (p99 = 1.99 on all three arms; max 3.12 base / 2.98 bf16-168 / 3.04 168-168), and among the
-  167 base collision scenes the largest predicted deceleration is 1.99, as it also is over the
-  181 collision scenes of each quantised arm. At reachable thresholds, for base vs bf16/168,
-  1.5 m/s^2 gives 10 / 8 (p 0.727) and 1.0 m/s^2 gives 37 / 29 (p 0.185). The ground-truth
-  trajectories in the same dumps reach 9.32 m/s^2 with 29 scenes at or above 3.0, so the data
-  contains emergency braking that the model never plans. Why the predicted range stops near
-  3 is **not established**; the action tokenizer's quantile range is the candidate and it is
-  untested.
-- **Lane Cross is the drivable-map proxy**, `100 * (1 - mean DAC)`, i.e. 772 / 737 / 772
+- **HB Coll is close to degenerate on these arms too.** It needs a collision *and* a predicted
+  deceleration of at least 3 m/s^2, and predicted deceleration has almost no mass up there
+  (p99 = 1.99 on all three arms; max 4.40 base / 4.59 cts-168 / 4.97 cts-196). The single base
+  event comes from a 4.40 m/s^2 collision scene; among the 307 and 283 collision scenes of the
+  quantised arms the largest predicted deceleration is only 2.18 and 2.17, so they cannot
+  produce one at any threshold above that. Lower thresholds: 1.5 m/s^2 gives 11 / 5 / 16
+  (p 0.146 / 0.332) and 1.0 m/s^2 gives 34 / 33 / 38 (p 1.000 / 0.665). The ground truth in the
+  same dumps reaches 9.32 m/s^2 with 45 scenes at or above 3.0 over all 12 GT rows (29 over the
+  8 predicted rows), so the data contains emergency braking that the model never plans. Why the
+  predicted range stops near 3-5 is **not established**; the action tokenizer's quantile range
+  is the candidate and it is untested.
+- **Lane Cross is the drivable-map proxy**, `100 * (1 - mean DAC)`, i.e. 1,181 / 1,192 / 1,156
   scenes. It is not a painted-lane-line test and a normal lane change does not trip it.
 
 ### How these evals were run
@@ -1528,10 +1534,15 @@ parallel on a54's 8 cards, ~31 min each. Sub-metrics and paired t from
 `python3 submetrics.py <base> <arm>...` run under
 `/mnt/sfs_turbo/zyc/miniconda3/envs/navsim/bin/python3`, which reads the per-scene CSVs
 under `navsim_workspace/exp/eval_<tag>_full/*/*.csv`. The seven metrics come from
-`python3 metrics7.py <exp dir> <json_output dir>` per arm, in the same base-first order
-(`eval_ptlr5e5_full`, `eval_bfpt5e5_dts168sft_full`, `eval_dts168_lr5e5_full`), which is
-what the paired columns above are. All eight eval directories hold
-36,438 json (12,146 x 3), so every number above is the full split.
+`python3 metrics7.py <exp dir> <json_output dir>` per arm, base first
+(`eval_aligned_bf16_full`, `eval_aligned_hif8_168_full`, `eval_aligned_hif8_196_full` for the
+CTS table; the same command with the chain dirs reproduces the DTS trio), which is what the
+paired columns above are. The three `aligned_*` directories hold 24,292 json each
+(12,146 x 2: dump + `_agent_human_traj_diff`, no PNG) and the eight chain directories
+36,438 (12,146 x 3), so every number above is the full split. `metrics7.py` needed one fix
+on 2026-11-17: its exact McNemar converted `2.0 ** n` to float and raised `OverflowError`
+whenever the discordant pairs exceeded 1,024 (Lane Cross on these arms has ~1,200), so the
+denominator is now the integer `1 << n`.
 
 ### Box state while this was recorded (11-16 10:02 CST)
 
