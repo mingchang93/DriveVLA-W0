@@ -1656,9 +1656,16 @@ cells (8.66 / 4.98 / 2.81 pd), while every DTS cost is inside it.
 | arm | NC | DAC | DDC | EP | TTC | comfort | PDMS | t vs base |
 |---|---|---|---|---|---|---|---|---|
 | bf16/bf16 (base) | 0.98493 | 0.93644 | 0.97855 | 0.79151 | 0.95077 | 1.00000 | 0.85473 | — |
+| bf16/DTS-132 | 0.98341 | 0.93611 | 0.97958 | 0.78935 | 0.94920 | 1.00000 | 0.85286 | -0.89 |
+| bf16/DTS-168 | 0.98403 | 0.93932 | 0.97851 | 0.79185 | 0.94830 | 0.99992 | 0.85552 | +0.40 |
+| bf16/DTS-196 | 0.98469 | 0.93776 | 0.97884 | 0.79168 | 0.94937 | 1.00000 | 0.85499 | +0.13 |
 | bf16/CTS-132 | 0.98353 | 0.93767 | 0.97876 | 0.79071 | 0.94879 | 1.00000 | 0.85402 | -0.35 |
 | bf16/CTS-168 | 0.98419 | 0.93735 | 0.97966 | 0.79119 | 0.94879 | 1.00000 | 0.85435 | -0.18 |
 | bf16/CTS-196 | 0.98390 | 0.93628 | 0.97913 | 0.78993 | 0.94871 | 0.99992 | 0.85289 | -0.89 |
+| DTS-132/DTS-132 | 0.98399 | 0.93776 | 0.97991 | 0.79080 | 0.94558 | 1.00000 | 0.85351 | -0.52 |
+| DTS-168/DTS-168 | 0.98357 | 0.93644 | 0.97925 | 0.78993 | 0.94484 | 0.99984 | 0.85198 | -1.18 |
+| DTS-196/DTS-196 | 0.98337 | 0.93430 | 0.97921 | 0.78776 | 0.94607 | 1.00000 | 0.85044 | -1.82 |
+| DTS-196/bf16 SFT | 0.98242 | 0.93150 | 0.97859 | 0.78517 | 0.94764 | 0.99984 | 0.84810 | -2.73 |
 | CTS-132/CTS-132 | 0.95620 | 0.87650 | 0.95818 | 0.71027 | 0.90145 | 0.99992 | **0.76743** | -26.74 |
 | CTS-168/CTS-168 | 0.97736 | 0.91742 | 0.97394 | 0.76529 | 0.93389 | 1.00000 | 0.82626 | -10.60 |
 | CTS-196/CTS-196 | 0.96945 | 0.90260 | 0.96925 | 0.74582 | 0.91808 | 1.00000 | 0.80314 | -17.75 |
@@ -1666,7 +1673,63 @@ cells (8.66 / 4.98 / 2.81 pd), while every DTS cost is inside it.
 Row 2's components are flat: every column is within 0.21 pp of base and the largest |t| is
 1.58 (NC on CTS-132, DDC on CTS-168). Row 3 moves **every** component in the wrong direction
 at |t| >= 4.4, which rules out a comfort, direction or single-scenario artefact — these are
-uniformly worse drivers.
+uniformly worse drivers. The three DTS row-3 arms and `DTS-196/bf16 SFT` are the comparison
+columns here: they lose at most 0.66 pd (t >= -2.73), an order of magnitude short of the CTS
+row-3 losses.
+
+### Trajectory and event metrics (independent of the simulator)
+
+`metrics7.py` reads `action` and `action_gt_denorm` from each arm's `json_output`, composes
+8 increments of 0.5 s into poses aligned to gt rows 3..10, and reports: ADE / FDE (m, mean
+per-step and final displacement), head (mean absolute heading error, deg), LDist (mean
+absolute longitudinal error, m), AgentColl / LaneCross (100 x the fraction of scenes with
+`no_at_fault_collisions` / `drivable_area_compliance` < 0.5, i.e. NAVSIM's own binary tests
+read off the score csv), and HBColl (collision with a predicted decel >= 3 m/s^2).
+
+This matters because PDMS scores an LQR rollout of the plan, not the plan itself, so a second
+measurement on the raw prediction is genuinely independent. It reproduces the same ordering:
+
+| arm | ADE m | FDE m | head deg | LDist m | AgentColl | HBColl | LaneCross |
+|---|---|---|---|---|---|---|---|
+| bf16/bf16 (base) | 0.8134 | 1.7672 | 1.5852 | 0.7339 | 1.375 % | 0.000 % | 6.356 % |
+| bf16/DTS-132 | 0.8132 | 1.7661 | 1.5816 | 0.7344 | 1.515 % | 0.000 % | 6.389 % |
+| bf16/DTS-168 | 0.8118 | 1.7642 | 1.5803 | 0.7338 | 1.490 % | 0.000 % | 6.068 % |
+| bf16/DTS-196 | 0.8090 | 1.7617 | 1.5870 | 0.7297 | 1.416 % | 0.000 % | 6.224 % |
+| bf16/CTS-132 | 0.8084 | 1.7553 | 1.5758 | 0.7290 | 1.515 % | 0.000 % | 6.233 % |
+| bf16/CTS-168 | 0.8117 | 1.7644 | 1.5822 | 0.7322 | 1.466 % | 0.000 % | 6.265 % |
+| bf16/CTS-196 | 0.8139 | 1.7672 | 1.5888 | 0.7354 | 1.482 % | 0.000 % | 6.372 % |
+| DTS-132/DTS-132 | 0.8095 | 1.7630 | 1.5878 | 0.7295 | 1.507 % | 0.000 % | 6.224 % |
+| DTS-168/DTS-168 | 0.8134 | 1.7625 | 1.5778 | 0.7363 | 1.490 % | 0.000 % | 6.356 % |
+| DTS-196/DTS-196 | 0.8212 | 1.7858 | 1.5871 | 0.7409 | 1.540 % | 0.000 % | 6.570 % |
+| DTS-196/bf16 SFT | 0.8284 | 1.8034 | 1.5900 | 0.7503 | 1.638 % | 0.000 % | 6.850 % |
+| CTS-132/CTS-132 | **1.0791** | **2.4433** | **2.2895** | **0.9680** | **4.059 %** | 0.000 % | **12.350 %** |
+| CTS-168/CTS-168 | 0.9198 | 2.0174 | 1.8358 | 0.8293 | 2.067 % | 0.000 % | 8.258 % |
+| CTS-196/CTS-196 | 0.9705 | 2.1445 | 1.9415 | 0.8770 | 2.808 % | 0.008 % | 9.740 % |
+
+Paired against base over the same 12,146 scenes, the three CTS pretrains are outside anything
+the other eleven arms reach: ADE t = +33.39 / +17.07 / +23.86, FDE t = +34.77 / +17.05 / +24.16,
+and both AgentColl and LaneCross at exact-McNemar p = 0.0000. Every other arm stays inside
+`|t| <= 1.67` with p >= 0.12, with one exception: `DTS-196/bf16 SFT` shows ADE +0.015 m
+(t = +3.09), AgentColl p = 0.0134, LaneCross p = 0.0388 — a real but small trajectory cost,
+the first measurement of what the DTS pretrain does when the SFT stage is left in bf16.
+
+Paired CTS-against-DTS within the same stage pair, over the same scenes:
+
+| pair | dADE | t | dFDE | t | AgentColl p | LaneCross p |
+|---|---|---|---|---|---|---|
+| row 2, 132 | -0.0048 | -1.32 | -0.0108 | -1.34 | 1.0000 | 0.4658 |
+| row 2, 168 | -0.0001 | -0.03 | +0.0002 | +0.03 | 0.8358 | 0.3494 |
+| row 2, 196 | +0.0049 | +1.37 | +0.0055 | +0.68 | 0.4926 | 0.4870 |
+| row 3, 132 | +0.2697 | +34.09 | +0.6803 | +35.07 | 0.0000 | 0.0000 |
+| row 3, 168 | +0.1064 | +16.94 | +0.2549 | +17.22 | 0.0000 | 0.0000 |
+| row 3, 196 | +0.1494 | +22.89 | +0.3588 | +23.18 | 0.0000 | 0.0000 |
+
+Two caveats on this table. **`HBColl` carries no information on this data** — every arm reads
+0.000 % except CTS-196 at a single scene, because a predicted decel of 3 m/s^2 appears in at
+most one scene per arm; that is a property of the threshold, and the column should not be
+quoted as a result. And `cts132_recheck` has PDMS only: its trajectory metrics were not
+recomputed, so the ~0.2 pd eval-reproducibility seen on PDMS is assumed, not measured, to
+apply here too — immaterial against a 0.27 m ADE gap.
 
 ### The 132 arm is reproducible, and it inverts the ordering
 
@@ -1728,9 +1791,13 @@ needs the per-layer amax distributions of the 132 and 168 pretrains compared sid
 - Container: `docker exec zyc-w0 ...`. The `drivevla-w0` image was tried first and cannot run
   these launchers at all — `venv-hif8` is built on `/usr/local/python3.12.15`, which that
   image does not ship, so `bin/torchrun` fails with exit 127 after 0 steps. `zyc-w0` has it.
-- Scores: `submetrics.py <base> <arm>...` and `metrics7.py <exp dir> <json_output dir>` under
-  `/mnt/sfs_turbo/zyc/miniconda3/envs/navsim/bin/python3`, reading
-  `navsim_workspace/exp/eval_<tag>_full/*/*.csv`.
+- Scores: `submetrics.py <base> <arm>...` and `metrics7.py <exp dir> <json_output dir>...`
+  under `/mnt/sfs_turbo/zyc/miniconda3/envs/navsim/bin/python3`, reading
+  `navsim_workspace/exp/eval_<tag>_full/*/*.csv` and `navsim_workspace/eval_<tag>_full/json_output`.
+  `metrics7.py` + `traj_metrics.py` were copied byte-identically (md5 checked) from the repo's
+  `tools/zyc/` into `/mnt/sfs_turbo/zyc/drivevla-w0-zyc/m7tools/`, because no checkout on the
+  box carries them; the 14-arm run is saved there as `m7_all.txt` (6 s per arm, 15 arms in one
+  invocation with the base first so every pair is printed against it).
 - Eval tags: `bfpt5e5_cts{132,168,196}sft`, `cts{132,168,196}_lr5e5`, plus the recheck
   `cts132_recheck` (kept separate, not folded into any table).
 
