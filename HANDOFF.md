@@ -1472,8 +1472,9 @@ One reading does change shape: `196/bf16`, the worst PDMS arm, is also the worst
 FDE, head and LDist, which the broken version flattened into 0.472-0.476.
 
 The seven metrics for the non-DTS (CTS) arms that were asked for (`tools/zyc/metrics7.py`,
-run 2026-11-17 on the 11-13 `aligned` family, which is the only family where the
-quantisation is CTS and nothing in the pretrain path is quantised):
+run 2026-11-17 on the 11-13 `aligned` family, where the quantisation is CTS and nothing in
+the pretrain path is quantised; the two-stage CTS cells of 11-17/18 are a separate section
+below and are not in this table):
 
 | metric | bf16 | cts-168 | cts-196 | cts-168 vs base | cts-196 vs base |
 |---|---|---|---|---|---|
@@ -1567,4 +1568,192 @@ denominator is now the integer `1 << n`.
 4. The pretrain loss being blind to the quantisation cost means a cheap acceptance
    test for a quantised pretrain needs to be something other than its own loss curve;
    a short SFT from the checkpoint is the obvious candidate and is untested.
+
+## 2026-11-17/18 — CTS in rows 2 and 3 of the 2x2, all three ignore sets (a51-a54)
+
+Why this exists: the only two-stage CTS cells on record were in the **2e-4 family**
+(`sftpt_cts168`, `sftpt_cts196`, `chain_sft_cts196`), while the 2x2, the diagonal and the
+trajectory tables all live in the **5e-5 family** (`pt_ptlr5e5` pretrain, SFT lr 1e-5). So
+the sentence "CTS exists only as single-stage SFT" was false, but "there is no CTS cell in
+the family the 2x2 quotes" was true. This run closes that gap with six cells.
+
+Read "row 2" and "row 3" as the two axes of the 11-16 2x2, not as numbered rows of any
+table: row 2 = **bf16 pretrain -> quantised SFT**, row 3 = **quantised pretrain -> quantised
+SFT**. Each row is run at all three ignore sets, so the result is a 2x3 block rather than
+the single 196 diagonal the 2x2 has.
+
+Everything outside quantisation is byte-identical to the 11-16 arms: same pretrain
+(`pt_ptlr5e5`, lr 5e-5, 8000 steps, gbs 96 = mb 12 x 8), same SFT (lr 1e-5, bs 6 x 8, 4000
+steps, `zero2.json`, seed 42, GC off), same navtest full split (12,146 scenes / 36,438
+json), same launchers (`sft_from_pt.sh`, `chain_ptlr.sh`) and the same container (`zyc-w0`,
+the env every comparable DTS arm ran in). The only edits are `HIF8_*=cts` and the ignore
+set, made through thin wrappers (`r2_<N>.sh`, `r3_<N>.sh`) that export environment variables
+and exec the unmodified launcher. One further difference, non-behavioural: row 3 sets
+`SAVE_STEPS_PT=2000` instead of the launcher default 1000, which changes how often a
+pretrain checkpoint is written and nothing about the training trajectory.
+
+### Setup
+
+Ignore set -> quantised Linear out of 497 (the arithmetic: 196 - 28 `o_proj` = 168;
+168 - 36 for the six listed layers x 6 Linears = 132):
+
+| name | ignore list | quantised | left in bf16 |
+|---|---|---|---|
+| 132 | `lm_head,o_proj,layers.0.,layers.1.,layers.2.,layers.25.,layers.26.,layers.27.` | 132 | 365 |
+| 168 | `lm_head,o_proj` | 168 | 329 |
+| 196 | `lm_head` | 196 | 301 |
+
+| node | row | arm | run dirs | log |
+|---|---|---|---|---|
+| a53 | 2 | CTS-168 -> CTS-132 -> CTS-196, serial | `runs/sft_bfpt5e5_cts{168,132,196}sft` | `sftpt_bfpt5e5_cts{168,132,196}sft.log` |
+| a54 | 3 | CTS-168 | `runs/pt_cts168_lr5e5`, `runs/sft_cts168_lr5e5` | `chain_cts168_lr5e5.log` |
+| a51 | 3 | CTS-132 | `runs/pt_cts132_lr5e5`, `runs/sft_cts132_lr5e5` | `chain_cts132_lr5e5.log` |
+| a52 | 3 | CTS-196 | `runs/pt_cts196_lr5e5`, `runs/sft_cts196_lr5e5` | `chain_cts196_lr5e5.log` |
+
+Row 3 needs one node per arm because the pretrain dominates (2.5 s/step x 8000); row 2
+reuses the existing bf16 pretrain, so three arms fit on one node. Launched 2026-11-17
+23:51 CST, last score 2026-11-18 07:41 CST.
+
+Measured stage costs, for sizing future runs: pretrain 20,643 / 20,700 / 20,880 s
+(132 / 168 / 196) against 20,708 s for `chain_dts196_lr5e5`, so CTS adds nothing
+measurable to pretrain; SFT stage 93-98 min at 1.43 s/step; full eval 22-25 min on 8 cards.
+
+### Results
+
+Row 2 — bf16 pretrain `pt_ptlr5e5` -> CTS SFT (isolates SFT-side quantisation):
+
+| ignore set | CTS | DTS counterpart | dPDMS vs DTS | t | vs bf16/bf16 (0.85473) |
+|---|---|---|---|---|---|
+| 132 | 0.85402 | 0.85286 | **+0.12 pd** | +0.55 | -0.07 pd (-0.084 %) |
+| 168 | 0.85435 | 0.85552 | -0.12 pd | -0.57 | -0.04 pd (-0.045 %) |
+| 196 | 0.85289 | 0.85499 | -0.21 pd | -1.02 | -0.18 pd (-0.215 %) |
+
+Row 3 — CTS pretrain (8000 steps, lr 5e-5) -> CTS SFT:
+
+| ignore set | CTS | DTS counterpart | dPDMS vs DTS | t | vs bf16/bf16 (0.85473) |
+|---|---|---|---|---|---|
+| 132 | **0.76743** | 0.85351 | **-8.61 pd** | **-26.76** | **-8.73 pd (-10.21 %)** |
+| 168 | 0.82626 | 0.85198 | -2.57 pd | -9.54 | -2.85 pd (-3.33 %) |
+| 196 | 0.80314 | 0.85044 | -4.73 pd | -16.15 | -5.16 pd (-6.04 %) |
+
+Because row 2 and row 3 now share the *same* SFT quantisation, a cleaner pretrain-only
+contrast is available than in the 11-16 2x2 (where the SFT side also changed):
+
+| ignore set | CTS pretrain vs bf16 pretrain, CTS SFT | DTS equivalent |
+|---|---|---|
+| 132 | **-8.66 pd** (0.85402 -> 0.76743) | +0.07 pd (0.85286 -> 0.85351) |
+| 168 | -2.81 pd (0.85435 -> 0.82626) | -0.35 pd (0.85552 -> 0.85198) |
+| 196 | -4.98 pd (0.85289 -> 0.80314) | -0.45 pd (0.85499 -> 0.85044) |
+
+So quantising the pretrain costs **0.0-0.5 pd with DTS and 2.8-8.7 pd with CTS** in this
+family. That is the headline: the CTS costs are 5-14x the +-0.6 pd noise floor of the 196
+cells (8.66 / 4.98 / 2.81 pd), while every DTS cost is inside it.
+
+### Components, paired against `ptlr5e5` over the same 12,146 scenes
+
+`submetrics.py ptlr5e5 <arm>`; means x1, `t` is the paired t of the per-scene column.
+
+| arm | NC | DAC | DDC | EP | TTC | comfort | PDMS | t vs base |
+|---|---|---|---|---|---|---|---|---|
+| bf16/bf16 (base) | 0.98493 | 0.93644 | 0.97855 | 0.79151 | 0.95077 | 1.00000 | 0.85473 | — |
+| bf16/CTS-132 | 0.98353 | 0.93767 | 0.97876 | 0.79071 | 0.94879 | 1.00000 | 0.85402 | -0.35 |
+| bf16/CTS-168 | 0.98419 | 0.93735 | 0.97966 | 0.79119 | 0.94879 | 1.00000 | 0.85435 | -0.18 |
+| bf16/CTS-196 | 0.98390 | 0.93628 | 0.97913 | 0.78993 | 0.94871 | 0.99992 | 0.85289 | -0.89 |
+| CTS-132/CTS-132 | 0.95620 | 0.87650 | 0.95818 | 0.71027 | 0.90145 | 0.99992 | **0.76743** | -26.74 |
+| CTS-168/CTS-168 | 0.97736 | 0.91742 | 0.97394 | 0.76529 | 0.93389 | 1.00000 | 0.82626 | -10.60 |
+| CTS-196/CTS-196 | 0.96945 | 0.90260 | 0.96925 | 0.74582 | 0.91808 | 1.00000 | 0.80314 | -17.75 |
+
+Row 2's components are flat: every column is within 0.21 pp of base and the largest |t| is
+1.58 (NC on CTS-132, DDC on CTS-168). Row 3 moves **every** component in the wrong direction
+at |t| >= 4.4, which rules out a comfort, direction or single-scenario artefact — these are
+uniformly worse drivers.
+
+### The 132 arm is reproducible, and it inverts the ordering
+
+Two facts, both measured:
+
+1. **It is not an eval artefact.** The original eval of `cts132_lr5e5` ran concurrently with
+   the 168 and 196 evals, three nodes writing into one shared `navsim_workspace/exp/`, so it
+   was re-scored alone on an idle a51 with nothing else on the box
+   (`eval_cts132_recheck_full`, 36,438 json): **0.76538 vs 0.76743**, a gap of 0.002 that
+   matches the run-to-run noise of one eval. The damage is in the checkpoint.
+2. **It is not the quantisation count.** 132 quantises the *fewest* layers (365 left in
+   bf16) and scores the *worst*; 168 quantises 36 more and scores 5.8 pd higher. The old
+   ordering 196 < 168 < 132 in the DTS diagonal does not carry over to CTS pretraining,
+   where the order is 132 << 196 < 168.
+
+What is **not** established: the mechanism. The candidate — and this is my hypothesis, not a
+measurement — is that keeping layers 0-2/25-27 in bf16 changes the activation range reaching
+the quantised layers, and the *shape* of that range is what per-tensor scaling is sensitive
+to. Note the direction of the two failure modes, since an earlier draft of this paragraph had
+it backwards:
+
+- CTS has no interval by construction: `npu_dynamic_quant` derives the scale from the current
+  tensor's amax on every call (`models/quant/hif8_cts.py`), so the largest element lands at
+  `dst_type_max` and **nothing clips**. The cost of a wide or outlier-heavy range is
+  *resolution*: one scale per tensor means a large element coarsens everything below it.
+- DTS is the opposite: the scale is frozen from a sampled step and reused for up to
+  `interval - 1` more (`models/quant/hif8_dts.py`, `history_len=1`), so values that grow
+  above the sampled amax **do** clip before the next refresh.
+
+So "CTS clips harder" is not available as an explanation — if anything the ordering is
+reversed, and the CTS-132 collapse (the arm with the *most* layers left in bf16) would have to
+come from precision loss rather than saturation. Nothing in this run tests either story; it
+needs the per-layer amax distributions of the 132 and 168 pretrains compared side by side.
+
+### What these numbers do and do not support
+
+- **Supported:** in the 5e-5 family, CTS in the SFT stage alone is equivalent to bf16 and to
+  DTS: all three CTS arms sit within 0.18 pd of the bf16 base and within 0.21 pd of their DTS
+  counterparts, largest |t| = 1.02 across those six comparisons. This reproduces the 11-16
+  2x2's SFT-axis conclusion in a second quantisation scheme, which is the strongest form of
+  that claim so far.
+- **Supported:** CTS in the pretrain stage is not equivalent to DTS. The gap is 2.6-8.6 pd
+  at |t| up to 26.8, i.e. far outside noise, and it holds at all three ignore sets.
+- **Not supported:** any claim that CTS is generally worse than DTS. Rows 2 and 3 differ only
+  in which stage is quantised, so the two-stage result says the *pretrain* stage is where CTS
+  breaks, not the scheme.
+- **Not supported:** attributing the row-3 ordering (168 > 196 > 132) to quantisation
+  breadth, for the inversion reason above.
+- One seed per cell. The row-2 differences are all within one noise floor and should not be
+  ranked; the row-3 differences do not need a second seed to be directional, but a second
+  seed would be needed before quoting the exact 8.61 pd.
+
+### How this was run and how to reproduce
+
+- Wrappers on `/mnt/sfs_turbo/zyc/drivevla-w0-zyc/`: `r2_{132,168,196}.sh`,
+  `r3_{132,168,196}.sh`, `a53_queue.sh` (runs the three row-2 arms back to back). They only
+  export `PT_DIR`/`TAG`/`HIF8_*`/`IG_*`/`SAVE_STEPS_PT` and exec `sft_from_pt.sh` or
+  `chain_ptlr.sh`; both launchers are unmodified from the DTS runs.
+- Container: `docker exec zyc-w0 ...`. The `drivevla-w0` image was tried first and cannot run
+  these launchers at all — `venv-hif8` is built on `/usr/local/python3.12.15`, which that
+  image does not ship, so `bin/torchrun` fails with exit 127 after 0 steps. `zyc-w0` has it.
+- Scores: `submetrics.py <base> <arm>...` and `metrics7.py <exp dir> <json_output dir>` under
+  `/mnt/sfs_turbo/zyc/miniconda3/envs/navsim/bin/python3`, reading
+  `navsim_workspace/exp/eval_<tag>_full/*/*.csv`.
+- Eval tags: `bfpt5e5_cts{132,168,196}sft`, `cts{132,168,196}_lr5e5`, plus the recheck
+  `cts132_recheck` (kept separate, not folded into any table).
+
+### Open (this section)
+
+1. **Compare per-layer amax between the CTS-132 and CTS-168 pretrains.** This is the direct
+   test of the hypothesis above and needs no retraining: instrument `npu_dynamic_quant`'s
+   returned scale (or log `amax` per quantised module) on a few hundred steps of each arm and
+   ask whether 132's ranges are wider or more outlier-dominated where CTS then loses
+   resolution. Minutes to hours, not a full arm.
+   Deliberately **not** on this list: "re-run with a different `interval`". `interval` is a DTS
+   parameter only (`convert_to_hif8_cts` does not accept one, and `hif8_dts.py` rejects
+   `interval < 2` because 1 *is* CTS) — re-deriving the scale from the current tensor is the
+   definition of CTS, not a setting to sweep.
+2. Only if (1) shows a range problem: a CTS variant with a delayed or running-MAX scale, or a
+   wider `dst_type_max` (both currently hard-coded in `hif8_cts.py` as 15 forward / 224 grads).
+   That is a new recipe, and a full 132 arm (pretrain + SFT + eval, ~8 h) to score it.
+3. **`pt_cts132 -> bf16 SFT`**, the analogue of `runs/sft_dtspt5e5_bfsft`, to separate "CTS
+   pretrain damages the weights" from "CTS pretrain + CTS SFT interact". ~2 h if the
+   checkpoint is reused; nothing is queued.
+4. The quantisation self-check in `utils/train_qwen_vla.py:368` has an expected-count map of
+   `{196, 168, 168, 140}` and therefore prints **nothing** for the 132 combination. The count
+   still matched (132 = 168 - 6x6), but a silent skip in the one assertion that guards
+   quantisation scope is a trap worth closing by adding the 132 entry.
+5. Second seed on row 3 CTS-168 before the 2.57 pd figure is quoted as a fixed number.
 
