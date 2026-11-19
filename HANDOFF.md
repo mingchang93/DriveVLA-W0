@@ -1649,6 +1649,12 @@ So quantising the pretrain costs **0.0-0.5 pd with DTS and 2.8-8.7 pd with CTS**
 family. That is the headline: the CTS costs are 5-14x the +-0.6 pd noise floor of the 196
 cells (8.66 / 4.98 / 2.81 pd), while every DTS cost is inside it.
 
+> **Superseded in part (2026-11-19).** The DTS half of that sentence did not reproduce on
+> re-run: DTS pretrain cost -2.66 / -0.45 / -4.11 pd at ignore sets 132 / 168 / 196 against a
+> same-node row-2 control, i.e. only 168 stayed inside the noise floor. CTS is still worse at
+> every ignore set (2.8-8.7 pd), but the margin is no longer an order of magnitude. Read the
+> 2026-11-19 section before quoting the DTS column of any contrast here.
+
 ### Components, paired against `ptlr5e5` over the same 12,146 scenes
 
 `submetrics.py ptlr5e5 <arm>`; means x1, `t` is the paired t of the per-scene column.
@@ -1680,38 +1686,90 @@ row-3 losses.
 ### Trajectory and event metrics (independent of the simulator)
 
 `metrics7.py` reads `action` and `action_gt_denorm` from each arm's `json_output`, composes
-8 increments of 0.5 s into poses aligned to gt rows 3..10, and reports: ADE / FDE (m, mean
-per-step and final displacement), head (mean absolute heading error, deg), LDist (mean
-absolute longitudinal error, m), AgentColl / LaneCross (100 x the fraction of scenes with
-`no_at_fault_collisions` / `drivable_area_compliance` < 0.5, i.e. NAVSIM's own binary tests
-read off the score csv), and HBColl (collision with a predicted decel >= 3 m/s^2).
+8 increments of 0.5 s into poses aligned to gt rows 3..10, and reports twelve metrics:
+**ADE** (mean per-step displacement, m), **FDE** (final displacement), **head** / **headF**
+(mean and final absolute heading error, deg), **LDist** / **LDistF** (mean and final
+absolute longitudinal error, m), **lat** / **latF** (mean and final absolute lateral error,
+m), **latBias** (mean signed lateral error, m, `+` = prediction left of GT), plus
+**AgentColl** / **LaneCross** (100 x the fraction of scenes with
+`no_at_fault_collisions == 0.0` / `drivable_area_compliance < 0.5`, i.e. NAVSIM's own
+agent-collision and drivable-area tests read off the score csv) and **HBColl** (collision
+with a predicted decel >= 3 m/s^2).
 
 This matters because PDMS scores an LQR rollout of the plan, not the plan itself, so a second
-measurement on the raw prediction is genuinely independent. It reproduces the same ordering:
+measurement on the raw prediction is genuinely independent. It reproduces the same ordering.
 
-| arm | ADE m | FDE m | head deg | LDist m | AgentColl | HBColl | LaneCross |
+Mean over the eight 0.5 s steps (ADE / head / LDist / lat / latBias):
+
+| arm | ADE m | head deg | LDist m | lat m | latBias m |
+|---|---|---|---|---|---|
+| bf16/bf16 (base) | 0.8134 | 1.5852 | 0.7339 | 0.2174 | +0.0003 |
+| bf16/DTS-132 | 0.8132 | 1.5816 | 0.7344 | 0.2164 | -0.0004 |
+| bf16/DTS-168 | 0.8118 | 1.5803 | 0.7338 | 0.2141 | -0.0007 |
+| bf16/DTS-196 | 0.8090 | 1.5870 | 0.7297 | 0.2164 | -0.0032 |
+| bf16/CTS-132 | 0.8084 | 1.5758 | 0.7290 | 0.2146 | +0.0000 |
+| bf16/CTS-168 | 0.8117 | 1.5822 | 0.7322 | 0.2167 | -0.0011 |
+| bf16/CTS-196 | 0.8139 | 1.5888 | 0.7354 | 0.2157 | -0.0036 |
+| DTS-132/DTS-132 | 0.8095 | 1.5878 | 0.7295 | 0.2170 | -0.0048 |
+| DTS-168/DTS-168 | 0.8134 | 1.5778 | 0.7363 | 0.2143 | -0.0065 |
+| DTS-196/DTS-196 | 0.8212 | 1.5871 | 0.7409 | 0.2186 | -0.0033 |
+| DTS-196/bf16 SFT | 0.8284 | 1.5900 | 0.7503 | 0.2174 | -0.0029 |
+| CTS-132/CTS-132 | **1.0791** | **2.2895** | **0.9680** | **0.2792** | +0.0001 |
+| CTS-168/CTS-168 | 0.9198 | 1.8358 | 0.8293 | 0.2392 | -0.0056 |
+| CTS-196/CTS-196 | 0.9705 | 1.9415 | 0.8770 | 0.2497 | +0.0060 |
+
+Final step only (FDE / headF / LDistF / latF), and the events:
+
+| arm | FDE m | headF deg | LDistF m | latF m | AgentColl | HBColl | LaneCross |
 |---|---|---|---|---|---|---|---|
-| bf16/bf16 (base) | 0.8134 | 1.7672 | 1.5852 | 0.7339 | 1.375 % | 0.000 % | 6.356 % |
-| bf16/DTS-132 | 0.8132 | 1.7661 | 1.5816 | 0.7344 | 1.515 % | 0.000 % | 6.389 % |
-| bf16/DTS-168 | 0.8118 | 1.7642 | 1.5803 | 0.7338 | 1.490 % | 0.000 % | 6.068 % |
-| bf16/DTS-196 | 0.8090 | 1.7617 | 1.5870 | 0.7297 | 1.416 % | 0.000 % | 6.224 % |
-| bf16/CTS-132 | 0.8084 | 1.7553 | 1.5758 | 0.7290 | 1.515 % | 0.000 % | 6.233 % |
-| bf16/CTS-168 | 0.8117 | 1.7644 | 1.5822 | 0.7322 | 1.466 % | 0.000 % | 6.265 % |
-| bf16/CTS-196 | 0.8139 | 1.7672 | 1.5888 | 0.7354 | 1.482 % | 0.000 % | 6.372 % |
-| DTS-132/DTS-132 | 0.8095 | 1.7630 | 1.5878 | 0.7295 | 1.507 % | 0.000 % | 6.224 % |
-| DTS-168/DTS-168 | 0.8134 | 1.7625 | 1.5778 | 0.7363 | 1.490 % | 0.000 % | 6.356 % |
-| DTS-196/DTS-196 | 0.8212 | 1.7858 | 1.5871 | 0.7409 | 1.540 % | 0.000 % | 6.570 % |
-| DTS-196/bf16 SFT | 0.8284 | 1.8034 | 1.5900 | 0.7503 | 1.638 % | 0.000 % | 6.850 % |
-| CTS-132/CTS-132 | **1.0791** | **2.4433** | **2.2895** | **0.9680** | **4.059 %** | 0.000 % | **12.350 %** |
-| CTS-168/CTS-168 | 0.9198 | 2.0174 | 1.8358 | 0.8293 | 2.067 % | 0.000 % | 8.258 % |
-| CTS-196/CTS-196 | 0.9705 | 2.1445 | 1.9415 | 0.8770 | 2.808 % | 0.008 % | 9.740 % |
+| bf16/bf16 (base) | 1.7672 | 2.7395 | 1.5481 | 0.5439 | 1.375 % | 0.000 % | 6.356 % |
+| bf16/DTS-132 | 1.7661 | 2.7367 | 1.5480 | 0.5422 | 1.515 % | 0.000 % | 6.389 % |
+| bf16/DTS-168 | 1.7642 | 2.7501 | 1.5488 | 0.5355 | 1.490 % | 0.000 % | 6.068 % |
+| bf16/DTS-196 | 1.7617 | 2.7568 | 1.5443 | 0.5413 | 1.416 % | 0.000 % | 6.224 % |
+| bf16/CTS-132 | 1.7553 | 2.7329 | 1.5381 | 0.5359 | 1.515 % | 0.000 % | 6.233 % |
+| bf16/CTS-168 | 1.7644 | 2.7517 | 1.5458 | 0.5430 | 1.466 % | 0.000 % | 6.265 % |
+| bf16/CTS-196 | 1.7672 | 2.7574 | 1.5507 | 0.5411 | 1.482 % | 0.000 % | 6.372 % |
+| DTS-132/DTS-132 | 1.7630 | 2.7528 | 1.5440 | 0.5417 | 1.507 % | 0.000 % | 6.224 % |
+| DTS-168/DTS-168 | 1.7625 | 2.7366 | 1.5505 | 0.5353 | 1.490 % | 0.000 % | 6.356 % |
+| DTS-196/DTS-196 | 1.7858 | 2.7605 | 1.5651 | 0.5476 | 1.540 % | 0.000 % | 6.570 % |
+| DTS-196/bf16 SFT | 1.8034 | 2.7594 | 1.5882 | 0.5450 | 1.638 % | 0.000 % | 6.850 % |
+| CTS-132/CTS-132 | **2.4433** | **4.3133** | **2.1282** | **0.7241** | **4.059 %** | 0.000 % | **12.350 %** |
+| CTS-168/CTS-168 | 2.0174 | 3.2393 | 1.7699 | 0.5999 | 2.067 % | 0.000 % | 8.258 % |
+| CTS-196/CTS-196 | 2.1445 | 3.5205 | 1.8844 | 0.6348 | 2.808 % | 0.008 % | 9.740 % |
 
-Paired against base over the same 12,146 scenes, the three CTS pretrains are outside anything
-the other eleven arms reach: ADE t = +33.39 / +17.07 / +23.86, FDE t = +34.77 / +17.05 / +24.16,
-and both AgentColl and LaneCross at exact-McNemar p = 0.0000. Every other arm stays inside
-`|t| <= 1.67` with p >= 0.12, with one exception: `DTS-196/bf16 SFT` shows ADE +0.015 m
-(t = +3.09), AgentColl p = 0.0134, LaneCross p = 0.0388 — a real but small trajectory cost,
-the first measurement of what the DTS pretrain does when the SFT stage is left in bf16.
+Paired against base over the same 12,146 scenes, delta (t), from
+`metrics7.py <base> <arm> ...` in one invocation:
+
+| arm | dADE | dhead | dLDist | dlat | dlatBias | AgentColl | LaneCross |
+|---|---|---|---|---|---|---|---|
+| bf16/DTS-132 | -0.0003 (-0.07) | -0.0036 (-0.34) | +0.0005 (+0.13) | -0.0010 (-0.62) | -0.0007 (-0.36) | p 0.129 | p 0.904 |
+| bf16/DTS-168 | -0.0016 (-0.44) | -0.0049 (-0.44) | -0.0001 (-0.04) | -0.0033 (-2.11) | -0.0010 (-0.52) | p 0.215 | p 0.144 |
+| bf16/DTS-196 | -0.0044 (-1.23) | +0.0018 (+0.16) | -0.0042 (-1.16) | -0.0010 (-0.62) | -0.0035 (-1.78) | p 0.679 | p 0.538 |
+| bf16/CTS-132 | -0.0051 (-1.40) | -0.0095 (-0.82) | -0.0049 (-1.37) | -0.0028 (-1.73) | -0.0003 (-0.14) | p 0.125 | p 0.568 |
+| bf16/CTS-168 | -0.0017 (-0.48) | -0.0030 (-0.28) | -0.0017 (-0.47) | -0.0007 (-0.46) | -0.0015 (-0.78) | p 0.315 | p 0.693 |
+| bf16/CTS-196 | +0.0005 (+0.14) | +0.0036 (+0.31) | +0.0015 (+0.41) | -0.0017 (-1.08) | -0.0039 (-2.03) | p 0.228 | p 0.968 |
+| DTS-132/DTS-132 | -0.0040 (-0.80) | +0.0025 (+0.15) | -0.0044 (-0.91) | -0.0004 (-0.20) | -0.0052 (-1.99) | p 0.236 | p 0.584 |
+| DTS-168/DTS-168 | -0.0001 (-0.01) | -0.0074 (-0.44) | +0.0023 (+0.48) | -0.0030 (-1.50) | -0.0068 (-2.60) | p 0.292 | p 1.000 |
+| DTS-196/DTS-196 | +0.0077 (+1.61) | +0.0018 (+0.12) | +0.0069 (+1.46) | +0.0013 (+0.64) | -0.0036 (-1.46) | p 0.128 | p 0.363 |
+| CTS-132/CTS-132 | +0.2657 (+33.39) | +0.7042 (+28.06) | +0.2340 (+29.27) | +0.0618 (+22.12) | -0.0002 (-0.07) | p 0.0000 | p 0.0000 |
+| CTS-168/CTS-168 | +0.1064 (+17.07) | +0.2506 (+12.99) | +0.0954 (+15.32) | +0.0219 (+9.37) | -0.0059 (-1.92) | p 0.0000 | p 0.0000 |
+| CTS-196/CTS-196 | +0.1571 (+23.86) | +0.3562 (+18.03) | +0.1431 (+21.67) | +0.0323 (+13.29) | +0.0057 (+1.75) | p 0.0000 | p 0.0000 |
+| DTS-196/bf16 SFT | +0.0150 (+3.09) | +0.0047 (+0.31) | +0.0164 (+3.40) | +0.0001 (+0.04) | -0.0032 (-1.29) | p 0.013 | p 0.039 |
+
+The three CTS pretrains are outside anything the other eleven arms reach on every axis:
+ADE t = +33.39 / +17.07 / +23.86, all four LDist / lat columns at |t| >= 8.5, and both
+events at exact-McNemar p = 0.0000. **The row-3 damage is not one-dimensional**: lateral
+error rises by 0.022 / 0.031 / 0.062 m (t +9.4 to +22.1) alongside the longitudinal rise, and
+`latBias` stays at or below 6 mm on all three (|t| <= 1.9 against base), so the added error is
+scatter around GT rather than a directional offset.
+
+`DTS-196/bf16 SFT` is the other arm that leaves the noise floor, and the split explains it:
+ADE +0.0150 m at t 3.09 with LDist +0.0164 (t 3.40) and lat +0.0001 (t 0.04) — the bf16-SFT
+cost of the DTS-196 pretrain is longitudinal only. Every other arm stays at |t| <= 1.67 on
+ADE / FDE / head / headF / LDist / LDistF, and the only readings above |t| = 2 anywhere else
+are lateral: bf16/DTS-168 lat -0.0033 (t -2.11), bf16/CTS-196 latBias -0.0039 (t -2.03) and
+DTS-168/DTS-168 latBias -0.0068 (t -2.60). Those are 3 % of the 0.21 m lateral error and
+should not be read as a driving difference.
 
 Paired CTS-against-DTS within the same stage pair, over the same scenes:
 
@@ -1723,6 +1781,39 @@ Paired CTS-against-DTS within the same stage pair, over the same scenes:
 | row 3, 132 | +0.2697 | +34.09 | +0.6803 | +35.07 | 0.0000 | 0.0000 |
 | row 3, 168 | +0.1064 | +16.94 | +0.2549 | +17.22 | 0.0000 | 0.0000 |
 | row 3, 196 | +0.1494 | +22.89 | +0.3588 | +23.18 | 0.0000 | 0.0000 |
+
+The same pairs on the remaining columns (delta, t):
+
+| pair | dhead | dheadF | dLDist | dLDistF | dlat | dlatF | dlatBias |
+|---|---|---|---|---|---|---|---|
+| row 2, 132 | -0.0058 (-0.51) | -0.0037 (-0.15) | -0.0054 (-1.49) | -0.0099 (-1.26) | -0.0018 (-1.16) | -0.0063 (-1.46) | +0.0004 (+0.20) |
+| row 2, 168 | +0.0019 (+0.18) | +0.0017 (+0.07) | -0.0016 (-0.43) | -0.0030 (-0.38) | +0.0026 (+1.71) | +0.0076 (+1.85) | -0.0005 (-0.25) |
+| row 2, 196 | +0.0018 (+0.15) | +0.0005 (+0.02) | +0.0057 (+1.58) | +0.0064 (+0.82) | -0.0007 (-0.46) | -0.0002 (-0.06) | -0.0004 (-0.19) |
+| row 3, 132 | +0.7017 (+27.94) | +1.5605 (+27.42) | +0.2385 (+30.10) | +0.5842 (+30.49) | +0.0622 (+22.03) | +0.1823 (+22.60) | +0.0049 (+1.32) |
+| row 3, 168 | +0.2580 (+13.34) | +0.5028 (+11.78) | +0.0931 (+14.81) | +0.2194 (+15.13) | +0.0249 (+10.72) | +0.0645 (+9.76) | +0.0009 (+0.28) |
+| row 3, 196 | +0.3544 (+18.10) | +0.7600 (+17.34) | +0.1361 (+20.85) | +0.3193 (+20.94) | +0.0311 (+12.88) | +0.0872 (+12.91) | +0.0093 (+2.96) |
+
+### Seven-column additions: how they were checked
+
+Three definitional defects were found and fixed on 2026-11-18 while extending the report from
+seven columns to twelve; none of them changed a number that was already published.
+
+1. **`latBias` sign was documented backwards.** `traj_metrics.py` said `+ = pred right of GT`.
+   The dumps are in the ego frame of the current step, x forward and y left
+   (`convert_absolute_to_relative_se2_array` scores `(p - origin) @ R(-heading).T`, which sends
+   a point left of the ego to `(0, +1)`), so `+` is **left**. Checked on the dumps, not only in
+   the algebra: GT scenes whose mean predicted-window `dtheta` exceeds 0.05 rad end at a mean
+   final lateral offset of **+2.95 m** over 50 such scenes, i.e. a left turn is +y.
+2. **`AgentColl` was documented as `100 x (1 - mean no_at_fault_collisions)`.** The code counts
+   `NC == 0.0` only. `pdm_scorer.py:340` gives 0.0 for agent types, 0.5 for static/unknown
+   objects and 1.0 for clear, so the mean-based rate would add the 0.5 rows (73 on the
+   aligned base arm) and is a different metric. The docstring now says which one is computed.
+3. **`load_csv` could parse a different file than the one it selected.** It kept the last
+   file's rows but the last *scoring* file's path. With one score csv per eval dir nothing
+   changed, but a dir holding a second csv would have mixed the two.
+4. The `--selftest` in `traj_metrics.py` gains a lateral case (0.4 m of left offset per step
+   gives `lat` 1.8 m mean / 3.2 m final and `latBias` +1.8 m), and an independent numpy
+   rotation walk over 300 scenes reproduces `ADE` and `lat` to 7.8e-15.
 
 Two caveats on this table. **`HBColl` carries no information on this data** — every arm reads
 0.000 % except CTS-196 at a single scene, because a predicted decel of 3 m/s^2 appears in at
@@ -1796,8 +1887,10 @@ needs the per-layer amax distributions of the 132 and 168 pretrains compared sid
   `navsim_workspace/exp/eval_<tag>_full/*/*.csv` and `navsim_workspace/eval_<tag>_full/json_output`.
   `metrics7.py` + `traj_metrics.py` were copied byte-identically (md5 checked) from the repo's
   `tools/zyc/` into `/mnt/sfs_turbo/zyc/drivevla-w0-zyc/m7tools/`, because no checkout on the
-  box carries them; the 14-arm run is saved there as `m7_all.txt` (6 s per arm, 15 arms in one
-  invocation with the base first so every pair is printed against it).
+  box carries them. The 14-arm run is saved there as `m7_all12.txt` (6 s per arm, all 14 arms
+  in one invocation with the base first, so every pair is printed against it); the earlier
+  seven-column run is `m7_all.txt`. The twelve-column version reproduces the seven numbers of
+  the earlier run exactly, which is the regression check for the extension.
 - Eval tags: `bfpt5e5_cts{132,168,196}sft`, `cts{132,168,196}_lr5e5`, plus the recheck
   `cts132_recheck` (kept separate, not folded into any table).
 
@@ -1824,3 +1917,231 @@ needs the per-layer amax distributions of the 132 and 168 pretrains compared sid
    quantisation scope is a trap worth closing by adding the 132 entry.
 5. Second seed on row 3 CTS-168 before the 2.57 pd figure is quoted as a fixed number.
 
+
+## 2026-11-19 — DTS row 2 and row 3 re-run at pretrain lr 5e-5, refresh-clock verification, one unstable cell
+
+Why this exists: three reasons, in the order they forced the work.
+
+1. The DTS cells of the 5e-5 family had exactly one measurement each. Every CTS claim in the
+   11-18 section is read *against* those DTS cells, so the comparison column had no error bar.
+   Re-running the six arms turns the DTS column into a measured quantity instead of a number
+   carried over from 11-16.
+2. `models/quant/hif8_dts.py` carried a guard that aborted the run when the clock source was
+   not one of the two expected values. The first launch of all six arms at 23:30 died in
+   ~60 s on it. The guard had to be resolved and, with it, the refresh cadence proven rather
+   than assumed.
+3. Result on (1): the re-run does **not** reproduce on two of the three DTS-pretrain arms, so
+   the DTS column of the 11-18 contrast needs correcting rather than this section just being
+   appended to it.
+
+Everything outside quantisation is byte-identical to the 11-16 arms: pretrain `pt_ptlr5e5`
+(lr 5e-5, 8000 steps, gbs 96 = mb 12 x 8) reused for row 2 and re-trained for row 3, SFT lr 1e-5
+(bs 6 x 8, 4000 steps, `zero2.json`, seed 42, GC off, `HIF8_INTERVAL=10`), navtest full split
+(12,146 scenes / 36,438 json), container `zyc-w0`, interpreter `/mnt/sfs_turbo/lmc/venv-hif8`.
+New tags only, so nothing overwrites a baseline: `sft_r2_bfpt5e5_dts{132,168,196}sft`,
+`pt_r2_dts{X}_lr5e5`, `sft_r2_dts{X}_lr5e5`, `eval_<tag>_full`.
+
+### Setup
+
+Each node ran one row-2 arm and then the matching row-3 arm, so every pretrain-only contrast
+below is within a single node on a single schedule.
+
+| node | row 2 (bf16 pretrain -> DTS SFT) | row 3 (DTS pretrain -> DTS SFT) | log |
+|---|---|---|---|
+| a52 | `sft_r2_bfpt5e5_dts168sft` | `pt_r2_dts168_lr5e5` -> `sft_r2_dts168_lr5e5` | `r2_a52.log` |
+| a53 | `sft_r2_bfpt5e5_dts132sft` | `pt_r2_dts132_lr5e5` -> `sft_r2_dts132_lr5e5` | `r2_a53.log` |
+| a54 | `sft_r2_bfpt5e5_dts196sft` | `pt_r2_dts196_lr5e5` -> `sft_r2_dts196_lr5e5` | `r2_a54.log` |
+
+Ignore sets are the 11-17 ones (132 = 132 quantised / 365 in bf16; 168 = 168 / 329; 196 = 196 /
+301). Six arms, six `阶段三 退出码 0`, three `ALLDONE`, 36,438 json each.
+
+Measured stage costs: pretrain 20,984.5 / 21,185.8 / 21,251.6 s (132 / 168 / 196) against
+20,708 s for `chain_dts196_lr5e5` on 11-16, so the re-run costs the same; SFT ~1.65 h;
+full eval 22-25 min on 8 cards.
+
+### The two-line deletion, and why it cannot move a number
+
+`hif8_dts.py:393-394` held a stray `else:` plus `raise ValueError("HIF8_DTS_CLOCK_SRC 只支持
+trainer / optimizer ...")` attached to the *static-recipe* branch chain. With `CLOCK_SRC=trainer`
+the preceding `elif` is taken, so the removed `else` was unreachable on the path every arm uses:
+the deletion changes control flow only for the configurations that were meant to abort.
+
+Evidence, both on a51 and both on the patched file:
+
+- Guard restored (control): aborts within 60 s at `hif8_dts.py:394` with **0** refreshes,
+  `VERDICT=FAIL` (`guard_restore_test.log`).
+- Patched code, 80-step smoke, `HIF8_INTERVAL=10`: refreshes #1-#8 at steps 10, 20, ... 80,
+  consecutive deltas all exactly 10, every refresh logging `588/588 points had pending`,
+  `VERDICT=PASS` (`smoke_clock196_a51_guard.log`, driver `smoke_clock_now.sh`).
+
+So the deletion decides proceed-vs-abort and nothing else. File state afterwards: md5
+`27d30a7cf15108101b34403f9b8e5b76`, 23,946 B, zero `raise` occurrences in the region, and the
+diff against the pre-edit backup `hif8_dts.py.bak-r2before` (md5 `b838188b...`) is exactly the
+two deleted lines. **The correct repair, not applied:** move the `else` back onto the
+clock-source chain so an unknown `HIF8_DTS_CLOCK_SRC` still fails loudly. As it stands an
+unknown source now falls through silently.
+
+Note for reading pretrain logs: they do not print the `hif8=...` header; the scheme is in
+`[HiF8] 模式 dts（间隔 N 步）`, and per-refresh `refresh #N at step=M` lines appear only under
+`HIF8_DTS_CLOCK=1`.
+
+### Results
+
+Row 2 — bf16 pretrain -> DTS SFT, re-run against the same cells on 11-16:
+
+| ignore set | r2 | 11-16 | dPDMS | vs bf16/bf16 base (0.85473) |
+|---|---|---|---|---|
+| 132 | 0.85720 | 0.85286 | **+0.43 pd** | +0.25 pd |
+| 168 | 0.85641 | 0.85552 | +0.09 pd | +0.17 pd |
+| 196 | 0.85438 | 0.85499 | -0.06 pd | -0.04 pd |
+
+All three reproduce inside +-0.5 pd, which fixes the eval pipeline's practical noise floor at
+about 0.4 pd and confirms that bf16-pretrain -> DTS-SFT is insensitive to which layers carry
+the quantisation.
+
+Row 3 — DTS pretrain -> DTS SFT, same comparison:
+
+| ignore set | r2 | 11-16 | dPDMS | vs bf16/bf16 base (0.85473) |
+|---|---|---|---|---|
+| 132 | 0.83055 | 0.85351 | **-2.30 pd** | -2.42 pd |
+| 168 | 0.85194 | 0.85198 | -0.00 pd | -0.28 pd |
+| 196 | 0.81324 | 0.85044 | **-3.72 pd** | -4.15 pd |
+
+### The pretrain-only contrast does not reproduce on 132 and 196
+
+Same-node, same-run pairing (row 3 minus row 2, both from this re-run) is the cleanest form —
+same tree, same clock, same node, only the pretrain differs:
+
+| ignore set | DTS pretrain cost, r2 | DTS cost recorded 11-16 |
+|---|---|---|
+| 132 | **-2.66 pd** (0.85720 -> 0.83055) | +0.07 pd |
+| 168 | -0.45 pd (0.85641 -> 0.85194) | -0.35 pd |
+| 196 | **-4.11 pd** (0.85438 -> 0.81324) | -0.45 pd |
+
+168 reproduces to 0.10 pd. 132 and 196 move by 2.7 and 3.7 pd against a row-2 noise floor of
+0.4 pd. **This directly contradicts the sentence in the 11-18 section that quantising the
+pretrain costs "0.0-0.5 pd with DTS"**, and that sentence is what made the CTS row-3 losses
+look like 5-14x the DTS cost. With these numbers the honest form is: DTS pretrain costs
+0.4-4.1 pd depending on ignore set, CTS pretrain costs 2.8-8.7 pd, so CTS is still worse at
+every ignore set but the margin is no longer an order of magnitude.
+
+What is *not* established: why 132 and 196 moved while 168 did not. The obvious candidates are
+ruled out by the same data:
+
+- Not the eval pipeline: row 2 reproduced on all three nodes, and 168's row-3 eval reproduced to
+  0.003 pd.
+- Not per-node instability: on a53 and a54 the row-2 arm of the *same* node reproduced (a53
+  +0.43 pd, a54 -0.06 pd) while only the row-3 arm moved.
+- Not the eval restarts recorded below: 168 restarted and held; 132 ran first-try and moved.
+- Not the ignore-set breadth: 168 quantises the middle count and is the one that held, so
+  "more or fewer bf16 layers" has no monotone story here either.
+
+Candidates that remain, untested: (a) DTS-pretrain run-to-run variance is genuinely much
+larger than the bf16-pretrain floor and one seed per cell cannot see it; (b) the refresh clock
+in the pretrain stage behaves differently from the SFT stage in a way the 80-step smoke did not
+exercise at 8000 steps. Only a second seed separates them.
+
+### Components, `average` row of each arm's newest score csv, same 12,146 valid scenes
+
+These are unpaired means read off the csv, **not** `submetrics.py` output, so there is no `t`
+column here — the paired version of this table has not been run for the r2 arms. Column order
+follows the 11-18 table.
+
+| arm | NC | DAC | DDC | EP | TTC | comfort | PDMS |
+|---|---|---|---|---|---|---|---|
+| bf16/DTS-132 (11-16) | 0.98341 | 0.93611 | 0.97958 | 0.78935 | 0.94920 | 1.00000 | 0.85286 |
+| bf16/DTS-132 (r2) | 0.98481 | 0.93907 | 0.97933 | 0.79321 | 0.95126 | 1.00000 | 0.85720 |
+| bf16/DTS-168 (11-16) | 0.98403 | 0.93932 | 0.97851 | 0.79185 | 0.94830 | 0.99992 | 0.85552 |
+| bf16/DTS-168 (r2) | 0.98460 | 0.93899 | 0.97909 | 0.79334 | 0.94928 | 1.00000 | 0.85641 |
+| bf16/DTS-196 (11-16) | 0.98469 | 0.93776 | 0.97884 | 0.79168 | 0.94937 | 1.00000 | 0.85499 |
+| bf16/DTS-196 (r2) | 0.98407 | 0.93759 | 0.97958 | 0.79096 | 0.94920 | 0.99984 | 0.85438 |
+| DTS-132/DTS-132 (11-16) | 0.98399 | 0.93776 | 0.97991 | 0.79080 | 0.94558 | 1.00000 | 0.85351 |
+| DTS-132/DTS-132 (r2) | 0.97616 | 0.92220 | 0.97509 | 0.77031 | 0.93290 | 1.00000 | 0.83055 |
+| DTS-168/DTS-168 (11-16) | 0.98357 | 0.93644 | 0.97925 | 0.78993 | 0.94484 | 0.99984 | 0.85198 |
+| DTS-168/DTS-168 (r2) | 0.98345 | 0.93603 | 0.97991 | 0.78898 | 0.94665 | 1.00000 | 0.85194 |
+| DTS-196/DTS-196 (11-16) | 0.98337 | 0.93430 | 0.97921 | 0.78776 | 0.94607 | 1.00000 | 0.85044 |
+| DTS-196/DTS-196 (r2) | 0.97180 | 0.90927 | 0.97085 | 0.75601 | 0.92327 | 1.00000 | 0.81324 |
+
+Two things the shape of that table settles:
+
+- **The degradation is not one metric breaking.** Every component of the two moved arms falls
+  together — 132: NC -0.78 pp, DAC -1.56, EP -2.05, TTC -1.27, DDC -0.48; 196: NC -1.16,
+  DAC -2.50, EP -3.18, TTC -2.23, DDC -0.84. This is a uniformly worse driver, not a collision
+  or a drivable-area artefact, and it mirrors how the CTS row-3 arms fail.
+- **Comfort is untouched everywhere.** Six arms, one scene's worth of deviation (0.99984) and
+  otherwise exactly 1.0. It is a discrete jerk/latency test that the policy either clears or
+  does not, and no amount of quantisation drift crossed it — the same conclusion the 11-13 and
+  11-17 tables reached.
+- EP loses the most in both moved arms, which is the expected signature: it is the continuous
+  progress term, so it absorbs small trajectory deviations that the discrete metrics tolerate.
+
+### Two anomalies recorded, not explained
+
+1. **`chain_ptlr.sh: line 159: in_bf16: command not found`, once on a52 and once on a54, zero
+   times on a53.** In both cases it was followed by a silent restart of `阶段三` ~50 s later, and
+   the retried eval produced a valid score. Cause not established: `in_bf16` is not defined
+   anywhere in `chain_ptlr.sh`, so the reference is either a leftover from an edited copy or an
+   inherited shell function; the run does not fail because the command is only used for a
+   branch label. Worth 10 minutes of looking, since a branch conditioned on an undefined
+   variable always takes the same side and that side is currently "not bf16".
+2. **Score-csv mtimes are exactly 8 h ahead of the timestamps in their own filenames**
+   (e.g. `2026.11.19.01.31.07.csv` with mtime 09:31). Every r2 score dir shows the offset, so
+   any wall-clock reasoning about these evals has to use the filename, not `ls -l`. The same
+   skew makes `find -newermt` useless for deciding whether a dir was written recently: a
+   09:30 cutoff matched every r2 csv. The real eval windows are 01:26-02:11 and the row-2 evals
+   17:35-17:38 on 11-18.
+
+### What these numbers do and do not support
+
+- **Supported:** bf16-pretrain -> DTS-SFT at lr 5e-5 is reproducible to +-0.4 pd at all three
+  ignore sets, on three different nodes, on a tree that has moved since 11-16. That is now the
+  noise floor to quote against.
+- **Supported:** the DTS refresh clock fires every `interval` steps as configured, verified at
+  10 steps over 8 consecutive refreshes with all tracked points pending each time.
+- **Supported:** the 11-16 DTS-pretrain costs (0.0-0.5 pd) are wrong by 2-7x for the 132 and
+  196 ignore sets. The 11-18 CTS contrast needs its DTS column replaced with the r2 numbers.
+- **Not supported:** any claim that DTS pretrain is safe. Two of three cells now show a real
+  regression; 168 alone is clean, and 168 is a single seed.
+- **Not supported:** any ranking between 132 and 196 as "how much the pretrain tolerates".
+  Both moved, one run each, and the 11-16 ordering that made 196 look worst is not reproduced
+  in magnitude even though the direction matches.
+- **Still unknown:** whether the 11-16 numbers or the r2 numbers are the outlier for 132 and
+  196. One seed on each side cannot decide it.
+- The row-2 arms in this re-run are also subject to the 11-18 open item 4: the quantisation
+  scope self-check in `utils/train_qwen_vla.py:368` has no 132 entry and prints nothing for that
+  combination, so the 132 arms again ran that assertion silently.
+
+### How this was run and how to reproduce
+
+- Driver: `/mnt/sfs_turbo/zyc/drivevla-w0-zyc/r2_sched.sh <host> <ignore set> ...`, whose 9th
+  argument is the pretrain start time (`START`, default 2315) so a rerun can be shifted without
+  editing a running script. It execs the unmodified `chain_ptlr.sh`; per-host status from
+  `r2stat.sh`, per-host logs `r2_a52.log` / `r2_a53.log` / `r2_a54.log`.
+- Clock evidence: `smoke_clock_now.sh` (takes label and batch size), run on a51 via
+  `docker exec zyc-w0`, patched code then guard-restored control; logs
+  `smoke_clock196_a51_guard.log`, `guard_restore_test.log`.
+- Scores read from `navsim_workspace/exp/eval_<tag>_full/<timestamp>/<timestamp>.csv`, the
+  `average` row. Newest timestamp per tag, which matters: a52 and a54 each hold an abandoned
+  first attempt (`01.32.31` on a52, `01.43.23` on a54) next to the scored one.
+- Cancelled, for the record: a54 had a clock smoke queued behind these arms. It was stopped
+  (`tmux kill-session -t smoke-clock`, PIDs 1003952 / 1227532 / 1003953) before it launched
+  anything, so no container side effects and no partial run to clean up.
+
+### Open (this section)
+
+1. **Second seed on DTS-132 and DTS-196 pretrain.** This is the only thing that separates
+   "variance" from "these two cells really are worse", and it decides whether the 11-18 DTS
+   column gets rewritten upward or downward. ~8.0-8.5 h per arm at the measured stage costs;
+   a52 and a54 are free (8 idle NPUs each), a53 was fully occupied by a non-ours job at the time
+   of writing.
+2. **Run the paired `submetrics.py` for the six r2 arms** so this section's component table
+   gains `t` values and becomes comparable, cell for cell, with the 11-18 table. Minutes.
+3. **Close the `in_bf16` reference** in `chain_ptlr.sh:159` and the missing `132` entry in the
+   `expected-count` map of `utils/train_qwen_vla.py:368` (same item as 11-18 open 4, now
+   exercised twice).
+4. **Restore the `else` onto the clock-source chain** in `hif8_dts.py` so an unknown
+   `HIF8_DTS_CLOCK_SRC` fails loudly again. The backup `hif8_dts.py.bak-r2before` holds the
+   pre-edit text; the current file is the two-line deletion only.
+5. **Untriaged WIP.** ZYC's tree still carries ~123 uncommitted lines across `hif8_dts.py` and
+   `train_qwen_vla.py` on top of these edits. Nothing in this run isolates their effect, so any
+   cross-date comparison on that tree carries that caveat.
