@@ -352,7 +352,9 @@ class Qwen2_5_VLForConditionalGenerationROSS(Qwen2_5_VLForConditionalGeneration)
             posterior = self.vae.encode(raw_pixel_values_vae).latent_dist
             z_q = (posterior.sample() - self.vae_shift_factor) * self.vae_scaling_factor
 
-        with torch.amp.autocast('cuda', dtype=torch.float32):
+        # autocast 的设备类型要跟着张量走：写死 'cuda' 在 NPU 上不生效，
+        # fp32 输入会直接撞上 bf16 的 UNet conv（与 qwen3_vl 分支对齐）
+        with torch.amp.autocast(image_hidden.device.type, dtype=torch.float32):
             action_hidden = self.denoiser.ln_pre_a(action_hidden)
             image_hidden = self.denoiser.ln_pre(image_hidden)
             # image_hidden = image_hidden + self.denoiser.pos_embed

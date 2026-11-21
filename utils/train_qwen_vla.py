@@ -175,6 +175,17 @@ def set_reproducibility(seed: int, deterministic: bool = True):
             torch.backends.cuda.matmul.allow_tf32 = False
             os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
             os.environ.setdefault("NCCL_DETERMINISTIC", "TRUE")
+        # 关掉 Ascend 的 HF32：conv 的 allow_hf32 默认是 True，matmul 默认 False。
+        # HF32 截断尾数并在 Cube 单元里分块累加，归约顺序不再由程序顺序唯一决定。
+        # SD-1.5 UNet 全是 conv2d，整个扩散头都跑在这个模式下——实测证据链
+        # （摘掉扩散头 / lr=0 / 冻住扩散头 三种情况都逐位一致，只有扩散头参与
+        #  更新时才分歧）指向卷积反向的累加。
+        if _DEV_TYPE == "npu":
+            try:
+                torch.npu.conv.allow_hf32 = False
+                torch.npu.matmul.allow_hf32 = False
+            except Exception as _e:
+                rank0_print("[Reproducibility] 关 HF32 失败（忽略）: %r" % (_e,))
         # HCCL 确定性通信（NPU）
         os.environ.setdefault("HCCL_DETERMINISTIC", "TRUE")
         # 非饱和模式：溢出产生 Inf/NaN 而不是饱和到最大值，与 GPU 行为一致。
@@ -314,12 +325,63 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
 
     tokenizer, model, _ = check_and_add_vla_tokens(tokenizer, model)
 
+
     # 确定性：固定种子 + 关 dropout（HiF8 对比的前置条件）
     _det = bool(getattr(model_args, "deterministic", True))
     set_reproducibility(int(getattr(training_args, "seed", 42)), deterministic=_det)
     rank0_print(f"[Reproducibility] seed={training_args.seed} deterministic={_det} device={_DEV_TYPE}")
     if bool(getattr(model_args, "remove_dropout", True)):
         disable_model_dropout(model)
+
+    # ── HiF8 量化（HiF8 vs bf16 对比的那条臂）──
+    # 放在这里的理由：模型已建好、requires_grad 已设完，而 Trainer/DeepSpeed
+    # 还没包装模型。替换只改 nn.Linear 的 forward 走法，Parameter 对象不变，
+    # 所以分片、优化器参数组、ckpt 保存都照旧。
+    _hif8 = str(getattr(model_args, "hif8", "") or "").lower()
+    if _hif8:
+        if _hif8 not in ("cts", "dts"):
+            raise ValueError("--hif8 只支持 cts / dts，收到 %r" % _hif8)
+        _interval = int(getattr(model_args, "hif8_interval", 10))
+        if _hif8 == "dts":
+            from models.quant.hif8_dts import (
+                convert_to_hif8_dts as _convert, hif8_available,
+                state as _dts_state,
+            )
+        else:
+            from models.quant.hif8_cts import convert_to_hif8_cts as _convert, hif8_available
+            _dts_state = None
+        if not hif8_available():
+            raise RuntimeError("torch_npu 缺 hifloat8 / npu_dynamic_quant / npu_quant_matmul")
+        def _csv(v):
+            return tuple(x.strip() for x in str(v).split(",") if x.strip())
+        _apply = _csv(getattr(model_args, "hif8_apply", "model.language_model.layers."))
+        _ignore = _csv(getattr(model_args, "hif8_ignore", "lm_head,o_proj"))
+        if _hif8 == "dts":
+            _conv, _skipped = _convert(model, apply=_apply, ignore=_ignore, interval=_interval)
+        else:
+            _conv, _skipped = _convert(model, apply=_apply, ignore=_ignore)
+        rank0_print("[HiF8] 模式 " + _hif8 + ("（间隔 %d 步）" % _interval if _hif8 == "dts" else "") + "：量化 %d 个 Linear（未量化 %d 个）"
+                    % (len(_conv), len(_skipped)))
+        rank0_print("[HiF8] 范围 apply=%s ignore=%s" % (list(_apply), list(_ignore)))
+        # 量化数量自检：语言模型 28 层 × 7 类 = 196 个 Linear，
+        # ignore 决定剩下多少。数量对不上要立刻看见，别悄悄跑偏。
+        _expect = {("lm_head",): 196,
+                   ("lm_head", "o_proj"): 168,
+                   ("lm_head", "down_proj"): 168,
+                   ("lm_head", "o_proj", "down_proj"): 140}.get(tuple(_ignore))
+        if _expect is not None and len(_conv) != _expect:
+            rank0_print("[HiF8] 注意：量化层数 %d != 预期 %d，请核对范围"
+                        % (len(_conv), _expect))
+        elif _expect is not None:
+            rank0_print("[HiF8] 数量自检通过：%d 个（符合该 ignore 组合的预期）" % _expect)
+        if _conv:
+            rank0_print("[HiF8] 首/末: %s | %s" % (_conv[0], _conv[-1]))
+        if _hif8 == "dts" and _dts_state is not None:
+            # 把延迟缩放的实际档位记进日志：interval / 采样步数 / 历史长度 /
+            # 取值方式 / 量化点数（每个 Linear 三个点：x、w、grad）
+            rank0_print("[HiF8-DTS] %s" % _dts_state())
+    else:
+        rank0_print("[HiF8] 未启用（bf16 基线臂）")
     
     rank0_print(f"Loaded {model_class.__name__} from {model_args.model_name_or_path}")
 
@@ -445,6 +507,19 @@ def train():
     
     local_rank = training_args.local_rank
     os.makedirs(training_args.output_dir, exist_ok=True)
+
+    # 固定种子必须在建模之前。denoiser 的 mlp / mlp_a / ln_pre / pos_embed 不在
+    # Qwen 的 checkpoint 里，是随机初始化的；原来 set_reproducibility 在建模之后
+    # 才调用，那时 torch 默认生成器还没播种（它首次使用时从系统熵取种），
+    # 导致两把同配置跑的扩散头权重不同——这是 loss 逐位不一致的真正根因。
+    # 这里只播种，不开确定性算法 / 不动 HF32：实测把整套 set_reproducibility
+    # 提到建模之前会让 ross_loss 变成 nan，所以只把「播种」这一件提前，
+    # 确定性开关仍留在建模之后（第 404 行那次）。
+    set_reproducibility(
+        int(getattr(training_args, "seed", 42)),
+        deterministic=False,
+    )
+    rank0_print("[Reproducibility] 建模前已播种 seed=%s" % training_args.seed)
     
     rank0_print("="*50)
     rank0_print("Qwen-VL VLA Training Setup")
@@ -473,7 +548,102 @@ def train():
         strip_ross_keys=not bool(getattr(model_args, "enable_world_model", True)),
         **data_module
     )
+
+    # 把 epoch 告诉 dataset：抽帧是 (base_seed, epoch, i) 的纯函数（见
+    # data_qwen_vla.py 的 _get_item），HF 只对 sampler 调 set_epoch、不管 dataset，
+    # 所以在这里补上。persistent_workers 未设，worker 每个 epoch 重新 fork，
+    # 因此写进 dataset 的值能传到 worker。
+    from transformers import TrainerCallback as _EpochTCB
+
+    class _DatasetEpochCallback(_EpochTCB):
+        def on_epoch_begin(self, args, state, control, **kwargs):
+            ds = kwargs.get("train_dataloader")
+            ds = getattr(ds, "dataset", None)
+            if ds is None:
+                ds = data_module.get("train_dataset")
+            if ds is not None and hasattr(ds, "epoch"):
+                ds.epoch = int(state.epoch or 0)
+
+    trainer.add_callback(_DatasetEpochCallback())
+
+    # ── DTS 的时钟：每训练步恰好推进一次 ──
+    # 不能用 register_optimizer_step_post_hook：实测在这条 HF Trainer + DeepSpeed
+    # 线上，同一个 AdamW 每训练步触发它**两次**，于是 _DelayedScaler.step 恒为
+    # 偶数；而 sample_last=1 让采样条件等价于 pos == interval-1，偶数取模偶数永远
+    # 得偶数，所以偶数 interval 下采样条件永不成立 —— amax 一次都没采到，scale
+    # 冻结在冷启动值，整段训练退化成静态缩放（实测同一量化点 119 条记录只有 1 个
+    # scale 取值，interval=2 与 interval=10 的 loss 逐位相同）。
+    # on_step_end 每步恰好一次，位置也相同（optimizer step 之后）。
+    try:
+        from models.quant import hif8_dts as _dts_clock
+    except Exception:
+        _dts_clock = None          # bf16 臂没有 torch_npu 也不该在这里挂
+    if _dts_clock is not None and _dts_clock.enabled():
+        from transformers import TrainerCallback as _ClkTCB
+
+        class _Hif8DtsClockCallback(_ClkTCB):
+            def on_step_end(self, args, state, control, **kwargs):
+                _dts_clock.tick()
+
+        trainer.add_callback(_Hif8DtsClockCallback())
+        rank0_print("[HiF8-DTS] 时钟回调已挂：on_step_end -> hif8_dts.tick()")
+        rank0_print("[HiF8-DTS] %s" % _dts_clock.state())
+
     
+    # ── 可选：NPU profiler（HIF8_PROFILE=1 时才开，默认路径不受影响）──
+    # 配置照搬 di-qwen-mot 的 make_profiler（那边的配置有单测钉住）：
+    # torch.profiler 看不到 NPU kernel，所以用 torch_npu 的；CANN 层信息只在
+    # 它的 experimental config 里，故 Level1。
+    # active 从参考里的 1 改成 3：HANDOFF.md 记录「第一个被采样的 step 是伪影
+    # （profiler 启动开销）必须丢掉」，active=1 时唯一那一步就是伪影。
+    if os.environ.get("HIF8_PROFILE") == "1":
+        import torch_npu as _tnpu
+        from transformers import TrainerCallback as _TCB
+
+        _pdir = os.environ.get("HIF8_PROFILE_DIR",
+                               os.path.join(training_args.output_dir, "profile"))
+        _rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+
+        class _NpuProfileCallback(_TCB):
+            """只在 rank0 采：算子级耗时各 rank 同构，8 份 trace 只是体积 x8。"""
+
+            def __init__(self):
+                self.prof = None
+                if _rank != 0:
+                    return
+                _pf = _tnpu.profiler
+                os.makedirs(_pdir, exist_ok=True)
+                self.prof = _pf.profile(
+                    activities=[_pf.ProfilerActivity.CPU, _pf.ProfilerActivity.NPU],
+                    schedule=_pf.schedule(wait=1, warmup=1, active=3, repeat=1,
+                                          skip_first=20),
+                    on_trace_ready=_pf.tensorboard_trace_handler(
+                        _pdir, worker_name="rank%d" % _rank),
+                    record_shapes=True,
+                    with_stack=False,
+                    profile_memory=False,
+                    experimental_config=_pf._ExperimentalConfig(
+                        profiler_level=_pf.ProfilerLevel.Level1),
+                )
+
+            def on_train_begin(self, args, state, control, **kwargs):
+                if self.prof is not None:
+                    self.prof.start()
+                    print("[profile] 已启动，trace 写到 %s（skip20/wait1/warmup1/active3）"
+                          % _pdir, flush=True)
+
+            def on_step_end(self, args, state, control, **kwargs):
+                if self.prof is not None:
+                    self.prof.step()
+
+            def on_train_end(self, args, state, control, **kwargs):
+                if self.prof is not None:
+                    self.prof.stop()
+                    print("[profile] 已停止，trace 在 %s" % _pdir, flush=True)
+
+        trainer.add_callback(_NpuProfileCallback())
+        rank0_print("[profile] NPU profiler 已挂上（仅 rank0），输出 %s" % _pdir)
+
     # Print dataloader len
     if torch.distributed.get_rank() == 0:
         rank0_print(f"dataloader len:")

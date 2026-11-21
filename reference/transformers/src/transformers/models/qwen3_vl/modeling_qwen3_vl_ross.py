@@ -329,7 +329,9 @@ class Qwen3VLForConditionalGenerationROSS(Qwen3VLForConditionalGeneration):
         with torch.amp.autocast(image_hidden.device.type, dtype=torch.float32):
             action_hidden = self.denoiser.ln_pre_a(action_hidden)
             image_hidden = self.denoiser.ln_pre(image_hidden)
-            image_hidden = rearrange(image_hidden, "b (h w) c -> b c h w", h=h, w=w)
+            # rearrange 是 permute，产出非 contiguous 视图；开确定性后下游
+            # F.interpolate 的分解实现会因此推断出 channels_last 而在 NPU 上失败。
+            image_hidden = rearrange(image_hidden, "b (h w) c -> b c h w", h=h, w=w).contiguous()
             ross_loss = self.denoiser(
                 z=image_hidden.float(), target=z_q.float(), z_a=action_hidden.float()
             )

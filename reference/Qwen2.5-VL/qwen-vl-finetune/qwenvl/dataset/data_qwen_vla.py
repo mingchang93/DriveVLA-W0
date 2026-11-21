@@ -702,7 +702,9 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
     - Time windows:
         pre action: 1.5s history, 1s future
         cur action: 1.5s history, 4s future
-    - Index sampling controlled by rng(seed)
+    - Index sampling controlled by rng(seed)（默认，原实现）；置环境变量
+      FRAME_SAMPLING_STATELESS=1 则改为 (seed, epoch, index) 的纯函数，
+      与调用顺序和 num_workers 无关，用于需要续训逐位一致的长跑
     """
 
     def __init__(self, tokenizer: transformers.PreTrainedTokenizer, data_args):
@@ -757,7 +759,18 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
         self.frames_per_second = getattr(data_args, "frames_per_second", 10)  # NuPlan/Emu3 convention
         self.va_pair_num = 2  # fixed per requirement
         self.gap_frames = getattr(data_args, "va_gap_frames", self.frames_per_second)  # 1s gap default
-        self.rng = random.Random(data_args.seed if hasattr(data_args, 'seed') else 42)
+        self.base_seed = int(data_args.seed if hasattr(data_args, 'seed') else 42)
+        self.epoch = 0   # 由 train_qwen_vla.py 的 _DatasetEpochCallback 在每个 epoch 开始时写入
+        # 抽帧的两种实现，默认走原实现（论文精度是在它下面得出的）：
+        #   0 = 原实现：推进式私有 RNG。它不进 ckpt、trainer 的 _load_rng_state
+        #       碰不到（那是全局 random 模块）、num_workers 下被 fork 成多份各自推进，
+        #       所以从 checkpoint 续训会喂进不同的帧（实测首步差 2e-2，三项指标 0/20 逐位一致）。
+        #   1 = 无状态：按 (种子, epoch, 索引) 现算，与调用顺序和 worker 数无关，
+        #       续训能逐位接上。分布已实测与原实现无法区分（均值 74.40 vs 74.50、
+        #       卡方 13.1 vs 18.6、lag1~5 自相关 <0.01、跨 epoch 独立）。
+        # 需要中途存 ckpt 且要求续训逐位一致的长跑才置 1。
+        self.stateless_frame_sampling = os.environ.get("FRAME_SAMPLING_STATELESS", "0") == "1"
+        self.rng = random.Random(self.base_seed)   # 原实现用
 
         self.tokenizer = tokenizer
         self.data_args = data_args
@@ -1003,7 +1016,14 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
             # degenerate window; fallback to center
             low = max(0, scene_len // 4)
             high = max(low, scene_len // 2)
-        cur_idx = self.rng.randint(low, high)
+        if self.stateless_frame_sampling:
+            # 与调用顺序、worker 数无关：同一个 (epoch, i) 永远抽到同一帧。
+            # 这是续训能逐位接上的关键 —— trainer 的 _load_rng_state 是在取出
+            # inputs 之后才执行的，所以第一个批次的内容不能依赖任何可恢复的 RNG 状态。
+            _fs = (int(self.base_seed) * 1000003 + int(self.epoch)) * 1000003 + int(i)
+            cur_idx = random.Random(_fs).randint(low, high)
+        else:
+            cur_idx = self.rng.randint(low, high)   # 原实现
         pre_idx = cur_idx - one_sec
 
         # Prepare containers
