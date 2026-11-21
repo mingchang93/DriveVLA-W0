@@ -1,25 +1,34 @@
 #!/usr/bin/env python3
-"""The seven navtest metrics, per arm, from the score csv + inference dumps.
+"""Trajectory metrics, per arm, from the score csv + inference dumps.
 
-  ADE / FDE / head / LDist   from the increments in `action` vs `action_gt_denorm`,
-                             composed into poses by traj_metrics.scene_metrics
-                             (8 predicted steps x 0.5 s, aligned to gt rows 3..10).
-                             LDist = longitudinal axis (x).
-  Agent Coll                 100 * (1 - mean no_at_fault_collisions), i.e. NAVSIM's
-                             collision-with-agent test on the simulated rollout.
-  Lane Cross                 100 * (1 - mean drivable_area_compliance). Proxy: an
-                             ego-polygon vs drivable-map violation, NOT a test for
-                             crossing a painted lane line.
-  HB Coll                    collision AND a predicted deceleration of at least
-                             HB_THRESHOLD m/s^2 between two 0.5 s steps (speed =
-                             |(dx,dy)| / 0.5). This is one operationalisation of
-                             "hard-braking collision", not a benchmark constant --
-                             the threshold is a choice, and changing it rescales
-                             the count.
+    ADE / FDE / head / headF / LDist / lonF / lat / latF / latbias
+                        from `action` vs `action_gt_denorm`, composed into poses
+                        by traj_metrics.scene_metrics (8 predicted increments of
+                        0.5 s, aligned to gt rows 3..10).
+                          ADE    mean_t ||p_t - g_t||        FDE     ||p_8 - g_8||
+                          head   mean_t |dtheta| (deg)       headF   same at t = 8
+                          LDist  mean_t |dx| (longitudinal)  lonF    same at t = 8
+                          lat    mean_t |dy| (lateral)       latF    same at t = 8
+                          latbias mean_t dy, signed (+ = pred left of GT)
+    Agent Coll          100 x the fraction of scenes whose `no_at_fault_collisions`
+                        is 0.0.  pdm_scorer.py assigns 0.0 when the struck object
+                        is an agent {BICYCLE, EGO, PEDESTRIAN, VEHICLE}, 0.5 when
+                        it is not, 1.0 when clear, so this is the agent-only count
+                        and NOT 100 x (1 - mean NC), which would add the 0.5 rows.
+    Lane Cross          100 x the fraction of scenes with drivable_area_compliance
+                        < 0.5 (DAC is binary).  A drivable-map violation proxy,
+                        NOT a painted lane-line test.
+    HB Coll             collision AND a predicted deceleration of at least
+                        HB_THRESHOLD m/s^2 between two 0.5 s steps (speed =
+                        |(dx, dy)| / 0.5).  One operationalisation of
+                        "hard-braking collision", not a benchmark constant --
+                        the threshold is a choice and changing it rescales the
+                        count.  Degenerate at 3 m/s^2 on this data.
 
 Usage: metrics7.py <exp dir> <json_output dir> [<exp dir> <json_output dir> ...]
-Reads both sources read-only. Prints one row per arm, then paired comparisons
-against the first arm (t for the continuous metrics, exact McNemar for the binary).
+Reads both sources read-only. Prints one row per arm, the median / p95 of the
+continuous metrics, and paired comparisons against the first arm (t for the
+continuous metrics, exact McNemar for the binary ones).
 """
 import csv
 import glob
@@ -33,6 +42,9 @@ from traj_metrics import scene_metrics
 HB_THRESHOLD = 3.0  # m/s^2
 DT = 0.5            # s between dumped steps
 
+CONT = ["ade", "fde", "head", "headf", "ldist", "lonf", "lat", "latf", "lbias"]
+BIN = ["coll", "hb", "lane"]
+
 
 def max_decel(pred):
     """Largest deceleration of the predicted trajectory, m/s^2 (>= 0)."""
@@ -43,13 +55,13 @@ def max_decel(pred):
 
 
 def load_csv(exp_dir, cols):
-    path = ""
+    rows = None
     for c in sorted(glob.glob(os.path.join(exp_dir, "*", "*.csv"))):
         with open(c) as f:
-            rows = list(csv.DictReader(f))
-        if rows and "score" in rows[0]:
-            path = c
-    if not path:
+            r = list(csv.DictReader(f))
+        if r and "score" in r[0]:
+            rows = r  # keep the rows of the file we picked, not the last read
+    if rows is None:
         raise SystemExit("no score csv under " + exp_dir)
     out = {}
     for r in rows:
@@ -85,11 +97,12 @@ def arm(exp_dir, json_dir):
     common = sorted(set(traj) & set(flags))
     rows = []
     for t in common:
-        (ade, fde, head, _hf, lon, _lf, _lat, _latf, _lb), decel = traj[t]
+        (ade, fde, head, head_f, lon, lon_f, lat, lat_f, lb), decel = traj[t]
         nc, dac = flags[t]
-        coll = nc < 0.5
+        coll = nc < 0.5  # 0.0 = agent struck; 0.5 = static/unknown, not counted
         rows.append({
-            "token": t, "ade": ade, "fde": fde, "head": head, "ldist": lon,
+            "token": t, "ade": ade, "fde": fde, "head": head, "headf": head_f,
+            "ldist": lon, "lonf": lon_f, "lat": lat, "latf": lat_f, "lbias": lb,
             "coll": 1.0 if coll else 0.0,
             "lane": 1.0 if dac < 0.5 else 0.0,
             "hb": 1.0 if (coll and decel >= HB_THRESHOLD) else 0.0,
@@ -104,6 +117,11 @@ def mean(rows, k):
 
 def pct(rows, k):
     return 100.0 * mean(rows, k)
+
+
+def quant(rows, k, p):
+    s = sorted(r[k] for r in rows)
+    return s[min(len(s) - 1, int(p * len(s)))]
 
 
 def paired_t(a, b, k):
@@ -121,8 +139,14 @@ def mcnemar(a, b, k):
     if not n:
         return a_only, b_only, 1.0
     k_ = min(a_only, b_only)
-    p = min(1.0, 2.0 * sum(math.comb(n, i) for i in range(k_ + 1)) / 2.0 ** n)
+    tail = sum(math.comb(n, i) for i in range(k_ + 1))  # exact int; 2.0**n overflows float
+    p = min(1.0, 2.0 * (tail / (1 << n)))
     return a_only, b_only, p
+
+
+LABELS = [("ade", "ADE"), ("fde", "FDE"), ("head", "head"), ("headf", "headF"),
+          ("ldist", "LDist"), ("lonf", "LDistF"), ("lat", "lat"), ("latf", "latF"),
+          ("lbias", "latBias")]
 
 
 def main(args):
@@ -135,14 +159,31 @@ def main(args):
         data.append(rows)
         print("%-26s %5d scenes" % (names[-1], n))
 
+    hdr = "%-26s" + " %8s" * 5
+    row = "%-26s" + " %8.4f" * 5
     print()
-    print("HB Coll threshold: predicted decel >= %.1f m/s^2 (%.1f s samples)" % (HB_THRESHOLD, DT))
-    print("%-26s %7s %7s %7s %7s %10s %10s %10s" % (
-        "arm", "ADE", "FDE", "head", "LDist", "AgentColl", "HBColl", "LaneCross"))
+    print("HB Coll: predicted decel >= %.1f m/s^2 over %.1f s steps" % (HB_THRESHOLD, DT))
+    print("mean over the 8 steps (4.0 s)")
+    print(hdr % ("arm", "ADE", "head", "LDist", "lat", "latBias"))
     for n, rows in zip(names, data):
-        print("%-26s %7.4f %7.4f %7.4f %7.4f %9.3f%% %9.3f%% %9.3f%%" % (
-            n, mean(rows, "ade"), mean(rows, "fde"), mean(rows, "head"),
-            mean(rows, "ldist"), pct(rows, "coll"), pct(rows, "hb"), pct(rows, "lane")))
+        print(row % ((n,) + tuple(mean(rows, k) for k in ("ade", "head", "ldist", "lat", "lbias"))))
+    print()
+    print("final step only")
+    print(hdr % ("arm", "FDE", "headF", "LDistF", "latF", "meanMaxDecel"))
+    for n, rows in zip(names, data):
+        print(row % ((n,) + tuple(mean(rows, k) for k in ("fde", "headf", "lonf", "latf", "decel"))))
+    print()
+    print("events, % of scenes")
+    print("%-26s %10s %10s %10s" % ("arm", "AgentColl", "HBColl", "LaneCross"))
+    for n, rows in zip(names, data):
+        print("%-26s %9.3f%% %9.3f%% %9.3f%%" % ((n,) + tuple(pct(rows, k) for k in BIN)))
+    print()
+    print("distribution of the per-scene means (median / p95)")
+    print(hdr % ("arm", "ADE", "head", "LDist", "lat", "latBias"))
+    for n, rows in zip(names, data):
+        for lab, p in (("median", 0.50), ("p95", 0.95)):
+            print(row % (((n + " " + lab)[:26],) + tuple(quant(rows, k, p) for k in ("ade", "head", "ldist", "lat", "lbias"))))
+    print()
     for n, rows in zip(names, data):
         nc = sum(1 for r in rows if r["coll"])
         nh = sum(1 for r in rows if r["hb"])
@@ -163,7 +204,7 @@ def main(args):
         a = [idx[t] for t in keys]
         b = [r for r in base if r["token"] in idx]
         print("  %s  n=%d" % (n, len(keys)))
-        for k, label in (("ade", "ADE"), ("fde", "FDE"), ("head", "head"), ("ldist", "LDist")):
+        for k, label in LABELS:
             m, t = paired_t(a, b, k)
             print("    %-10s delta %+8.4f  t %+6.2f" % (label, m, t))
         for k, label in (("coll", "AgentColl"), ("hb", "HBColl"), ("lane", "LaneCross")):

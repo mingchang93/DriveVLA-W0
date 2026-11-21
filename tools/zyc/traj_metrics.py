@@ -22,7 +22,12 @@ displacement in a rotated frame is not a displacement in the ego frame:
   head   mean_t |theta_p - theta_g| (deg)      headF  same at t = 8
   lon    mean_t |x_p - x_g| (m)                lonF   same at t = 8   <- LDist
   lat    mean_t |y_p - y_g| (m)                latF   same at t = 8
-  lbias  mean_t (y_p - y_g)  (m, signed; + = pred right of GT in ego frame)
+  lbias  mean_t (y_p - y_g)  (m, signed; + = pred LEFT of GT in ego frame)
+
+The frame is the ego frame of the current step: x forward, y left.  The pickle
+generator builds `rel = (p - origin) @ R(-heading).T`, which sends a point left
+of the ego (origin + R(h).(0,1)) to (0, +1), so a positive y -- and therefore a
+positive lbias -- is a displacement to the LEFT.
 
 Usage: traj_metrics.py <out dir> <json_output dir> [<dir> ...]
 Prints one row per arm and writes per-scene values to <out dir>/<arm>.csv.
@@ -89,6 +94,14 @@ def selftest():
     _a, _f, head, head_f, _lo, _lof, _la, _laf, _lbi = scene_metrics(turn, gt)
     assert abs(head - 0.1 * 4.5 / D2R) < 1e-9, ("head", head)
     assert abs(head_f - 0.8 / D2R) < 1e-9, ("head_f", head_f)
+
+    # +0.4 m of y per step, straight: the lateral offset accumulates to 0.4*k,
+    # so mean is 0.4*4.5 and final 0.4*8; the signed bias keeps the sign (+ = left).
+    left = [[1.0, 0.4, 0.0]] * STEPS
+    _a, _f, _h, _hf, lon, _lof, lat, lat_f, lb = scene_metrics(left, gt)
+    assert abs(lon) < 1e-12, ("lon", lon)
+    assert abs(lat - 0.4 * 4.5) < 1e-12 and abs(lat_f - 3.2) < 1e-12, ("lat", lat, lat_f)
+    assert abs(lb - 0.4 * 4.5) < 1e-12, ("lbias", lb)
     print("selftest ok")
 
 
