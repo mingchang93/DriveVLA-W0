@@ -5,12 +5,13 @@
 参照 fp32 结果作为真值，这样能分清偏差里有多少本来就是 bf16 自带的。
 """
 import sys
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/mnt/sfs_turbo/zyc/DriveVLA-W0")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from models.quant.hif8_cts import (  # noqa: E402
     HiF8CTSLinear, convert_to_hif8_cts, hif8_available,
 )
@@ -98,7 +99,7 @@ m = nn.Sequential(
     nn.ReLU(),
     nn.Sequential(nn.Linear(256, 256), nn.Linear(256, 64)),
 ).to(DEV).bfloat16()
-conv, skip = convert_to_hif8_cts(m, skip=())
+conv, skip = convert_to_hif8_cts(m, apply=(), ignore=())
 print("  换掉 %d 个，跳过 %d 个：%s" % (len(conv), len(skip), conv))
 n_q = sum(1 for _ in m.modules() if isinstance(_, HiF8CTSLinear))
 print("  实际 HiF8CTSLinear 数量: %d" % n_q)
