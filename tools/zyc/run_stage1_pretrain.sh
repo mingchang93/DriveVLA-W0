@@ -49,7 +49,8 @@ GA=${GA:-1}
 GC=${GC:-False}
 # 从已废弃的 run_stage1_pretrain_lrtest.sh 搬过来的参数（链条脚本依赖）。
 # 默认值与本脚本原先写死的行为一致，所以不传参数的旧调用方行为不变。
-# lr 不做参数：已定死 5e-5（实测为预训练 lr 扫描的峰值）。
+# lr 不做参数：已定死 5e-5（实测 PDMS 0.8547；2.5e-5 得 0.8293、
+# 1e-4 得 0.7054、2e-4 得 0.6803）。
 SAVE_STRATEGY=${SAVE_STRATEGY:-no}
 SAVE_STEPS=${SAVE_STEPS:-1000}
 STEPS=${STEPS:-8000}

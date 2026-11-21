@@ -18,7 +18,7 @@
 #     —— 五个 repo 脚本（阶段一 + 四个阶段二）全部如此，世界模型从未被关过。
 #        推理侧不受影响：评测 runner 加载普通 Qwen3VLForConditionalGeneration，
 #        denoiser.*/vae.* 以 unexpected-key 忽略。已用 20 步 ckpt 实测走通
-#        （21 场景 → 21 JSON，分数正常产出）。
+#        （21 场景 → 21 JSON → PDMS 41.13）。
 #
 # ── 两处按冷启动调整 ──
 #   warmup_steps 50 / per_device_train_batch_size 6

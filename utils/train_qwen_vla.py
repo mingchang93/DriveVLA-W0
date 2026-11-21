@@ -566,6 +566,29 @@ def train():
 
     trainer.add_callback(_DatasetEpochCallback())
 
+    # ── DTS 的时钟：每训练步恰好推进一次 ──
+    # 不能用 register_optimizer_step_post_hook：实测在这条 HF Trainer + DeepSpeed
+    # 线上，同一个 AdamW 每训练步触发它**两次**，于是 _DelayedScaler.step 恒为
+    # 偶数；而 sample_last=1 让采样条件等价于 pos == interval-1，偶数取模偶数永远
+    # 得偶数，所以偶数 interval 下采样条件永不成立 —— amax 一次都没采到，scale
+    # 冻结在冷启动值，整段训练退化成静态缩放（实测同一量化点 119 条记录只有 1 个
+    # scale 取值，interval=2 与 interval=10 的 loss 逐位相同）。
+    # on_step_end 每步恰好一次，位置也相同（optimizer step 之后）。
+    try:
+        from models.quant import hif8_dts as _dts_clock
+    except Exception:
+        _dts_clock = None          # bf16 臂没有 torch_npu 也不该在这里挂
+    if _dts_clock is not None and _dts_clock.enabled():
+        from transformers import TrainerCallback as _ClkTCB
+
+        class _Hif8DtsClockCallback(_ClkTCB):
+            def on_step_end(self, args, state, control, **kwargs):
+                _dts_clock.tick()
+
+        trainer.add_callback(_Hif8DtsClockCallback())
+        rank0_print("[HiF8-DTS] 时钟回调已挂：on_step_end -> hif8_dts.tick()")
+        rank0_print("[HiF8-DTS] %s" % _dts_clock.state())
+
     
     # ── 可选：NPU profiler（HIF8_PROFILE=1 时才开，默认路径不受影响）──
     # 配置照搬 di-qwen-mot 的 make_profiler（那边的配置有单测钉住）：

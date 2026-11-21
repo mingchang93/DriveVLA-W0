@@ -41,13 +41,46 @@ scale 要钳住下界：CTS 能容忍全零张量，因为 npu_quant_matmul 是�
 """
 
 import logging
+import os
 import weakref
 from typing import Optional
 
 import torch
 import torch.nn as nn
 
+try:
+    from models.quant import hif8_probe as _probe
+except Exception:  # 探针缺失不影响训练
+    _probe = None
+
 logger = logging.getLogger(__name__)
+
+# 时钟探测：只在 rank0 打到 stdout。logger.info 实测进不了 train.log，
+# 所以这里用 print —— 由 HIF8_DTS_CLOCK=1 开，默认完全静默。
+_CLOCK_DEBUG = os.environ.get("HIF8_DTS_CLOCK", "") == "1"
+
+
+def _say(msg):
+    """rank0 打到 stdout。实测 logger.info 进不了 train.log，所以关键诊断用 print。"""
+    try:
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            if torch.distributed.get_rank() != 0:
+                return
+        print("[HiF8-DTS] %s" % msg, flush=True)
+    except Exception:
+        pass
+
+
+def _clk(msg):
+    if not _CLOCK_DEBUG:
+        return
+    try:
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            if torch.distributed.get_rank() != 0:
+                return
+        print("[HiF8-DTS-CLOCK] %s" % msg, flush=True)
+    except Exception:
+        pass
 
 try:
     import torch_npu
@@ -85,6 +118,62 @@ def hif8_available() -> bool:
         and hasattr(torch_npu, "npu_quant_max")
         and hasattr(torch_npu, "npu_quant_matmul")
     )
+
+
+def _probe_rec(point, x):
+    """只读记录。role 从 label 后缀取，dst_max 用 point.target，与 CTS 侧同口径。"""
+    if _probe is None or not _probe.ENABLED:
+        return
+    try:
+        _probe.record(point.label.rsplit(".", 1)[-1], point.label,
+                      x, point.scale, point.target)
+    except Exception:
+        pass
+
+
+# ---- scale 用什么统计量：默认 amax，可换成分位数（HIF8_DTS_STAT）----
+# amax 是千万个坐标里的单点极值（实测 amax/p99 = 4.1~34.5），用它定 scale 等于
+# 把整张量的栅格绑在一个离群点上。HIF8_DTS_STAT=p99 换成稳健统计量。
+# 分位数只在**非零**元素上算：role=g 有 96.53% 的元素是精确零（padding/mask），
+# 全张量的 0.99 分位只相当于非零部分的 0.71 分位，不是一回事。
+_STAT = os.environ.get("HIF8_DTS_STAT", "amax").strip().lower()
+_STAT_N = int(os.environ.get("HIF8_DTS_STAT_N", "1048576") or 1048576)
+_STAT_ROLES = os.environ.get("HIF8_DTS_STAT_ROLES", "g").strip().lower()
+if _STAT in ("", "amax", "max"):
+    _STAT_Q = 0.0
+elif _STAT.startswith("p"):
+    _STAT_Q = float(_STAT[1:]) / 100.0
+else:
+    _STAT_Q = float(_STAT)
+if not 0.0 <= _STAT_Q < 1.0:
+    raise ValueError("HIF8_DTS_STAT 只接受 amax / p<xx> / 0<q<1，收到 %r" % _STAT)
+
+
+def _stat_applies(point):
+    if _STAT_Q <= 0.0:
+        return False
+    role = point.label.rsplit(".", 1)[-1] if point.label else ""
+    return role in [t.strip() for t in _STAT_ROLES.split(",")]
+
+
+def _scale_stat(point, x):
+    """返回用来定 scale 的标量，shape (1,) float32。"""
+    a = x.detach().abs().reshape(-1)
+    if not _stat_applies(point):
+        return a.max().reshape(1)
+    n = a.numel()
+    if n > _STAT_N:
+        # 随机下标，不用定步长：梯度按 (token, feature) 展平，定步长会和 feature
+        # 维混叠、永远取到同一批特征位。采样噪声无害 —— 已实测 scale 的每步抖动
+        # 对精度没有影响（压 20 倍、偏差分毫不动）。
+        a = a.index_select(0, torch.randint(0, n, (_STAT_N,), device=a.device))
+    a = a.float()
+    nz = a[a > 0]
+    m = nz.numel()
+    if m < 1000:
+        return a.max().reshape(1)        # 非零太少，分位数不可靠，退回 amax
+    k = min(m, max(1, int(m * _STAT_Q) + 1))
+    return nz.kthvalue(k).values.reshape(1)
 
 
 class ScalePoint:
@@ -127,6 +216,12 @@ class _DelayedScaler:
         self.history_len = history_len
         self.compute_algo = compute_algo
         self.allreduce = allreduce
+        # 静态缩放：首次调用种下 scale、step 1 跨 rank 对齐、此后不刷新。
+        # 这是 2026-11-18 前所有「DTS」运行的实际行为，实测优于真延迟缩放 56 倍。
+        self.static = os.environ.get("HIF8_DTS_STATIC", "0") not in ("0", "", "false", "False", "no")
+        # 只重种一次：静态配方下，在第 R 个训练步刷新一次 scale，之后再冻住。
+        # 用来分开「任何改变」与「累计漂移」—— 两者在冻结臂里是绑死的。
+        self.reseed = int(os.environ.get("HIF8_DTS_RESEED", "0") or 0)
         self.step = 0
         self.points = []
         self.observations = 0
@@ -141,6 +236,9 @@ class _DelayedScaler:
         self.points.append(point)
 
     def observing_now(self):
+        if self.static:
+            # 静态：永不采样；唯一例外是 RESEED 指定的那一步要采一次
+            return self.reseed > 0 and self.step == self.reseed - 1
         pos = self.step % self.interval
         return pos != 0 and pos >= self.interval - self.sample_last
 
@@ -151,19 +249,28 @@ class _DelayedScaler:
             # 一个点的第一次调用是 CTS，落到的 scale 就是它保留的那个。
             # 不能用 npu_quant_max：它需要一个 scale 才能量化，而这正是唯一
             # 还没有 scale 的那次调用 —— 所以这里两个 kernel，每个点一次。
-            self.seed(point, torch.linalg.vector_norm(x.detach(), float("inf")))
-            return (torch_npu.npu_quantize(x, point.scale, None, dst_type, -1, True),
-                    point.scale)
+            self.seed(point, _scale_stat(point, x))
+            _q = torch_npu.npu_quantize(x, point.scale, None, dst_type, -1, True)
+            _probe_rec(point, x)
+            return (_q, point.scale)
         if not self.observing_now():
             # 扫一遍 x，任何地方都不算 amax
-            return (torch_npu.npu_quantize(x, point.scale, None, dst_type, -1, True),
-                    point.scale)
+            _q = torch_npu.npu_quantize(x, point.scale, None, dst_type, -1, True)
+            _probe_rec(point, x)
+            return (_q, point.scale)
         # 采样步：码点和 amax(x) 出自同一遍。npu_quant_max 算 cast(x * scale)，
         # 所以喂的是 npu_quantize 所除的那个值的倒数。
-        codes, amax = torch_npu.npu_quant_max(
-            x, point.inv_scale, round_mode=_ROUND_MODES.get(dst_type, "round"),
-            dst_dtype=dst_type)
-        self.note_amax(point, amax)
+        if _stat_applies(point):
+            # 分位数口径下用不了融合的 npu_quant_max（它只产出 amax），
+            # 所以码点和统计量分两遍。这笔开销只在采样步付（1/interval）。
+            codes = torch_npu.npu_quantize(x, point.scale, None, dst_type, -1, True)
+            self.note_amax(point, _scale_stat(point, x))
+        else:
+            codes, amax = torch_npu.npu_quant_max(
+                x, point.inv_scale, round_mode=_ROUND_MODES.get(dst_type, "round"),
+                dst_dtype=dst_type)
+            self.note_amax(point, amax)
+        _probe_rec(point, x)
         return codes, point.scale
 
     def seed(self, point, amax):
@@ -194,12 +301,26 @@ class _DelayedScaler:
         lead = self._lead_optimizer() if self._lead_optimizer is not None else None
         if lead is None:
             self._lead_optimizer = weakref.ref(optimizer)
+            _clk("lead latched: %s" % type(optimizer).__name__)
         elif lead is not optimizer:
+            _clk("rejected non-lead: %s (lead=%s)"
+                 % (type(optimizer).__name__, type(lead).__name__))
             return
+        self._advance()
+
+    def _advance(self):
+        """把窗口推进一个训练步。每训练步必须恰好调用一次。"""
         self.step += 1
+        if self.step <= 3 or self.step % self.interval == 0:
+            _clk("step=%d" % self.step)
         if self.step == 1:
             self._sync_cold_start()
             return
+        if self.static:
+            if self.reseed > 0 and self.step == self.reseed and self.points:
+                _say("RESEED：在第 %d 步重种一次 scale，之后继续冻住" % self.step)
+                self._refresh()
+            return                 # 静态：除 RESEED 那一步外什么都不做
         if self.step % self.interval == 0 and self.points:
             self._refresh()
 
@@ -237,6 +358,22 @@ class _DelayedScaler:
     def _refresh(self):
         pts = [p for p in self.points if p.pending is not None]
         self.refreshes += 1
+        _clk("refresh #%d at step=%d: %d/%d points had pending"
+             % (self.refreshes, self.step, len(pts), len(self.points)))
+        # 硬自检：首次刷新一个点都没采到，说明时钟或采样条件坏了，scale 会就此
+        # 冻结在冷启动值、整段训练退化成静态缩放。这一条必须响，不能静默。
+        # （实测踩过：optimizer hook 每步触发两次 -> self.step 恒为偶数 ->
+        #   pos == interval-1 永不成立 -> 全程 0/N pending。）
+        if self.refreshes == 1 and not pts:
+            raise RuntimeError(
+                "HiF8 DTS 时钟坏了：第 1 次刷新（step=%d, interval=%d）"
+                "%d 个量化点一个都没采到 amax。scale 会冻结在冷启动值、"
+                "退化成静态缩放。检查时钟源是否每训练步恰好推进一次"
+                "（self.step 当前=%d），以及 observing_now() 的奇偶性。"
+                % (self.step, self.interval, len(self.points), self.step))
+        if self.refreshes <= 3 or self.refreshes % 200 == 0:
+            _say("refresh #%d at step=%d: %d/%d points sampled"
+                 % (self.refreshes, self.step, len(pts), len(self.points)))
         logger.info("HiF8 DTS 第 %d 步刷新：点 %d 个，本窗口采样到 %d 个，观测 %d 次",
                     self.step, len(self.points), len(pts), self.observations)
         self.observations = 0
@@ -294,13 +431,61 @@ def enable(interval, amax_sample_last=None, history_len=1,
     global _SCALER
     if _SCALER is not None:
         return
+    # amax 历史窗口可由环境变量覆盖；不设则沿用调用方传入的值。
+    # HIF8_DTS_HISTORY=16 HIF8_DTS_ALGO=max 让 scale 跟随 amax 的真实衰减、
+    # 同时滤掉单步极值噪声（实测梯度 amax 每步跳 ±28.9%，且与梯度主体无关，
+    # corr=-0.03；scale 跟着跳会给整张量注入一个不会相消的共模栅格平移）。
+    # 取值非法时由 _DelayedScaler.__init__ 直接抛错，不静默回退。
+    _env_hist = os.environ.get("HIF8_DTS_HISTORY", "").strip()
+    _env_algo = os.environ.get("HIF8_DTS_ALGO", "").strip()
+    if _env_hist:
+        history_len = int(_env_hist)
+    if _env_algo:
+        compute_algo = _env_algo
     _SCALER = _DelayedScaler(interval, amax_sample_last, history_len, compute_algo)
-    from torch.optim.optimizer import register_optimizer_step_post_hook
-    _SCALER._hook_handle = register_optimizer_step_post_hook(
-        lambda opt, args, kwargs: _SCALER.on_optimizer_step(opt))
+    if _env_hist or _env_algo:
+        # 必须进 stdout：被静默忽略的开关正是时钟 bug 让整段实验跑成另一个
+        # 配方的原因，module logger.info 到不了 train.log。
+        _say("amax 历史窗口来自环境变量：history_len=%d compute_algo=%s"
+             % (_SCALER.history_len, _SCALER.compute_algo))
+    # 时钟源。默认 trainer：由训练循环每步调一次 tick()，构造上保证一步一次。
+    # optimizer：原实现，挂 register_optimizer_step_post_hook —— 在 HF Trainer +
+    # DeepSpeed 这条线上实测每训练步触发两次，会让偶数 interval 永不采样，
+    # 只保留用于复现历史运行。
+    src = os.environ.get("HIF8_DTS_CLOCK_SRC", "trainer").strip().lower()
+    _SCALER.clock_src = src
+    if src == "optimizer":
+        from torch.optim.optimizer import register_optimizer_step_post_hook
+        _SCALER._hook_handle = register_optimizer_step_post_hook(
+            lambda opt, args, kwargs: _SCALER.on_optimizer_step(opt))
+        _say("clock source = optimizer post-step hook（历史行为）")
+    elif src == "trainer":
+        _say("clock source = trainer callback，训练侧必须每步调 hif8_dts.tick()")
+    if _STAT_Q > 0.0:
+        _say("scale 统计量 = %s（q=%.4f, 子样 %d, 只作用于 role=%s）"
+             % (_STAT, _STAT_Q, _STAT_N, _STAT_ROLES))
+    if _SCALER.static:
+        _say("recipe = STATIC（首次调用种下 scale + step1 跨 rank 对齐，此后不刷新）"
+             "；HIF8_INTERVAL 在此模式下无意义")
+        if _SCALER.reseed > 0:
+            _say("recipe = STATIC + RESEED@%d（全程恒定，只在第 %d 步重种一次）"
+                 % (_SCALER.reseed, _SCALER.reseed))
     logger.info("HiF8 延迟缩放已启用：interval=%d amax_sample_last=%d "
                 "history_len=%d compute_algo=%s", interval, _SCALER.sample_last,
                 _SCALER.history_len, _SCALER.compute_algo)
+
+
+def tick():
+    """把 DTS 的窗口推进一个训练步。HIF8_DTS_CLOCK_SRC=trainer 时由训练循环每步调用。
+
+    幂等性不在这里保证 —— 调用方必须每训练步恰好调一次。这正是原来挂
+    optimizer hook 出的问题：同一个 optimizer 每步触发两次。
+    """
+    if _SCALER is None:
+        return
+    if getattr(_SCALER, "clock_src", "trainer") != "trainer":
+        return
+    _SCALER._advance()
 
 
 def enabled():
@@ -322,7 +507,9 @@ def state():
             "history_len": _SCALER.history_len,
             "compute_algo": _SCALER.compute_algo,
             "step": _SCALER.step, "points": len(_SCALER.points),
-            "refreshes": _SCALER.refreshes, "allreduce": _SCALER.allreduce}
+            "refreshes": _SCALER.refreshes, "allreduce": _SCALER.allreduce,
+            "clock_src": getattr(_SCALER, "clock_src", "?"),
+            "static": getattr(_SCALER, "static", False)}
 
 
 def _mm_kwargs():

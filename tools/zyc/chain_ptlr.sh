@@ -39,6 +39,17 @@ IG_PT=${IG_PT:-lm_head}
 IG_SFT=${IG_SFT:-lm_head}
 SAVE_STEPS_PT=${SAVE_STEPS_PT:-1000}
 HIF8_INTERVAL=${HIF8_INTERVAL:-10}
+# DTS 的 recipe 开关。默认全空 = 沿用代码默认（延迟缩放 history_len=1 / most_recent）。
+# 必须显式写进下面 docker exec 的 env 行，否则不会透进容器、会被静默忽略。
+#   HIF8_DTS_STATIC=1                      静态缩放（实测最好，loss 偏差 +0.52%）
+#   HIF8_DTS_HISTORY=16 HIF8_DTS_ALGO=max  跟随 amax 真实衰减、滤掉单步极值噪声
+HIF8_DTS_STATIC=${HIF8_DTS_STATIC:-}
+HIF8_DTS_HISTORY=${HIF8_DTS_HISTORY:-}
+HIF8_DTS_ALGO=${HIF8_DTS_ALGO:-}
+#   HIF8_DTS_STAT=p99                      scale 用非零元素的 p99 而不是 amax
+HIF8_DTS_STAT=${HIF8_DTS_STAT:-}
+HIF8_DTS_STAT_N=${HIF8_DTS_STAT_N:-}
+HIF8_DTS_STAT_ROLES=${HIF8_DTS_STAT_ROLES:-}
 
 T=/mnt/sfs_turbo/zyc/DriveVLA-W0/tools/zyc
 W=/mnt/sfs_turbo/zyc/drivevla-w0-zyc
@@ -102,6 +113,8 @@ docker exec zyc-w0 env \
   STEPS=8000 BS=12 GA=1 GC=False NPROC=8 LOGSTEP=1 \
   LR="$LR_PT" SAVE_STRATEGY=steps SAVE_STEPS="$SAVE_STEPS_PT" \
   HIF8="$HIF8_PT" HIF8_IGNORE="$IG_PT" HIF8_INTERVAL="$HIF8_INTERVAL" \
+  HIF8_DTS_STATIC="$HIF8_DTS_STATIC" HIF8_DTS_HISTORY="$HIF8_DTS_HISTORY" HIF8_DTS_ALGO="$HIF8_DTS_ALGO" \
+  HIF8_DTS_STAT="$HIF8_DTS_STAT" HIF8_DTS_STAT_N="$HIF8_DTS_STAT_N" HIF8_DTS_STAT_ROLES="$HIF8_DTS_STAT_ROLES" \
   OUT="$PT" PORT="$PORT_PT" HCCL_RANGE="$HR_PT" \
   bash "$T/run_stage1_pretrain.sh" > /tmp/chain_pt_${TAG}.out 2>&1
 kill "$P1" 2>/dev/null
@@ -134,6 +147,8 @@ docker exec zyc-w0 env \
   STEPS=4000 BS=6 GA=1 GC=False NPROC=8 LOGSTEP=1 SEED=42 \
   LR=1e-5 \
   HIF8="$HIF8_SFT" HIF8_IGNORE="$IG_SFT" HIF8_INTERVAL="$HIF8_INTERVAL" \
+  HIF8_DTS_STATIC="$HIF8_DTS_STATIC" HIF8_DTS_HISTORY="$HIF8_DTS_HISTORY" HIF8_DTS_ALGO="$HIF8_DTS_ALGO" \
+  HIF8_DTS_STAT="$HIF8_DTS_STAT" HIF8_DTS_STAT_N="$HIF8_DTS_STAT_N" HIF8_DTS_STAT_ROLES="$HIF8_DTS_STAT_ROLES" \
   DS=scripts/sft/zero2.json \
   OUT="$SFT" PORT="$PORT_SFT" HCCL_RANGE="$HR_SFT" \
   bash "$T/run_sft_navsim.sh" > /tmp/chain_sft_${TAG}.out 2>&1

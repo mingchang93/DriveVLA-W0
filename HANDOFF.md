@@ -1,3 +1,22 @@
+> **接手前先读这条**（2026-11-13 加）
+>
+> 本文件的工作方式说明**已经不适用**，照着走会走错：
+> - 第 5 行说"所有交互走 `ott9-a56` 上的 tmux pane `lmc-w0-hif8`" —— **a56 已释放**，
+>   现在的机器是 `ott9-a51` / `a52` / `a53` / `a54`（a51 是跳板）
+> - 第 13 行说"Box repo: `/mnt/sfs_turbo/lmc/DriveVLA-W0`" —— 那是 lmc 的仓库；
+>   我们的工作在 **`/mnt/sfs_turbo/zyc/DriveVLA-W0`**，工作目录 `/mnt/sfs_turbo/zyc/drivevla-w0-zyc`
+> - "Current state" 停在 2026-11-09
+>
+> **当前的交接文档是 `HANDOFF-hif8-2026-11-13.md`**（同目录，也在
+> `/mnt/sfs_turbo/zyc/drivevla-w0-zyc/drivevla-w0-hif8-handoff.md`，另有同名 `.html`）。
+> 它覆盖：数据与官方对齐、HiF8 实现与 ckpt 结构、运行方式与全部环境变量、
+> 已确立的事实（带「实测 / 未验证 / 已更正」标记）、抽帧与续训的根因与闭环、
+> torchtitan 与 BaiZe 两个参考实现、以及 11 条踩过的坑。
+>
+> 本文件下面的实验记录仍有价值，当历史看。
+
+---
+
 # HANDOFF
 
 Operational log for DriveVLA-W0 work. Updated after every experiment.
