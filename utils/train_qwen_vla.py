@@ -65,6 +65,11 @@ from token_utils import smart_load_model_and_tokenizer, prepare_action_tokenizer
 local_rank = None
 
 
+def npu_fa2_available() -> bool:
+    """Whether the vendored Ascend FA2 adapter can run on this process."""
+    return hasattr(torch, "npu") and torch.npu.is_available()
+
+
 class RossTrainer(Trainer):
 
     def __init__(self, *args, **kwargs):
@@ -172,8 +177,14 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
                 extract_action_hidden=True,
                 sd_model_path=model_args.sd_model_path,
             )
-        # The vendored NPU FA2 path is wired to Qwen2.5-VL's attention classes.
-        attn_impl = "sdpa"
+        use_npu_fa2 = os.getenv("ROSS_NPU_FA2", "0") == "1"
+        if use_npu_fa2 and npu_fa2_available():
+            attn_impl = "flash_attention_2"
+            rank0_print("[device] Qwen3-VL NPU FA2: enabled")
+        else:
+            attn_impl = "sdpa"
+            if use_npu_fa2:
+                rank0_print("[device] Qwen3-VL NPU FA2 unavailable; using sdpa")
     else:
         model_class = Qwen2_5_VLForConditionalGenerationROSS
         base_cfg = Qwen2_5_VLConfig.from_pretrained(
