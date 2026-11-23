@@ -531,7 +531,7 @@ class Qwen3VLTextMLP(nn.Module):
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
-        if _FUSED_GATEUP and _HAS_NPU_SWIGLU:
+        if _FUSED_GATEUP and _HAS_NPU_SWIGLU and x.device.type == "npu":
             w = torch.cat([self.gate_proj.weight, self.up_proj.weight], dim=0)
             gu = F.linear(x, w)
             return self.down_proj(_npu.npu_swiglu(gu, dim=-1))

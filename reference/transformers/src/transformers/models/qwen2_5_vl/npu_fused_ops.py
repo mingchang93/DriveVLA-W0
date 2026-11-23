@@ -35,6 +35,10 @@ def _flag(name: str, default: str = "0") -> bool:
     return os.getenv(name, default) == "1"
 
 
+def _npu_tensor(x: torch.Tensor) -> bool:
+    return torch.is_tensor(x) and x.device.type == "npu"
+
+
 _ENABLE_RMSNORM = _flag("ROSS_NPU_RMSNORM")
 _ENABLE_SWIGLU = _flag("ROSS_NPU_SWIGLU")
 _ENABLE_ROPE = _flag("ROSS_NPU_ROPE")
@@ -109,7 +113,7 @@ def backward_status() -> dict:
 
 
 def fused_rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float):
-    if not (_ENABLE_RMSNORM and _HAS_RMSNORM):
+    if not (_ENABLE_RMSNORM and _HAS_RMSNORM and _npu_tensor(x)):
         return None
     if x.dtype != weight.dtype:
         x = x.to(weight.dtype)
@@ -117,13 +121,13 @@ def fused_rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float):
 
 
 def fused_swiglu(gate: torch.Tensor, up: torch.Tensor):
-    if not (_ENABLE_SWIGLU and _HAS_SWIGLU):
+    if not (_ENABLE_SWIGLU and _HAS_SWIGLU and _npu_tensor(gate)):
         return None
     return torch_npu.npu_swiglu(torch.cat([gate, up], dim=-1), dim=-1)
 
 
 def fused_rotary_mul(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
-    if not (_ENABLE_ROPE and _HAS_ROTARY):
+    if not (_ENABLE_ROPE and _HAS_ROTARY and _npu_tensor(x)):
         return None
     return torch_npu.npu_rotary_mul(x, cos, sin)
 
@@ -158,7 +162,7 @@ class _FusedAddRMSNormV2(torch.autograd.Function):
 
 def fused_add_rms_norm(x1: torch.Tensor, x2: torch.Tensor, weight: torch.Tensor, eps: float):
     """Return ``(normed(x1 + x2), x1 + x2)`` or ``None`` for the reference path."""
-    if _ENABLE_ADD_RMS_V2 and _HAS_ADD_RMS_V2:
+    if _ENABLE_ADD_RMS_V2 and _HAS_ADD_RMS_V2 and _npu_tensor(x1):
         if x1.dtype != x2.dtype:
             x2 = x2.to(x1.dtype)
         if weight.dtype != x1.dtype:
@@ -168,7 +172,12 @@ def fused_add_rms_norm(x1: torch.Tensor, x2: torch.Tensor, weight: torch.Tensor,
         except Exception as exc:
             _warn_once("add_rms_norm_v2", exc)
             return None
-    if not (_ENABLE_ADD_RMS and _HAS_ADD_RMS and _BACKWARD_OK.get("add_rms_norm", False)):
+    if not (
+        _ENABLE_ADD_RMS
+        and _HAS_ADD_RMS
+        and _BACKWARD_OK.get("add_rms_norm", False)
+        and _npu_tensor(x1)
+    ):
         return None
     if x1.dtype != x2.dtype:
         x2 = x2.to(x1.dtype)
@@ -183,7 +192,7 @@ def fused_add_rms_norm(x1: torch.Tensor, x2: torch.Tensor, weight: torch.Tensor,
 
 
 def fused_silu(x: torch.Tensor):
-    if not (_ENABLE_SILU and _HAS_SILU and _BACKWARD_OK.get("silu", False)):
+    if not (_ENABLE_SILU and _HAS_SILU and _BACKWARD_OK.get("silu", False) and _npu_tensor(x)):
         return None
     try:
         return torch_npu.npu_silu(x)
