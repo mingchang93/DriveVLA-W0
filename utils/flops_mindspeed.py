@@ -287,8 +287,8 @@ def get_args():
     parser.add_argument(
         "--hardware_flops",
         type=float,
-        default=486e12,
-        help="per-device peak FLOP/s",
+        default=432e12,
+        help="per-device Cube-core peak FLOP/s (Ascend 950DT BF16)",
     )
     parser.add_argument(
         "--sd_path",
