@@ -14,9 +14,17 @@ from transformers import LogitsProcessor, AutoConfig
 from transformers.configuration_utils import PretrainedConfig
 from tqdm import tqdm
 
+try:
+    import torch_npu  # noqa: F401
+    _HAS_NPU = hasattr(torch, "npu") and torch.npu.is_available()
+except ImportError:
+    _HAS_NPU = False
+
 
 # Project root - dynamically get the project root directory
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 # Add train and qwen-vl reference paths
 train_dir = os.path.join(PROJECT_ROOT, "train")
@@ -33,6 +41,7 @@ from qwenvl.train.argument import DataArguments
 from transformers import (
     Qwen2VLForConditionalGeneration,
     Qwen2_5_VLForConditionalGeneration,
+    AutoImageProcessor,
     AutoProcessor,
     Qwen2VLImageProcessor,
 )
@@ -97,11 +106,15 @@ def parse_args():
 
 def setup_distributed() -> Tuple[int, int, torch.device]:
     if not dist.is_initialized():
-        dist.init_process_group(backend='nccl')
+        dist.init_process_group(backend='hccl' if _HAS_NPU else 'nccl')
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    device = torch.device(f"cuda:{rank}")
-    torch.cuda.set_device(device)
+    if _HAS_NPU:
+        device = torch.device(f"npu:{rank}")
+        torch.npu.set_device(device)
+    else:
+        device = torch.device(f"cuda:{rank}")
+        torch.cuda.set_device(device)
     return rank, world_size, device
 
 
@@ -192,6 +205,36 @@ def make_generation_prompt_and_position_ids(
     return {"prompt_ids": prefix}
 
 
+def resolve_backbone(qwen_hub: str):
+    """Select the policy class and processor for the checkpoint family."""
+    cfg_path = os.path.join(qwen_hub, "config.json")
+    family = "qwen25"
+    if os.path.exists(cfg_path):
+        with open(cfg_path) as f:
+            if json.load(f).get("model_type") == "qwen3_vl":
+                family = "qwen3vl"
+
+    if family == "qwen3vl":
+        from reference.transformers.src.transformers.models.qwen3_vl.modeling_qwen3_vl import (
+            Qwen3VLForConditionalGeneration,
+        )
+        # Exported checkpoints may omit the video processor config that the
+        # full Qwen3-VL processor tries to load.
+        return (
+            Qwen3VLForConditionalGeneration,
+            "qwen3vl",
+            AutoImageProcessor.from_pretrained(qwen_hub),
+            "sdpa",
+        )
+
+    return (
+        Qwen2_5_VLForConditionalGeneration,
+        "qwen2.5vl",
+        AutoProcessor.from_pretrained(qwen_hub).image_processor,
+        "sdpa" if _HAS_NPU else "flash_attention_2",
+    )
+
+
 def main():
     args = parse_args()
     rank, world_size, device = setup_distributed()
@@ -209,8 +252,8 @@ def main():
     )
 
     # Load model + tokenizer with VLA tokens
-    model_class = Qwen2_5_VLForConditionalGeneration
-    model_type = "qwen2.5vl"
+    model_class, model_type, image_processor, attn_implementation = resolve_backbone(args.qwen_hub)
+    print(f"[backbone] family={model_type} class={model_class.__name__} attn={attn_implementation}")
 
     torch_dtype = torch.bfloat16 if args.bf16 else None
 
@@ -219,11 +262,9 @@ def main():
         model_class=model_class,
         add_vla_tokens=False,
         torch_dtype=torch_dtype,
-        attn_implementation="flash_attention_2",
+        attn_implementation=attn_implementation,
         device_map=None,
     )
-
-    image_processor = AutoProcessor.from_pretrained(args.qwen_hub).image_processor
 
     tokenizer.model_max_length = args.model_max_length
     tokenizer.padding_side = "right"
@@ -361,16 +402,19 @@ def main():
         grid_thw_image_flat.extend(pre_grid_thw_merged)
         grid_thw_image_flat.extend(grid_thw_merged)
 
-        action_segments = [pre_user_action_token_ids, pre_wrapped_action_token_ids, user_action_token_ids]
-        action_roles = ["user", "assistant", "user"]
+        if data_args.use_previous_actions:
+            action_segments = [pre_user_action_token_ids, pre_wrapped_action_token_ids, user_action_token_ids]
+            action_roles = ["user", "assistant", "user"]
+        else:
+            action_segments, action_roles = None, None
         
         # Prompt ids and position ids
         data_dict = preprocess_qwen_2_visual_vla_sources(
             sources=user_content,
             tokenizer=tokenizer,
             grid_thw_image=grid_thw_image_flat,
-            action_segments=action_segments if len(action_segments) > 0 else None,
-            action_roles=action_roles if len(action_roles) > 0 else None,
+            action_segments=action_segments,
+            action_roles=action_roles,
         )   
         input_ids: torch.Tensor = data_dict["input_ids"][0]  # (seq,)
         # Remove the last two tokens ("<|im_end|>", "\n") to position at assistant content start
