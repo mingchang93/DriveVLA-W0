@@ -22,7 +22,11 @@ def make_model():
             "head_dim": 4,
             "max_position_embeddings": 32,
             "use_cache": False,
-            "mrope_section": [1, 1, 0],
+            "rope_scaling": {
+                "rope_type": "default",
+                "mrope_section": [1, 1, 0],
+                "mrope_interleaved": False,
+            },
         },
         vision_config={
             "depth": 1,
