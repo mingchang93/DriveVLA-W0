@@ -14,6 +14,7 @@
 # limitations under the License.
 """PyTorch Qwen3-VL model."""
 
+import os
 from typing import Callable, Optional, Union
 
 import numpy as np
@@ -61,6 +62,8 @@ from ..qwen3.modeling_qwen3 import (
 
 
 logger = logging.get_logger(__name__)
+
+_VALID_TOKEN_CE = os.getenv("ROSS_VALID_CE", "0") == "1"
 
 
 class Qwen3VLVisionConfig(PretrainedConfig):
@@ -1197,11 +1200,32 @@ class Qwen3VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration):
 
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :])
-
+        logits = None
         loss = None
-        if labels is not None:
-            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size)
+        if (
+            labels is not None
+            and _VALID_TOKEN_CE
+            and isinstance(logits_to_keep, int)
+            and logits_to_keep == 0
+            and kwargs.get("shift_labels") is None
+        ):
+            shift_labels = F.pad(labels, (0, 1), value=-100)[..., 1:].reshape(-1).to(hidden_states.device)
+            valid = shift_labels != -100
+            if valid.any():
+                valid_hidden = hidden_states[:, slice_indices, :].reshape(-1, hidden_states.shape[-1])[valid]
+                valid_logits = self.lm_head(valid_hidden).float()
+                loss = F.cross_entropy(valid_logits, shift_labels[valid])
+            else:
+                logits = self.lm_head(hidden_states[:, slice_indices, :])
+                loss = self.loss_function(
+                    logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size
+                )
+        else:
+            logits = self.lm_head(hidden_states[:, slice_indices, :])
+            if labels is not None:
+                loss = self.loss_function(
+                    logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size
+                )
 
         return Qwen3VLCausalLMOutputWithPast(
             loss=loss,

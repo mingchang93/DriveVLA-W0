@@ -18,7 +18,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 from typing import Optional, Union
 
 import numpy as np
@@ -56,6 +55,24 @@ class Qwen3VLProcessorKwargs(ProcessingKwargs, total=False):
             "return_mm_token_type_ids": False,
         },
         "videos_kwargs": {"return_metadata": True},
+    }
+
+
+class Qwen3ImagesKwargs(ImagesKwargs):
+    min_pixels: Optional[int]
+    max_pixels: Optional[int]
+    patch_size: Optional[int]
+    temporal_patch_size: Optional[int]
+    merge_size: Optional[int]
+
+
+class Qwen3ProcessorKwargs(ProcessingKwargs, total=False):
+    images_kwargs: Qwen3ImagesKwargs
+    _defaults = {
+        "text_kwargs": {
+            "padding": False,
+            "return_mm_token_type_ids": False,
+        },
     }
 
 
@@ -261,7 +278,7 @@ class Qwen3VLProcessor(ProcessorMixin):
 
         vision_data = {}
         if image_sizes is not None:
-            images_kwargs = Qwen3VLProcessorKwargs._defaults.get("images_kwargs", {})
+            images_kwargs = Qwen3ProcessorKwargs._defaults.get("images_kwargs", {})
             images_kwargs.update(kwargs)
             merge_size = images_kwargs.get("merge_size", None) or self.image_processor.merge_size
 
@@ -273,7 +290,7 @@ class Qwen3VLProcessor(ProcessorMixin):
             vision_data.update({"num_image_tokens": num_image_tokens, "num_image_patches": num_image_patches})
 
         if video_sizes is not None:
-            videos_kwargs = Qwen3VLProcessorKwargs._defaults.get("videos_kwargs", {})
+            videos_kwargs = Qwen3ProcessorKwargs._defaults.get("videos_kwargs", {})
             videos_kwargs.update(kwargs)
             num_video_patches = [
                 self.video_processor.get_number_of_video_patches(*video_size, videos_kwargs)
