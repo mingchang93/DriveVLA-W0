@@ -284,4 +284,17 @@ class Qwen3VLConfig(PretrainedConfig):
         super().__init__(**kwargs, tie_word_embeddings=tie_word_embeddings)
 
 
+# The generated single-file Qwen3 base classes depend on these config names.
+class Qwen3Config(Qwen3VLConfig):
+    pass
+
+
+class Qwen3TextConfig(Qwen3VLTextConfig):
+    pass
+
+
+class Qwen3VisionConfig(Qwen3VLVisionConfig):
+    pass
+
+
 __all__ = ["Qwen3VLConfig", "Qwen3VLTextConfig"]
