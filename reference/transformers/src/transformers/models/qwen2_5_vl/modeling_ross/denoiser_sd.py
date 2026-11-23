@@ -78,6 +78,7 @@ class RossStableDiffusionXOmni(nn.Module):
         encoder_hidden_states = encoder_hidden_states.repeat(bsz, 1, 1)
 
         # interpolate
+        z = z.contiguous()
         if z.shape[2] != noisy_model_input.shape[2] or z.shape[3] != noisy_model_input.shape[3]:
             z = F.interpolate(z, size=noisy_model_input.shape[-2:], mode="bilinear").contiguous()
         _, _, z_h, z_w = z.shape

@@ -329,7 +329,7 @@ class Qwen3VLForConditionalGenerationROSS(Qwen3VLForConditionalGeneration):
         with torch.amp.autocast(image_hidden.device.type, dtype=torch.float32):
             action_hidden = self.denoiser.ln_pre_a(action_hidden)
             image_hidden = self.denoiser.ln_pre(image_hidden)
-            image_hidden = rearrange(image_hidden, "b (h w) c -> b c h w", h=h, w=w)
+            image_hidden = rearrange(image_hidden, "b (h w) c -> b c h w", h=h, w=w).contiguous()
             ross_loss = self.denoiser(
                 z=image_hidden.float(), target=z_q.float(), z_a=action_hidden.float()
             )
