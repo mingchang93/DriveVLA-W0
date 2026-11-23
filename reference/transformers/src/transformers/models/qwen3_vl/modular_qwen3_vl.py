@@ -333,14 +333,6 @@ class Qwen3Config(Qwen3VLConfig):
     pass
 
 
-class Qwen3TextConfig(Qwen3VLTextConfig):
-    pass
-
-
-class Qwen3VisionConfig(Qwen3VLVisionConfig):
-    pass
-
-
 class Qwen3VLVisionMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -1164,6 +1156,12 @@ class Qwen3VLCausalLMOutputWithPast(Qwen2_5_VLCausalLMOutputWithPast):
 class Qwen3VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration):
     config: Qwen3VLConfig
     _checkpoint_conversion_mapping = {}
+
+    def __init__(self, config: Qwen3VLConfig):
+        super().__init__(config)
+        self.model = Qwen3VLModel(config)
+        self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
+        self.post_init()
 
     @check_model_inputs
     def forward(

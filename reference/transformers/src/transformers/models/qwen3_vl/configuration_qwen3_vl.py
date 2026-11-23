@@ -289,12 +289,4 @@ class Qwen3Config(Qwen3VLConfig):
     pass
 
 
-class Qwen3TextConfig(Qwen3VLTextConfig):
-    pass
-
-
-class Qwen3VisionConfig(Qwen3VLVisionConfig):
-    pass
-
-
 __all__ = ["Qwen3VLConfig", "Qwen3VLTextConfig"]
