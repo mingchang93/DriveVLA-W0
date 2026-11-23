@@ -38,18 +38,17 @@ ATTN_MASK_NPU_CACHE = {}
 
 
 def get_attn_mask_npu(device, seq_len=2048):
-    """Get a causal mask covering ``seq_len`` for an Ascend device.
+    """Get the compressed causal mask required by Ascend fusion attention.
 
-    The tested CANN/Ascend 950 tiler requires at least a 2048x2048 mask for
-    sparse modes 2 and 3. Larger masks are created for longer sequences.
+    Sparse modes 2 and 3 require exactly a 2048x2048 mask on CANN 9.2, even
+    when the query is longer. The operator compresses that mask for the actual
+    sequence length.
     """
-    seq_len = max(int(seq_len), 2048)
-    key = (device, seq_len)
-    if key not in ATTN_MASK_NPU_CACHE:
-        ATTN_MASK_NPU_CACHE[key] = torch.triu(
-            torch.ones([seq_len, seq_len], device=device), diagonal=1
+    if device not in ATTN_MASK_NPU_CACHE:
+        ATTN_MASK_NPU_CACHE[device] = torch.triu(
+            torch.ones([2048, 2048], device=device), diagonal=1
         ).bool()
-    return ATTN_MASK_NPU_CACHE[key]
+    return ATTN_MASK_NPU_CACHE[device]
 
 
 def is_npu_fa2_top_left_aligned_causal_mask():

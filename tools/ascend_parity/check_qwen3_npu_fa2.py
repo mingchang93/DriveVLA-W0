@@ -91,9 +91,9 @@ def check_adapter(device):
     lens = (37, 2048, 2053)
     for seq_len in lens:
         mask = get_attn_mask_npu(device, seq_len)
-        assert mask.shape == (max(seq_len, 2048), max(seq_len, 2048))
+        assert mask.shape == (2048, 2048)
         assert mask.dtype == torch.bool
-    assert len(ATTN_MASK_NPU_CACHE) >= 2
+    assert len(ATTN_MASK_NPU_CACHE) >= 1
 
     seq_len = 2053
     query = torch.randn(1, seq_len, 2, 4, device=device, dtype=torch.bfloat16, requires_grad=True)
