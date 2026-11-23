@@ -921,6 +921,7 @@ class Qwen3VLModel(Qwen3PreTrainedModel):
     accepts_loss_kwargs = False
     config: Qwen3VLConfig
     _no_split_modules = ["Qwen3VLTextDecoderLayer", "Qwen3VLVisionBlock"]
+    _can_record_outputs = Qwen3VLPreTrainedModel._can_record_outputs
 
     def __init__(self, config):
         super().__init__(config)

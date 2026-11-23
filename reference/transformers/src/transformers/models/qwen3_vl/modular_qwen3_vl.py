@@ -857,6 +857,7 @@ class Qwen3VLModel(Qwen2_5_VLModel):
     config: Qwen3VLConfig
     _checkpoint_conversion_mapping = {}
     _no_split_modules = ["Qwen3VLTextDecoderLayer", "Qwen3VLVisionBlock"]
+    _can_record_outputs = Qwen3VLPreTrainedModel._can_record_outputs
 
     def __init__(self, config):
         super().__init__(config)
