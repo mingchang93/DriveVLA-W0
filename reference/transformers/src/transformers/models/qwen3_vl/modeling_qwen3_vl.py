@@ -44,6 +44,29 @@ from ...utils.generic import check_model_inputs
 from .configuration_qwen3_vl import Qwen3Config, Qwen3VLConfig, Qwen3VLTextConfig, Qwen3VLVisionConfig
 
 
+# ROSS: Ascend acceleration switches, all default off and with reference fallbacks.
+_VALID_TOKEN_CE = os.getenv("ROSS_VALID_CE", "0") == "1"
+_FUSED_GATEUP = os.getenv("ROSS_FUSED_GATEUP", "0") == "1"
+_FUSED_QKV = os.getenv("ROSS_FUSED_QKV", "0") == "1"
+try:
+    import torch_npu as _npu
+except ImportError:
+    _npu = None
+_HAS_NPU_SWIGLU = (
+    _npu is not None
+    and hasattr(torch, "npu")
+    and torch.npu.is_available()
+    and hasattr(_npu, "npu_swiglu")
+)
+
+from ..qwen2_5_vl.npu_fused_ops import (  # noqa: E402
+    fused_add_rms_norm,
+    fused_rms_norm,
+    fused_rotary_mul,
+    fused_swiglu,
+)
+
+
 logger = logging.get_logger(__name__)
 
 
@@ -120,6 +143,11 @@ def rotate_half(x):
 def apply_rotary_pos_emb_vision(
     q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    if q.dtype == torch.bfloat16:
+        fused_q = fused_rotary_mul(q, cos.unsqueeze(-2).to(q.dtype), sin.unsqueeze(-2).to(q.dtype))
+        fused_k = fused_rotary_mul(k, cos.unsqueeze(-2).to(k.dtype), sin.unsqueeze(-2).to(k.dtype))
+        if fused_q is not None and fused_k is not None:
+            return fused_q, fused_k
     orig_q_dtype = q.dtype
     orig_k_dtype = k.dtype
     q, k = q.float(), k.float()
@@ -360,6 +388,9 @@ class Qwen3VLTextRMSNorm(nn.Module):
         self.variance_epsilon = eps
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        fused = fused_rms_norm(hidden_states, self.weight, self.variance_epsilon)
+        if fused is not None:
+            return fused
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
@@ -392,8 +423,12 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
+    q_embed = fused_rotary_mul(q, cos.to(q.dtype), sin.to(q.dtype))
+    if q_embed is None:
+        q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = fused_rotary_mul(k, cos.to(k.dtype), sin.to(k.dtype))
+    if k_embed is None:
+        k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
 
@@ -440,9 +475,21 @@ class Qwen3VLTextAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        if _FUSED_QKV and _npu is not None:
+            w_qkv = torch.cat([self.q_proj.weight, self.k_proj.weight, self.v_proj.weight], dim=0)
+            qkv = F.linear(hidden_states, w_qkv)
+            hq = self.config.num_attention_heads * self.head_dim
+            hkv = self.config.num_key_value_heads * self.head_dim
+            q = qkv[..., :hq].contiguous()
+            k = qkv[..., hq : hq + hkv].contiguous()
+            v = qkv[..., hq + hkv :].contiguous()
+        else:
+            q = self.q_proj(hidden_states)
+            k = self.k_proj(hidden_states)
+            v = self.v_proj(hidden_states)
+        query_states = self.q_norm(q.view(hidden_shape)).transpose(1, 2)
+        key_states = self.k_norm(k.view(hidden_shape)).transpose(1, 2)
+        value_states = v.view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
@@ -484,7 +531,14 @@ class Qwen3VLTextMLP(nn.Module):
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        if _FUSED_GATEUP and _HAS_NPU_SWIGLU:
+            w = torch.cat([self.gate_proj.weight, self.up_proj.weight], dim=0)
+            gu = F.linear(x, w)
+            return self.down_proj(_npu.npu_swiglu(gu, dim=-1))
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        fused = fused_swiglu(gate, up)
+        down_proj = self.down_proj(fused if fused is not None else self.act_fn(gate) * up)
         return down_proj
 
 
@@ -524,6 +578,18 @@ class Qwen3VLTextDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             **kwargs,
         )
+        fused = fused_add_rms_norm(
+            residual,
+            hidden_states,
+            self.post_attention_layernorm.weight,
+            self.post_attention_layernorm.variance_epsilon,
+        )
+        if fused is not None:
+            hidden_states, residual = fused
+            hidden_states = self.mlp(hidden_states)
+            hidden_states = residual + hidden_states
+            return hidden_states
+
         hidden_states = residual + hidden_states
 
         # Fully Connected
@@ -1300,9 +1366,6 @@ class Qwen3VLCausalLMOutputWithPast(ModelOutput):
     rope_deltas: Optional[torch.LongTensor] = None
 
 
-_VALID_TOKEN_CE = os.getenv("ROSS_VALID_CE", "0") == "1"
-
-
 class Qwen3VLForConditionalGeneration(Qwen3PreTrainedModel, GenerationMixin):
     _checkpoint_conversion_mapping = {}
     _tied_weights_keys = ["lm_head.weight"]
@@ -1400,23 +1463,33 @@ class Qwen3VLForConditionalGeneration(Qwen3PreTrainedModel, GenerationMixin):
         if (
             labels is not None
             and _VALID_TOKEN_CE
-            and isinstance(logits_to_keep, int)
-            and logits_to_keep == 0
+            and logits_to_keep in (0, None)
             and kwargs.get("shift_labels") is None
         ):
-            shift_labels = F.pad(labels, (0, 1), value=-100)[..., 1:].reshape(-1).to(hidden_states.device)
+            shift_labels = F.pad(labels, (0, 1), value=-100)[..., 1:].reshape(-1)
             valid = shift_labels != -100
             if valid.any():
-                valid_hidden = hidden_states[:, slice_indices, :].reshape(-1, hidden_states.shape[-1])[valid]
-                valid_logits = self.lm_head(valid_hidden).float()
-                loss = F.cross_entropy(valid_logits, shift_labels[valid])
+                hidden = hidden_states[:, slice_indices, :].reshape(-1, hidden_states.shape[-1])[valid]
+                valid_logits = self.lm_head(hidden).float()
+                num_items = kwargs.get("num_items_in_batch")
+                loss = F.cross_entropy(
+                    valid_logits,
+                    shift_labels[valid],
+                    reduction="sum" if num_items is not None else "mean",
+                )
+                if num_items is not None:
+                    loss = loss / (num_items.to(loss.device) if torch.is_tensor(num_items) else num_items)
             else:
                 logits = self.lm_head(hidden_states[:, slice_indices, :])
-                loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size)
+                loss = self.loss_function(
+                    logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size
+                )
         else:
             logits = self.lm_head(hidden_states[:, slice_indices, :])
             if labels is not None:
-                loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size)
+                loss = self.loss_function(
+                    logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size
+                )
 
         return Qwen3VLCausalLMOutputWithPast(
             loss=loss,

@@ -44,7 +44,7 @@ from reference.transformers.src.transformers.models.qwen2_5_vl.modeling_qwen2_5_
     Qwen2_5_VLForConditionalGenerationROSS,
 )
 
-from reference.transformers.src.transformers.trainer import Trainer
+from reference.transformers.src.transformers.trainer import Trainer, TrainerCallback
 
 
 
@@ -112,7 +112,38 @@ class RossTrainer(Trainer):
             self._log_mean_and_reset()
 
         return loss
-    
+
+
+class SkipLastLayersCheckpointCallback(TrainerCallback):
+    """Keep the last N decoder layers out of gradient checkpointing."""
+
+    def __init__(self, n: int):
+        self.n = max(0, int(n))
+
+    def on_train_begin(self, args, state, control, model=None, **kwargs):
+        if self.n <= 0 or model is None:
+            return
+        module = model
+        layers = None
+        for _ in range(6):
+            language_model = getattr(getattr(module, "model", module), "language_model", None)
+            if language_model is not None and hasattr(language_model, "layers"):
+                layers = language_model.layers
+                break
+            if hasattr(module, "module"):
+                module = module.module
+            else:
+                break
+        if layers is None:
+            rank0_print("[gc] skip-last: could not locate decoder layers")
+            return
+        count = min(self.n, len(layers))
+        for layer in layers[-count:]:
+            if hasattr(layer, "gradient_checkpointing"):
+                layer.gradient_checkpointing = False
+        rank0_print(f"[gc] skipping checkpoint on last {count}/{len(layers)} decoder layers")
+
+
 def rank0_print(*args):
     if local_rank == 0:
         print(*args)
@@ -219,6 +250,12 @@ def setup_vla_model_and_tokenizer(model_args, training_args):
     model.denoiser.unet = UNet2DConditionModel.from_pretrained(model_args.sd_model_path, torch_dtype=model.dtype)
     model.denoiser.unet.train()
     model.denoiser.unet.requires_grad_(True)
+
+    from reference.transformers.src.transformers.models.qwen2_5_vl import npu_fused_ops
+    npu_fused_ops.probe_backward_support(int(os.environ.get("LOCAL_RANK", 0)))
+    fused_blocks = npu_fused_ops.fuse_unet_group_norm_silu(model.denoiser.unet)
+    rank0_print(f"[fused] backward support: {npu_fused_ops.backward_status()}")
+    rank0_print(f"[fused] ResNet GN+SiLU blocks fused: {fused_blocks}")
 
     tokenizer, model, _ = check_and_add_vla_tokens(tokenizer, model)
     
@@ -374,6 +411,10 @@ def train():
         **data_module
     )
     
+    gc_skip = int(os.getenv("ROSS_GC_SKIP_LAST_LAYERS", "0"))
+    if gc_skip > 0:
+        trainer.add_callback(SkipLastLayersCheckpointCallback(gc_skip))
+
     # Print dataloader len
     if torch.distributed.get_rank() == 0:
         rank0_print(f"dataloader len:")
@@ -392,18 +433,16 @@ def train():
         rank0_print("Starting training from scratch...")
         trainer.train()
     
-    # Save final model
     trainer.save_state()
-    
-    # Save image processor
-    if hasattr(data_args, 'image_processor'):
-        data_args.image_processor.save_pretrained(training_args.output_dir)
-    
-    # Save tokenizer (with new VLA tokens)
-    tokenizer.save_pretrained(training_args.output_dir)
-    
-    model.config.use_cache = True
-    safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
+
+    if os.getenv("ROSS_SAVE_MODEL", "1") == "1":
+        if hasattr(data_args, "image_processor"):
+            data_args.image_processor.save_pretrained(training_args.output_dir)
+        tokenizer.save_pretrained(training_args.output_dir)
+        model.config.use_cache = True
+        safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
+    else:
+        rank0_print("[save] ROSS_SAVE_MODEL=0; skipped model/tokenizer checkpoint")
     
     rank0_print("="*50)
     rank0_print("Training completed successfully!")

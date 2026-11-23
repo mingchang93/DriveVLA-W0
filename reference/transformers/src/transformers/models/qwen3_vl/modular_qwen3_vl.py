@@ -1218,16 +1218,22 @@ class Qwen3VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration):
         if (
             labels is not None
             and _VALID_TOKEN_CE
-            and isinstance(logits_to_keep, int)
-            and logits_to_keep == 0
+            and logits_to_keep in (0, None)
             and kwargs.get("shift_labels") is None
         ):
-            shift_labels = F.pad(labels, (0, 1), value=-100)[..., 1:].reshape(-1).to(hidden_states.device)
+            shift_labels = F.pad(labels, (0, 1), value=-100)[..., 1:].reshape(-1)
             valid = shift_labels != -100
             if valid.any():
-                valid_hidden = hidden_states[:, slice_indices, :].reshape(-1, hidden_states.shape[-1])[valid]
-                valid_logits = self.lm_head(valid_hidden).float()
-                loss = F.cross_entropy(valid_logits, shift_labels[valid])
+                hidden = hidden_states[:, slice_indices, :].reshape(-1, hidden_states.shape[-1])[valid]
+                valid_logits = self.lm_head(hidden).float()
+                num_items = kwargs.get("num_items_in_batch")
+                loss = F.cross_entropy(
+                    valid_logits,
+                    shift_labels[valid],
+                    reduction="sum" if num_items is not None else "mean",
+                )
+                if num_items is not None:
+                    loss = loss / (num_items.to(loss.device) if torch.is_tensor(num_items) else num_items)
             else:
                 logits = self.lm_head(hidden_states[:, slice_indices, :])
                 loss = self.loss_function(
