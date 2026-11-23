@@ -1155,6 +1155,7 @@ class Qwen3VLCausalLMOutputWithPast(Qwen2_5_VLCausalLMOutputWithPast):
 
 class Qwen3VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration):
     config: Qwen3VLConfig
+    _can_record_outputs = Qwen3VLPreTrainedModel._can_record_outputs
     _checkpoint_conversion_mapping = {}
 
     def __init__(self, config: Qwen3VLConfig):

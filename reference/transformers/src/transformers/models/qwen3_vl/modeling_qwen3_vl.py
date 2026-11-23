@@ -1308,6 +1308,7 @@ class Qwen3VLForConditionalGeneration(Qwen3PreTrainedModel, GenerationMixin):
     # Reference: fix gemma3 grad acc #37208
     accepts_loss_kwargs = False
     config: Qwen3VLConfig
+    _can_record_outputs = Qwen3VLPreTrainedModel._can_record_outputs
 
     def __init__(self, config: Qwen3VLConfig):
         super().__init__(config)
