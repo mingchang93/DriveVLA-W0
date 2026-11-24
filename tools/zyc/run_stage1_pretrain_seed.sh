@@ -59,6 +59,7 @@ HIF8_INTERVAL=${HIF8_INTERVAL:-10}   # DTS 的 amax 刷新间隔，仅 --hif8 dt
 # 之前漏传这个参数，--hif8 dts 会用代码默认间隔而不是 10，等于跑了另一个配置。
 HIF8_IGNORE=${HIF8_IGNORE:-lm_head,o_proj}   # 168 = 客户规格（排除 lm_head + o_proj）
 LOGSTEP=${LOGSTEP:-1}
+PIN_MEMORY=${DATALOADER_PIN_MEMORY:-True}
 DS=${DS:-scripts/sft/zero1.json}   # 与 SFT 同档位；ZeRO-0 在 mb12 下显存放不下
 # nuPlan 2VA 预训练数据：官方 pickle 本身，18,191 段 / 1,310 个 log。
 # 规模对齐：官方预训练是 17,376 段（论文、repo、HF 三处一致），我们 +5.1%。
@@ -127,7 +128,7 @@ torchrun --nproc_per_node="$NPROC" --master_port=${PORT:-23493} utils/train_qwen
   --max_steps "$STEPS" --warmup_steps 400 \
   --per_device_train_batch_size "$BS" --gradient_accumulation_steps "$GA" \
   --gradient_checkpointing "$GC" \
-  --dataloader_num_workers 12 --dataloader_pin_memory True --dataloader_shuffle True \
+  --dataloader_num_workers 12 --dataloader_pin_memory "$PIN_MEMORY" --dataloader_shuffle True \
   --seed "$SEED" --deterministic True --remove_dropout True \
   --save_strategy "$SAVE_STRATEGY" --save_steps "$SAVE_STEPS" --save_total_limit 5 \
   --eval_strategy no --logging_steps "$LOGSTEP" \

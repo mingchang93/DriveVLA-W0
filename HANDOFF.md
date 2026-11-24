@@ -2164,3 +2164,110 @@ Two things the shape of that table settles:
 5. **Untriaged WIP.** ZYC's tree still carries ~123 uncommitted lines across `hif8_dts.py` and
    `train_qwen_vla.py` on top of these edits. Nothing in this run isolates their effect, so any
    cross-date comparison on that tree carries that caveat.
+
+## 2026-11-24 — consolidated full-navtest result inventory
+
+This is a scan of Yichen's workspace (`/mnt/sfs_turbo/zyc/drivevla-w0-zyc`) for the requested
+single-stage and two-stage result sets. All PDMS values are the full 12,146-scene navtest result,
+read from the `average` row of
+`navsim_workspace/exp/eval_<tag>_full/<timestamp>/<timestamp>.csv`.
+
+**There is no 192-layer arm anywhere in the workspace.** A source scan of run directories, train
+logs, launch scripts, and eval tags found no `192` Linear count. The third arm in this workspace
+is **196 layers**; the user confirmed 192 was a typo for 196.
+
+### Single-stage: 4,000-step NAVSIM SFT only
+
+No nuPlan pretraining is used in this block.
+
+| Model / layers | HiF8 mode | Run | PDMS |
+|---|---|---|---:|
+| Qwen2.5-VL-7B | BF16 | `w7b_bf16` | 0.840658 |
+| Qwen3-VL-2B | BF16 reference | `aligned_bf16` | 0.812033 |
+| Qwen3-VL-2B / 132 | CTS | `aligned_hif8_132` | 0.809797 |
+| Qwen3-VL-2B / 168 | CTS | `aligned_hif8_168` | 0.807480 |
+| Qwen3-VL-2B / 196 | CTS | `aligned_hif8_196` | 0.810260 |
+| Qwen3-VL-2B / 132 | DTS i10 | `aligned_hif8_132_dts` | 0.809851 |
+| Qwen3-VL-2B / 168 | DTS i10 | **missing** | — |
+| Qwen3-VL-2B / 196 | DTS i10 | `aligned_hif8_196_dts` | 0.819715 |
+
+### Two-stage: 8,000-step nuPlan pretrain -> 4,000-step NAVSIM SFT
+
+**BF16 pretrain -> BF16 SFT, different seeds**
+
+| Seed | Runs | PDMS |
+|---:|---|---:|
+| 42 | `pt_ptlr5e5` -> `sft_ptlr5e5` | 0.854730 |
+| 43 | `pt_bf16_s43` -> `sft_bf16_s43` | 0.805825 |
+| 44 | `pt_bf16_s44` -> `sft_bf16_s44` | 0.810343 |
+
+**BF16 pretrain -> DTS HiF8 SFT, interval 10**
+
+| Layers | Original SFT run | PDMS | Rerun SFT run | PDMS |
+|---:|---|---:|---|---:|
+| 132 | `sft_bfpt5e5_dts132sft` | 0.852858 | `sft_r2_bfpt5e5_dts132sft` | 0.857197 |
+| 168 | `sft_bfpt5e5_dts168sft` | 0.855518 | `sft_r2_bfpt5e5_dts168sft` | 0.856413 |
+| 196 | `sft_bfpt5e5_dts196sft` | 0.854985 | `sft_r2_bfpt5e5_dts196sft` | 0.854380 |
+
+Both columns start from the same BF16 pretrain checkpoint, `pt_ptlr5e5`.
+
+**DTS HiF8 pretrain -> DTS HiF8 SFT, interval 10**
+
+| Layers | Original SFT run | PDMS | Rerun score(s) |
+|---:|---|---:|---|
+| 132 | `sft_dts132_lr5e5` | 0.853508 | 0.830552 |
+| 168 | `sft_dts168_lr5e5` | 0.851976 | 0.853160, 0.851942 |
+| 196 | `sft_dts196_lr5e5` | 0.850444 | 0.814681, 0.813238 |
+
+The i10 DTS-pretrain rerun is unstable for 132, and especially for 196. The 168 rerun is stable
+within roughly 0.1 pd.
+
+**DTS HiF8 pretrain -> DTS HiF8 SFT, interval 200**
+
+| Layers | Seed | SFT run | PDMS |
+|---:|---:|---|---:|
+| 132 | 42 | `sft_dts132_i200_s42` | 0.755560 |
+| 168 | 42 | `sft_dts168_i200_s42` | 0.848391 mean; four evals 0.845462-0.850181 |
+| 196 | 42 | `sft_dts196_i200` | 0.855851 |
+| 196 | 43 | `sft_dts196_i200_s43` | 0.852255 |
+
+Additional seed coverage found:
+
+- `sft_dts168_i10_s43` exists and scored 0.722588.
+- No seed-43 i10 result exists for 132 or 196.
+- No seed-43 i200 result exists for 132 or 168.
+
+### The 132-layer i200 anomaly
+
+`sft_dts132_i200_s42` is the only result in this block that is far outside both the interval-10
+controls and the 168/196 i200 arms. Its 0.755560 PDMS is not an incomplete-eval artefact: the
+directory has the expected 36,438 total JSONs, including 12,146 model-output JSONs, and the CSV
+contains 12,146 valid scenes.
+
+The loss gap also exists before the final evaluation:
+
+- Pretrain action loss, 132 vs 168: signed mean +5.96%, +0.0711 nats, `exp(delta)-1` +7.37%.
+- SFT action loss, 132 vs 168: signed mean +11.09%, +0.1470 nats, `exp(delta)-1` +15.84%.
+- Relative to the 132 i10 control, i200 adds +3.48% in pretrain and +8.07% in SFT.
+- Relative to the 168 i10 control, i200 adds only +1.01% in pretrain and +1.32% in SFT.
+
+The final PDMS drop is mostly additional catastrophic failures rather than uniformly lower
+quality:
+
+- 132 has 2,068 zero-score scenes (17.02%) versus 956 for 168 (7.87%).
+- The excess zero-score contribution is -0.08448 of the total -0.09462 PDMS difference (~89%).
+- Mean score among nonzero scenes is 0.9106 for 132 versus 0.9228 for 168.
+- Score zero coincides exactly with `ego_progress == 0`.
+
+The observed mechanism is therefore a 132/i200 interaction that causes much more frequent
+closed-loop progress failures. Layer-scope versus refresh-interval causality is not yet isolated;
+the two-stage arms also ran on different hosts and the 168 arm used
+`dataloader_pin_memory=False` as an operational workaround. That setting changes host-memory
+transfer behavior, not tensor values or optimizer math.
+
+### Missing result cells
+
+1. No 192-layer runs; use 196.
+2. No single-stage Qwen3-VL-2B DTS-i10 168 arm.
+3. No i10 seed-43 runs for 132 or 196.
+4. No i200 seed-43 runs for 132 or 168.

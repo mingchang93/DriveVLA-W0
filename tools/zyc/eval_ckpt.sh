@@ -21,6 +21,23 @@ CKPT=$1; TAG=$2; MODE=${3:-mini}; NP=${4:-8}
 D=/mnt/sfs_turbo/zyc/DriveVLA-W0
 W=/mnt/sfs_turbo/zyc/drivevla-w0-zyc
 OUT=$W/navsim_workspace/eval_${TAG}_${MODE}
+
+# Full evals share navsim_workspace/exp and its metric cache across nodes.
+# Serialize them so concurrent chains cannot contaminate each other's PDMS.
+# flock is not propagated across the shared filesystem, so use atomic mkdir.
+if [ "$MODE" = full ]; then
+  LOCKDIR=$W/navsim_workspace/.eval_full.lockdir
+  mkdir -p "$(dirname "$LOCKDIR")"
+  while ! mkdir "$LOCKDIR" 2>/dev/null; do
+    echo "[eval_ckpt] waiting for full-eval lock: $LOCKDIR"
+    sleep 10
+  done
+  printf 'host=%s pid=%s started=%s\n' \
+    "$(uname -n)" "$$" "$(date '+%F %T %Z')" > "$LOCKDIR/owner"
+  trap 'rm -f "$LOCKDIR/owner"; rmdir "$LOCKDIR" 2>/dev/null' EXIT
+  echo "[eval_ckpt] acquired full-eval lock: $(cat "$LOCKDIR/owner")"
+fi
+
 # 清空再建：PDMS 会读 experiment_path 下所有 json，残file（上一次被 kill 的评测）
 # 会让它读到半截或重复的文件并报 JSONDecodeError。推理会重新产出全部场景，清空无损失。
 rm -rf "$OUT/json_output"

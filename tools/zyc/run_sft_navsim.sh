@@ -45,6 +45,7 @@ PORT=${PORT:-23501}
 HCCL_RANGE=${HCCL_RANGE:-17500-17599}
 DS=${DS:-scripts/sft/zero2.json}   # 可换 zero0/zero1/zero2_offload
 LOGSTEP=${LOGSTEP:-1}                # 逐步打日志：loss 曲线与确定性比对都要用
+PIN_MEMORY=${DATALOADER_PIN_MEMORY:-True}
 MODEL=${MODEL:-/mnt/sfs_turbo/models/Qwen3-VL-2B-Instruct}   # 骨干
 #   Qwen3-VL-2B-Instruct   -> 我们一直跑的那套（model_type=qwen3_vl）
 #   Qwen2.5-VL-7B-Instruct -> 官方 Qwen_PDMS_85.3 的底模（model_type=qwen2_5_vl）
@@ -133,7 +134,7 @@ torchrun --nproc_per_node="$NPROC" --master_port="$PORT" utils/train_qwen_vla.py
   --max_steps "$STEPS" --warmup_steps 200 \
   --per_device_train_batch_size "$BS" --gradient_accumulation_steps "$GA" \
   --gradient_checkpointing "$GC" \
-  --dataloader_num_workers 12 --dataloader_pin_memory True --dataloader_shuffle True \
+  --dataloader_num_workers 12 --dataloader_pin_memory "$PIN_MEMORY" --dataloader_shuffle True \
   --seed "$SEED" --deterministic True --remove_dropout True \
   --save_strategy no \
   --eval_strategy no --logging_steps "$LOGSTEP" \
