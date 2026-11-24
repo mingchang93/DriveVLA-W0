@@ -2205,18 +2205,21 @@ is **196 layers**; the user confirmed 192 was a typo for 196.
 
 ### Single-stage: 4,000-step NAVSIM SFT only
 
-No nuPlan pretraining is used in this block.
+No nuPlan pretraining is used in this block (`aligned_*` / `w7b_*` recipe: lr 1e-5, 200-step warmup, 8 NPUs x bs 6 = gbs 48, seed 42).
 
-| Model / layers | HiF8 mode | Run | PDMS |
-|---|---|---|---:|
-| Qwen2.5-VL-7B | BF16 | `w7b_bf16` | 0.840658 |
-| Qwen3-VL-2B | BF16 reference | `aligned_bf16` | 0.812033 |
-| Qwen3-VL-2B / 132 | CTS | `aligned_hif8_132` | 0.809797 |
-| Qwen3-VL-2B / 168 | CTS | `aligned_hif8_168` | 0.807480 |
-| Qwen3-VL-2B / 196 | CTS | `aligned_hif8_196` | 0.810260 |
-| Qwen3-VL-2B / 132 | DTS tag, **static scale** | `aligned_hif8_132_dts` | 0.809851 |
-| Qwen3-VL-2B / 168 | true DTS i10 | **missing** | — |
-| Qwen3-VL-2B / 196 | DTS tag, **static scale** | `aligned_hif8_196_dts` | 0.819715 |
+| Model / layers | HiF8 mode | Run | Tail `action_loss` (last 500) | Eval dir | PDMS | `ep==0` |
+|---|---|---|---:|---|---:|---:|
+| Qwen2.5-VL-7B | BF16 | `w7b_bf16` | 1.4340 | `eval_w7b_bf16_full` | 0.840658 | 9.02% |
+| Qwen2.5-VL-7B / 132 | CTS | `w7b_hif8_132` | 1.4323 | `eval_w7b_hif8_132_full` | 0.839700 | 9.15% |
+| Qwen2.5-VL-7B / 168 | CTS | `w7b_hif8_168` | 1.4370 | `eval_w7b_hif8_168_full` | 0.839988 | 9.17% |
+| Qwen2.5-VL-7B / 196 | CTS | `w7b_hif8_196` | 1.4367 | `eval_w7b_hif8_196_full` | 0.837381 | 9.27% |
+| Qwen3-VL-2B | BF16 reference | `aligned_bf16` | 1.6380 | `eval_aligned_bf16_full` | 0.812033 | 11.77% |
+| Qwen3-VL-2B / 132 | CTS | `aligned_hif8_132` | 1.6390 | `eval_aligned_hif8_132_full` | 0.809797 | 11.80% |
+| Qwen3-VL-2B / 168 | CTS | `aligned_hif8_168` | 1.6420 | `eval_aligned_hif8_168_full` | 0.807480 | 12.06% |
+| Qwen3-VL-2B / 196 | CTS | `aligned_hif8_196` | 1.6412 | `eval_aligned_hif8_196_full` | 0.810260 | 11.63% |
+| Qwen3-VL-2B / 132 | DTS tag, **static scale** | `aligned_hif8_132_dts` | — | `eval_aligned_hif8_132_dts_full` | 0.809851 | 11.78% |
+| Qwen3-VL-2B / 168 | true DTS i10 | **missing** | — | — | — | — |
+| Qwen3-VL-2B / 196 | DTS tag, **static scale** | `aligned_hif8_196_dts` | — | `eval_aligned_hif8_196_dts_full` | 0.819715 | 10.74% |
 
 ### Two-stage: 8,000-step nuPlan pretrain -> 4,000-step NAVSIM SFT
 
@@ -2230,26 +2233,28 @@ No nuPlan pretraining is used in this block.
 
 **BF16 pretrain -> HiF8 SFT**
 
-| Layers | 11-16 run: static scale | PDMS | True DTS i10 rerun | PDMS |
-|---:|---|---:|---|---:|
-| 132 | `sft_bfpt5e5_dts132sft` | 0.852858 | `sft_r2_bfpt5e5_dts132sft` | 0.857197 |
-| 168 | `sft_bfpt5e5_dts168sft` | 0.855518 | `sft_r2_bfpt5e5_dts168sft` | 0.856413 |
-| 196 | `sft_bfpt5e5_dts196sft` | 0.854985 | `sft_r2_bfpt5e5_dts196sft` | 0.854380 |
+| Layers | 11-18 CTS SFT | CTS PDMS (`ep==0`) | 11-16 static scale | Static PDMS | 11-19 true DTS i10 | DTS i10 PDMS |
+|---:|---|---:|---|---:|---|---:|
+| 132 | `sft_bfpt5e5_cts132sft` | 0.854016 (7.68%) | `sft_bfpt5e5_dts132sft` | 0.852858 | `sft_r2_bfpt5e5_dts132sft` | 0.857197 |
+| 168 | `sft_bfpt5e5_cts168sft` | 0.854346 (7.66%) | `sft_bfpt5e5_dts168sft` | 0.855518 | `sft_r2_bfpt5e5_dts168sft` | 0.856413 |
+| 196 | `sft_bfpt5e5_cts196sft` | 0.852892 (7.76%) | `sft_bfpt5e5_dts196sft` | 0.854985 | `sft_r2_bfpt5e5_dts196sft` | 0.854380 |
 
-Both columns start from the same BF16 pretrain checkpoint, `pt_ptlr5e5`.
+All three columns start from the same BF16 pretrain checkpoint, `pt_ptlr5e5` (lr 5e-5, 8,000 steps); SFT tail `action_loss` (last 500 steps) for the 11-18 CTS SFT runs is `1.2089` (132), `1.2095` (168), and `1.2113` (196).
 
-**HiF8 pretrain -> HiF8 SFT**
+**HiF8 pretrain -> HiF8 SFT (CTS and DTS interval 10)**
 
-| Layers | 11-16 run: both stages static | PDMS | True DTS i10 rerun score(s) |
-|---:|---|---:|---|
-| 132 | `sft_dts132_lr5e5` | 0.853508 | 0.830552 |
-| 168 | `sft_dts168_lr5e5` | 0.851976 | 0.853160, 0.851942 |
-| 196 | `sft_dts196_lr5e5` | 0.850444 | 0.814681, 0.813238 |
+| Layers | 11-18 CTS PT -> CTS SFT | CTS PT / SFT tail `act_loss` | CTS PDMS (`ep==0`) | 11-16 static PT -> static SFT | Static PDMS | 11-19 true DTS i10 rerun score(s) |
+|---:|---|---:|---:|---|---:|---|
+| 132 | `pt_cts132_lr5e5` -> `sft_cts132_lr5e5` | 1.2729 / 1.4215 | 0.767432 (15.89%); recheck 0.765381 (15.95%) | `sft_dts132_lr5e5` | 0.853508 | 0.830552 |
+| 168 | `pt_cts168_lr5e5` -> `sft_cts168_lr5e5` | 1.2228 / 1.3386 | 0.826256 (10.18%) | `sft_dts168_lr5e5` | 0.851976 | 0.853160, 0.851942 |
+| 196 | `pt_cts196_lr5e5` -> `sft_cts196_lr5e5` | 1.2175 / 1.3511 | 0.803142 (12.25%) | `sft_dts196_lr5e5` | 0.850444 | 0.814681, 0.813238 |
 
-The large 132 and 196 changes here are not repeatability measurements: the 11-16 runs used
-static cold-start scales, while the `r2` runs performed true interval-10 refreshes. The
-168 rerun is stable within roughly 0.1 pd; true DTS is materially worse for 132 and 196 in
-this seed.
+The large 132 and 196 changes between 11-16 and 11-19 are not repeatability measurements: the
+11-16 runs used static cold-start scales, while the `r2` runs performed true interval-10
+refreshes. And on the 11-18 full-CTS diagonal (`interval=1`, current-tensor `amax` on every call),
+132 already degrades the hardest (`0.767432` / `0.765381`, `ep==0` 15.9%, PT tail `action_loss`
+`1.2729` vs `1.2228` for 168), whereas BF16 PT -> CTS SFT is flat across all three scopes
+(`0.854016` / `0.854346` / `0.852892`).
 
 **DTS HiF8 pretrain -> DTS HiF8 SFT, interval 200**
 
