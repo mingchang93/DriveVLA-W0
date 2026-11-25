@@ -2205,7 +2205,7 @@ is **196 layers**; the user confirmed 192 was a typo for 196.
 
 ### Single-stage: 4,000-step NAVSIM SFT only
 
-No nuPlan pretraining is used in this block (`aligned_*` / `w7b_*` recipe: lr 1e-5, 200-step warmup, 8 NPUs x bs 6 = gbs 48, seed 42).
+No nuPlan pretraining is used in this block (`aligned_*` / `w7b_*` recipe: lr 1e-5, 200-step warmup, 8 NPUs x bs 6 = gbs 48, seed 42). The seed-43 and seed-44 rows are the 2026-11-25 seed-variance arms: same recipe, only `seed` changed — see that section for the loss trajectories and the spread.
 
 | Model / layers | HiF8 mode | Run | Tail `action_loss` (last 500) | Eval dir | PDMS | `ep==0` |
 |---|---|---|---:|---|---:|---:|
@@ -2214,6 +2214,8 @@ No nuPlan pretraining is used in this block (`aligned_*` / `w7b_*` recipe: lr 1e
 | Qwen2.5-VL-7B / 168 | CTS | `w7b_hif8_168` | 1.4370 | `eval_w7b_hif8_168_full` | 0.839988 | 9.17% |
 | Qwen2.5-VL-7B / 196 | CTS | `w7b_hif8_196` | 1.4367 | `eval_w7b_hif8_196_full` | 0.837381 | 9.27% |
 | Qwen3-VL-2B | BF16 reference | `aligned_bf16` | 1.6380 | `eval_aligned_bf16_full` | 0.812033 | 11.77% |
+| Qwen3-VL-2B | BF16 reference, seed 43 | `aligned_bf16_seed43` | 1.6410 | `eval_aligned_bf16_seed43_full` | 0.813236 | 11.48% |
+| Qwen3-VL-2B | BF16 reference, seed 44 | `aligned_bf16_seed44` | 1.6290 | `eval_aligned_bf16_seed44_full_retry` | 0.810138 | 11.86% |
 | Qwen3-VL-2B / 132 | CTS | `aligned_hif8_132` | 1.6390 | `eval_aligned_hif8_132_full` | 0.809797 | 11.80% |
 | Qwen3-VL-2B / 168 | CTS | `aligned_hif8_168` | 1.6420 | `eval_aligned_hif8_168_full` | 0.807480 | 12.06% |
 | Qwen3-VL-2B / 196 | CTS | `aligned_hif8_196` | 1.6412 | `eval_aligned_hif8_196_full` | 0.810260 | 11.63% |
@@ -2328,3 +2330,101 @@ transfer behavior, not tensor values or optimizer math.
    `_dts` rows are static-scale.
 3. No i10 seed-43 runs for 132 or 196.
 4. No i200 seed-43 runs for 132 or 168.
+
+## 2026-11-25 — single-stage SFT seed variance: `aligned_bf16` seeds 42 / 43 / 44
+
+### Setup
+
+Three runs of the 11-24 single-stage `aligned_bf16` recipe with only `seed` changed:
+Qwen3-VL-2B-Instruct base checkpoint (no pretrain), official trainval pickle, 8 NPUs x bs 6 x ga 1
+(gbs 48), 4,000 steps, `zero1.json`, lr 1e-5 with 200-step warmup, world model on, HiF8 off.
+All three logs print `[Reproducibility] 建模前已播种 seed=NN` then
+`seed=NN deterministic=True device=npu`, and the `learning_rate` series peaks at `1.000e-05` with
+the same shape in all three, so the arms differ only in initialisation and sample order.
+
+| Seed | Run dir | Start (CST) | tqdm wall clock | s/step |
+|---:|---|---|---|---:|
+| 42 | `runs/aligned_bf16` | 11-12 14:40:12 | 2:00:14 | 1.80 |
+| 43 | `runs/aligned_bf16_seed43` | 11-25 02:13:16 | 1:30:49 | 1.36 |
+| 44 | `runs/aligned_bf16_seed44` | 11-25 05:36:59 | 1:32:19 | 1.38 |
+
+### Results (navtest, 12,146 scenes, PDMS v1, 0 failed scenarios)
+
+| Seed | Run | Tail `action_loss` (mean, last 500) | PDMS | `ep==0` | Eval dir |
+|---:|---|---:|---:|---:|---|
+| 42 | `aligned_bf16` | 1.6357 | 0.812033 | 11.77% | `eval_aligned_bf16_full` |
+| 43 | `aligned_bf16_seed43` | 1.6410 | **0.813236** | 11.48% | `eval_aligned_bf16_seed43_full` |
+| 44 | `aligned_bf16_seed44` | 1.6290 | 0.810138 | 11.86% | `eval_aligned_bf16_seed44_full_retry` |
+
+The 11-24 inventory carries 1.6380 for seed 42; recomputed over the last 500 logged `action_loss`
+values it is 1.6357, so the two windows differ slightly and the seed ordering is unaffected.
+
+Seed 44's first scoring attempt (`eval_aligned_bf16_seed44_full`, 11-25 07:28) died after Ray
+spawned 192 workers and the Raylet exited before any scenario was scored. Rerunning
+`run_pdm_score.py` against the same `json_output` with `worker.threads_per_node=64` scored all
+12,146 scenes, rc=0. That cap is still a runtime override, not committed in `tools/zyc/eval_ckpt.sh`.
+
+### Loss trajectory, total loss, EMA(0.99)
+
+| step | seed 42 | seed 43 | seed 44 | spread |
+|---:|---:|---:|---:|---:|
+| 10 | 18.4409 | 18.5562 | 18.6038 | 0.1629 |
+| 100 | 13.0047 | 13.0556 | 13.0784 | 0.0737 |
+| 500 | 3.0641 | 3.0926 | 3.0627 | 0.0299 |
+| 1000 | 2.3599 | 2.3665 | 2.3535 | 0.0130 |
+| 2000 | 2.0229 | 2.0309 | 2.0273 | 0.0079 |
+| 3000 | 1.8212 | 1.8218 | 1.8299 | 0.0087 |
+| 4000 | 1.7723 | 1.7826 | 1.7820 | 0.0103 |
+
+### Reading
+
+- Seed spread on this recipe is **0.0031 PDMS (0.38%)** and `ep==0` spans 11.48-11.86%. That is
+  the size of a single arm's unpaired uncertainty here. Most of the bf16-vs-HiF8 deltas in the
+  11-24 block are the same magnitude (-0.0018 to -0.0046; the 196 static-scale row is +0.0077),
+  but those arms share seed 42 and the same data order with `aligned_bf16`, so seed noise does not
+  enter those paired comparisons.
+- The loss separation is a warm-up effect: the EMA spread falls from 0.163 at step 10 to 0.013 at
+  step 1000 and then holds at 0.008-0.010 (0.5-0.6%). Per-step noise sd over the last 500 steps is
+  0.096-0.106, ~10x the seed gap, so only the EMA separates the seeds.
+- Loss and PDMS do not order the seeds the same way: 43 has the best PDMS and the highest total
+  loss, 44 has the lowest `action_loss` and the worst PDMS. With n=3 at this resolution neither
+  predicts the other.
+- These arms start from the base checkpoint, not from the seed-matched pretrain checkpoints below,
+  so this spread is not the pretrain spread being washed out — the two are independent samples.
+
+### The pretrain seed arms, same seeds
+
+Recorded here because the seeds match; same config in all three (8 NPUs x mb 12 = gbs 96, 8,000
+steps, peak lr 5e-5 with an identical schedule, same NuPlan pkl). Total loss, EMA(0.99):
+
+| step | seed 42 (`pt_ptlr5e5`) | seed 43 (`pt_bf16_s43`) | seed 44 (`pt_bf16_s44`) | spread |
+|---:|---:|---:|---:|---:|
+| 1000 | 1.7413 | 1.7630 | 1.7493 | 0.0217 |
+| 2000 | 1.5543 | 1.5999 | 1.5925 | 0.0455 |
+| 4000 | 1.3852 | 1.4782 | 1.4888 | 0.1036 |
+| 6000 | 1.2880 | 1.3883 | 1.4145 | 0.1265 |
+| 8000 | 1.2339 | 1.3328 | 1.3638 | 0.1299 |
+
+The three are within 0.02 up to step 1000, then separate monotonically: at 8,000 steps seed 43 is
++8.0% and seed 44 +10.5% above seed 42. 43 vs 44 differ by 0.031 (2.4%), so a quarter of the
+0.130 spread sits between the two adjacent seeds. Per-step noise sd over the last 1,000 steps is
+0.082-0.088.
+
+### Sources and how to reproduce
+
+- Train logs: `/mnt/sfs_turbo/zyc/drivevla-w0-zyc/runs/aligned_bf16{,_seed43,_seed44}/train.log`
+  and `runs/{pt_ptlr5e5,pt_bf16_s43,pt_bf16_s44}/train.log`.
+- Score CSVs: `navsim_workspace/exp/<eval dir>/<timestamp>/<timestamp>.csv`, `average` row; the
+  per-scene rows give the `ep==0` share (`ego_progress == 0`, which coincides exactly with
+  `score == 0`).
+- Per-step series: regex `'loss': X, 'grad_norm': Y` and
+  `'action_loss': X, 'ross_loss': Y` over the whole log, one match per step (4,000 SFT / 8,000
+  pretrain); EMA is `s_t = 0.99 s_{t-1} + 0.01 x_t` with `s_1 = x_1`.
+
+### Open (this section)
+
+1. Seed 42's SFT launcher predates the `interval=10 seed=` header line that the 43/44 launchers
+   print. Per-step loss logging is identical (4,000 points), but the checkpoint-save cadence may
+   differ.
+2. No seed-variance arm exists for any HiF8 scope; every HiF8 number in the 11-24 block is a
+   single seed-42 run.
