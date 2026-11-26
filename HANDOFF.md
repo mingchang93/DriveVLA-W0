@@ -2203,6 +2203,12 @@ On 2026-11-25, two additional seeds completed for the single-stage BF16 referenc
 and 44 span **0.00310 PDMS (0.38%)**; their results and loss trajectories are in the
 single-stage seed-variance subsection below.
 
+On 2026-11-26, three SFT-seed arms completed on the two-stage side with the pretrain checkpoint
+held fixed at `pt_ptlr5e5`: SFT seeds 42 / 43 / 44 span **0.00172 PDMS (0.20%)**. The seed-42 arm
+is byte-identical to the existing `sft_r2_bfpt5e5_dts168sft`, whose 11-18 evaluation reads 0.00099
+higher, so that spread is about 1.7x an eval repeat on one checkpoint. See the two-stage block
+below.
+
 **There is no 192-layer arm anywhere in the workspace.** A source scan of run directories, train
 logs, launch scripts, and eval tags found no `192` Linear count. The third arm in this workspace
 is **196 layers**; the user confirmed 192 was a typo for 196.
@@ -2331,6 +2337,54 @@ Open:
 | 43 | `pt_bf16_s43` -> `sft_bf16_s43` | 0.805825 |
 | 44 | `pt_bf16_s44` -> `sft_bf16_s44` | 0.810343 |
 
+**BF16 pretrain held at seed 42 (`pt_ptlr5e5`), SFT seed varied 42 / 43 / 44** (2026-11-26)
+
+All three start from the same pretrain checkpoint, so unlike the table above this varies only the
+SFT seed (initialisation and sample order) and leaves pretrain seed variance out. Recipe is the
+11-19 `sft_r2_bfpt5e5_dts168sft` recipe verbatim: Qwen3-VL-2B, 4,000 steps, 8 NPUs x bs 6 x ga 1
+(gbs 48), `zero2.json`, lr 1e-5, DTS HiF8 with `lm_head,o_proj` ignored (168 Linear quantised, 329
+not), refresh interval 10. All three log `clock_src': 'trainer'`, 5 refreshes, `TRAIN_EXIT=0` at
+4,000/4,000 steps, and 1.45-1.46 s/step.
+
+| SFT seed | Run | Tail `action_loss` (last 500) | PDMS | `ep==0` | Eval dir |
+|---:|---|---:|---:|---:|---|
+| 42 | `sft_ptlr5e5_dts168_i10_s42` | 1.2096 | 0.855418 | 7.68% | `eval_ptlr5e5_dts168_i10_s42_full` |
+| 43 | `sft_ptlr5e5_dts168_i10_s43` | 1.2191 | 0.855149 | 7.55% | `eval_ptlr5e5_dts168_i10_s43_full` |
+| 44 | `sft_ptlr5e5_dts168_i10_s44` | 1.1999 | 0.853695 | 7.69% | `eval_ptlr5e5_dts168_i10_s44_full` |
+
+Eval repeat on one checkpoint: `sft_ptlr5e5_dts168_i10_s42` and `sft_r2_bfpt5e5_dts168sft` have
+identical `model-00001-of-00002.safetensors`, `model-00002-of-00002.safetensors` and
+`model.safetensors.index.json` (md5 match), yet their evaluations read 0.855418 (11-25, `ep==0`
+7.68%) and 0.856413 (11-18, `ep==0` 7.45%). Same weights, same 12,146 scenes, 0.00099 PDMS and
+0.23 pp apart. That is the floor for reading any sub-0.002 gap in this inventory.
+
+Total loss, EMA(0.99):
+
+| step | seed 42 | seed 43 | seed 44 | spread |
+|---:|---:|---:|---:|---:|
+| 100 | 2.1831 | 2.1615 | 2.0615 | 0.1216 |
+| 500 | 1.6297 | 1.6538 | 1.6286 | 0.0252 |
+| 1000 | 1.5865 | 1.5988 | 1.5840 | 0.0148 |
+| 2000 | 1.5367 | 1.5432 | 1.5371 | 0.0064 |
+| 3000 | 1.3647 | 1.3715 | 1.3696 | 0.0068 |
+| 4000 | 1.3511 | 1.3610 | 1.3592 | 0.0099 |
+
+- SFT seed spread here is **0.00172 PDMS (0.20%)**, tighter than the 0.00310 (0.38%) of the
+  single-stage `aligned_bf16` seeds, and about 1.7x the eval repeat above.
+- BF16 SFT vs DTS-168 SFT on the same pretrain checkpoint and the same seed 42: 0.854730
+  (`sft_ptlr5e5`) vs 0.855418 (this block), +0.00069, inside that floor.
+- Loss spreads 0.73% at the end while PDMS spreads 0.20%, and seed 42 is both the lowest-loss and
+  the highest-PDMS arm, while seed 44 has the lowest `action_loss` and the lowest PDMS. At this
+  resolution the loss ordering is not a usable proxy for the metric.
+- The curves are indistinguishable until about step 3000; the whole separation appears in the last
+  1,000 steps (spread 0.0064 at step 2000, 0.0099 at 4,000). Warm-up and the lr-decay knee at
+  about 2,200 are identical across seeds, as expected from a shared schedule.
+
+Sources: queue `queue_pretrain_eval_sft_from_ptlr5e5_dts168_i10_a54.sh` (its `run_sft` env line is
+the recipe above), train logs `runs/sft_ptlr5e5_dts168_i10_s4{2,3,4}/train.log`, score CSVs
+`navsim_workspace/exp/eval_ptlr5e5_dts168_i10_s4{2,3,4}_full/<timestamp>/<timestamp>.csv`,
+`average` row plus per-scene `ego_progress == 0` count.
+
 **BF16 pretrain -> HiF8 SFT**
 
 | Layers | 11-18 CTS SFT | CTS PDMS (`ep==0`) | 11-16 static scale | Static PDMS | 11-19 true DTS i10 | DTS i10 PDMS |
@@ -2428,3 +2482,5 @@ transfer behavior, not tensor values or optimizer math.
    `_dts` rows are static-scale.
 3. No i10 seed-43 runs for 132 or 196.
 4. No i200 seed-43 runs for 132 or 168.
+5. The SFT-seed sweep with the pretrain held at `pt_ptlr5e5` exists only for 168 at interval 10
+   (seeds 42/43/44). No such sweep for 132 or 196, and none for bf16 SFT.
