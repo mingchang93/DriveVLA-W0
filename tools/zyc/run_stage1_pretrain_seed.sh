@@ -110,7 +110,7 @@ PAIR_SAMPLING=${PAIR_SAMPLING:-0}
 if [ "$PAIR_SAMPLING" = "1" ]; then
   DATA_SEED=${DATA_SEED:-42}
   DATA_ARGS+=(--nuplan_pair_sampling True --data_seed "$DATA_SEED")
-  echo "  数据采样: pair-level, DATA_SEED=$DATA_SEED（一次数据集遍历内无重复 pair）" | tee -a "$OUT/train.log"
+  echo "  数据采样: pair-level, DATA_SEED=$DATA_SEED 固定 pair 集合, SEED=$SEED 只改变其顺序" | tee -a "$OUT/train.log"
 elif [ -n "${DATA_SEED:-}" ]; then
   DATA_ARGS+=(--data_seed "$DATA_SEED")
   echo "  数据采样: scene-level, DATA_SEED=$DATA_SEED" | tee -a "$OUT/train.log"

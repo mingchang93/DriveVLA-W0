@@ -791,9 +791,15 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
         rank0_print("NuPlan2VA: frames_per_second=%d, action_hz=%d, gap_frames=%d" % (self.frames_per_second, self.action_hz, self.gap_frames))
         self.pair_sampling = bool(getattr(data_args, "nuplan_pair_sampling", False))
         self.num_pairs = 0
+        self.num_pair_samples = 0
+        self.fixed_pair_order = False
         if self.pair_sampling:
             if not hasattr(data_args, "seed"):
                 raise ValueError("NuPlan pair sampling requires data_args.seed")
+            if not hasattr(data_args, "model_seed"):
+                raise ValueError("NuPlan pair sampling requires data_args.model_seed")
+            if not hasattr(data_args, "nuplan_pair_sample_count"):
+                raise ValueError("NuPlan pair sampling requires nuplan_pair_sample_count")
             anchor_lows = np.empty(len(self.data), dtype=np.int64)
             anchor_counts = np.empty(len(self.data), dtype=np.int64)
             for scene_idx, scene in enumerate(self.data):
@@ -804,13 +810,40 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
             self.anchor_counts = anchor_counts
             self.pair_offsets = np.cumsum(anchor_counts, dtype=np.int64)
             self.num_pairs = int(self.pair_offsets[-1])
+            self.num_pair_samples = int(data_args.nuplan_pair_sample_count)
+            if self.num_pair_samples <= 0:
+                raise ValueError("nuplan_pair_sample_count must be positive")
+            if self.num_pair_samples > self.num_pairs:
+                raise ValueError(
+                    "requested %d unique NuPlan pairs, but only %d are valid"
+                    % (self.num_pair_samples, self.num_pairs)
+                )
+
+            # Stage 1: data_seed selects a fixed training-pair budget.
+            subset_generator = torch.Generator().manual_seed(self.base_seed)
+            pair_subset = torch.randperm(
+                self.num_pairs, generator=subset_generator
+            )[: self.num_pair_samples]
+
+            # Stage 2: model seed changes only the order of that fixed subset.
+            order_generator = torch.Generator().manual_seed(int(data_args.model_seed))
+            pair_order = torch.randperm(self.num_pair_samples, generator=order_generator)
+            self.pair_indices = pair_subset[pair_order].cpu().numpy()
+            self.fixed_pair_order = True
             rank0_print(
-                "NuPlan2VA pair sampling: scenes=%d valid_pairs=%d data_seed=%d"
-                % (len(self.data), self.num_pairs, self.base_seed)
+                "NuPlan2VA pair sampling: scenes=%d valid_pairs=%d selected_pairs=%d "
+                "data_seed=%d model_seed=%d"
+                % (
+                    len(self.data),
+                    self.num_pairs,
+                    self.num_pair_samples,
+                    self.base_seed,
+                    int(data_args.model_seed),
+                )
             )
 
     def __len__(self):
-        return self.num_pairs if self.pair_sampling else len(self.data)
+        return self.num_pair_samples if self.pair_sampling else len(self.data)
 
     def _anchor_bounds(self, scene_len):
         one_sec = int(round(self.frames_per_second * 1.0))
@@ -1036,7 +1069,8 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
     def _get_item(self, i) -> Dict[str, torch.Tensor]:
         one_sec = int(round(self.frames_per_second * 1.0))
         if self.pair_sampling:
-            scene_idx, cur_idx = self._pair_to_scene_anchor(i)
+            pair_idx = int(self.pair_indices[i])
+            scene_idx, cur_idx = self._pair_to_scene_anchor(pair_idx)
         else:
             scene_idx = i
             low, high = self._anchor_bounds(len(self.data[scene_idx]["action"]))

@@ -84,6 +84,13 @@ class RossTrainer(Trainer):
         self._acc_n = 0
         self._micro_in_accum = 0  # 当前累积里的 micro-step 计数
 
+    def _get_train_sampler(self, train_dataset=None):
+        dataset = train_dataset if train_dataset is not None else self.train_dataset
+        if getattr(dataset, "fixed_pair_order", False):
+            # NuPlan pair mode has already selected and seeded the exact order.
+            return torch.utils.data.SequentialSampler(dataset)
+        return super()._get_train_sampler(train_dataset)
+
     def compute_loss(self, model, inputs, return_outputs=False, **kw):
         if self._strip_ross_keys:
             for k in _ROSS_ONLY_KEYS:
@@ -538,9 +545,25 @@ def train():
         # Dataset-side randomness must not inherit the model seed. Without an
         # explicit data seed, retain the historical nuPlan anchor seed of 42.
         data_args.seed = int(training_args.data_seed if training_args.data_seed is not None else 42)
+        data_args.model_seed = int(training_args.seed)
+        if data_args.nuplan_pair_sampling:
+            if training_args.max_steps <= 0:
+                raise ValueError("--nuplan_pair_sampling requires a fixed positive --max_steps")
+            world_size = int(os.environ.get("WORLD_SIZE", "1"))
+            global_batch = (
+                int(training_args.per_device_train_batch_size)
+                * world_size
+                * int(training_args.gradient_accumulation_steps)
+            )
+            data_args.nuplan_pair_sample_count = int(training_args.max_steps) * global_batch
         rank0_print(
-            "[DataSampling] nuplan_pair_sampling=%s data_seed=%d"
-            % (data_args.nuplan_pair_sampling, data_args.seed)
+            "[DataSampling] nuplan_pair_sampling=%s data_seed=%d model_seed=%d samples=%s"
+            % (
+                data_args.nuplan_pair_sampling,
+                data_args.seed,
+                data_args.model_seed,
+                getattr(data_args, "nuplan_pair_sample_count", None),
+            )
         )
     
     if data_args.dataset_type == "navsim2va_ross":

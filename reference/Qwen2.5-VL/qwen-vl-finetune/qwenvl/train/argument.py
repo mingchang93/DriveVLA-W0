@@ -58,7 +58,10 @@ class DataArguments:
     # The Trainer's seedable sampler then controls pair order with --data_seed.
     nuplan_pair_sampling: bool = field(
         default=False,
-        metadata={"help": "Expose each valid NuPlan (scene, anchor) pair as one dataset item."},
+        metadata={
+            "help": "Select the NuPlan training-pair budget with data_seed, "
+                    "then permute that fixed subset with --seed."
+        },
     )
     
 @dataclass
