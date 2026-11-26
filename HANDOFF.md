@@ -2209,6 +2209,10 @@ is byte-identical to the existing `sft_r2_bfpt5e5_dts168sft`, whose 11-18 evalua
 higher, so that spread is about 1.7x an eval repeat on one checkpoint. See the two-stage block
 below.
 
+The 8,000-step NuPlan pretrain checkpoints were also evaluated directly on navtest before SFT.
+Their zero-shot PDMS scores span **0.09653**; loss trajectories and scores are together in the
+NuPlan pretrain-only subsection below.
+
 **There is no 192-layer arm anywhere in the workspace.** A source scan of run directories, train
 logs, launch scripts, and eval tags found no `192` Linear count. The third arm in this workspace
 is **196 layers**; the user confirmed 192 was a typo for 196.
@@ -2292,32 +2296,18 @@ Total loss, EMA(0.99):
 - These arms start from the base checkpoint, not from the seed-matched pretrain checkpoints below,
   so this spread is not the pretrain spread being washed out — the two are independent samples.
 
-The same seeds also have NuPlan pretrain arms; they are recorded below because the seeds match,
-but they are independent of the single-stage arms.
-
-| step | seed 42 (`pt_ptlr5e5`) | seed 43 (`pt_bf16_s43`) | seed 44 (`pt_bf16_s44`) | spread |
-|---:|---:|---:|---:|---:|
-| 1000 | 1.7413 | 1.7630 | 1.7493 | 0.0217 |
-| 2000 | 1.5543 | 1.5999 | 1.5925 | 0.0455 |
-| 4000 | 1.3852 | 1.4782 | 1.4888 | 0.1036 |
-| 6000 | 1.2880 | 1.3883 | 1.4145 | 0.1265 |
-| 8000 | 1.2339 | 1.3328 | 1.3638 | 0.1299 |
-
-The three are within 0.02 up to step 1000, then separate monotonically: at 8,000 steps seed 43 is
-+8.0% and seed 44 +10.5% above seed 42. 43 vs 44 differ by 0.031 (2.4%), so a quarter of the
-0.130 spread sits between the two adjacent seeds. Per-step noise sd over the last 1,000 steps is
-0.082-0.088.
+The matched-seed NuPlan pretrain runs are independent of these single-stage SFT arms. Their
+pretrain-only loss and zero-shot navtest results are recorded in the dedicated subsection below.
 
 Sources:
 
-- Train logs: `/mnt/sfs_turbo/zyc/drivevla-w0-zyc/runs/aligned_bf16{,_seed43,_seed44}/train.log`
-  and `runs/{pt_ptlr5e5,pt_bf16_s43,pt_bf16_s44}/train.log`.
+- Train logs: `/mnt/sfs_turbo/zyc/drivevla-w0-zyc/runs/aligned_bf16{,_seed43,_seed44}/train.log`.
 - Score CSVs: `navsim_workspace/exp/<eval dir>/<timestamp>/<timestamp>.csv`, `average` row; the
   per-scene rows give the `ep==0` share (`ego_progress == 0`, which coincides exactly with
   `score == 0`).
 - Per-step series: regex `'loss': X, 'grad_norm': Y` and
-  `'action_loss': X, 'ross_loss': Y` over the whole log, one match per step (4,000 SFT / 8,000
-  pretrain); EMA is `s_t = 0.99 s_{t-1} + 0.01 x_t` with `s_1 = x_1`.
+  `'action_loss': X, 'ross_loss': Y` over the whole log, one match per step (4,000 SFT); EMA is
+  `s_t = 0.99 s_{t-1} + 0.01 x_t` with `s_1 = x_1`.
 
 Open:
 
@@ -2326,6 +2316,39 @@ Open:
    differ.
 2. No seed-variance arm exists for any HiF8 scope; every HiF8 number in the single-stage block is
    a single seed-42 run.
+
+### NuPlan pretrain-only: seeds 42 / 43 / 44, zero-shot NAVSIM navtest
+
+These are the three BF16 NuPlan pretrain checkpoints (`pt_ptlr5e5`, `pt_bf16_s43`,
+`pt_bf16_s44`) evaluated directly on the full navtest split, before any NAVSIM SFT. Each trained
+for 8,000 steps with gbs 96 and peak lr 5e-5. The evals each scored 12,146 / 12,146 scenes.
+
+| Seed | Pretrain run | Final total loss, EMA(0.99) | Zero-shot eval tag | Navtest PDMS | Δ vs seed 42 |
+|---:|---|---:|---|---:|---:|
+| 42 | `pt_ptlr5e5` | 1.2339 | `pt_ptlr5e5` | 0.632253 | — |
+| 43 | `pt_bf16_s43` | 1.3328 | `pt_bf16_s43` | 0.546175 | -0.086078 (-13.61%) |
+| 44 | `pt_bf16_s44` | 1.3638 | `pt_bf16_s44` | 0.535723 | -0.096530 (-15.27%) |
+
+Total loss trajectory, EMA(0.99):
+
+| step | seed 42 | seed 43 | seed 44 | spread |
+|---:|---:|---:|---:|---:|
+| 1000 | 1.7413 | 1.7630 | 1.7493 | 0.0217 |
+| 2000 | 1.5543 | 1.5999 | 1.5925 | 0.0455 |
+| 4000 | 1.3852 | 1.4782 | 1.4888 | 0.1036 |
+| 6000 | 1.2880 | 1.3883 | 1.4145 | 0.1265 |
+| 8000 | 1.2339 | 1.3328 | 1.3638 | 0.1299 |
+
+The loss spread grows from 0.0217 at step 1,000 to 0.1299 at step 8,000. At the final step, seed
+43's EMA loss is 8.0% above seed 42's and seed 44's is 10.5% above; seed 43 and 44 differ by
+0.031 (2.4%). Zero-shot navtest ranks the seeds in the same order: seed 42 highest, then 43, then
+44. This is a descriptive three-seed comparison, not evidence that training loss predicts navtest
+performance.
+
+Sources: train logs `runs/{pt_ptlr5e5,pt_bf16_s43,pt_bf16_s44}/train.log`; zero-shot eval outputs
+`eval_{pt_ptlr5e5,pt_bf16_s43,pt_bf16_s44}_full`, with PDMS from each full-navtest score CSV's
+`average` row and successful-scene count from the eval log. Per-step series are parsed from the
+training logs; EMA uses `s_t = 0.99 s_{t-1} + 0.01 x_t`, `s_1 = x_1`.
 
 ### Two-stage: 8,000-step nuPlan pretrain -> 4,000-step NAVSIM SFT
 
