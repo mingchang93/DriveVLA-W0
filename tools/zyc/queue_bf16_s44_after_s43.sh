@@ -22,6 +22,7 @@ printf 'host=%s started=%s\n' \
   "$(hostname -s)" "$(date '+%F %T %Z')" > "$LOCK/owner"
 
 say "waiting for existing seed42/43 queue marker: $QLOG"
+QLOG_START_LINES=$(wc -l < "$QLOG" 2>/dev/null || echo 0)
 [ "$(docker inspect -f '{{.State.Status}}' zyc-w0 2>/dev/null || echo missing)" = running ] ||
   die "zyc-w0 not running"
 [ ! -e "$OUT/train.log" ] || die "output already exists: $OUT"
@@ -30,7 +31,8 @@ while :; do
   if grep -q 'PAIR_PRETRAIN_QUEUE_DONE' "$QLOG" 2>/dev/null; then
     break
   fi
-  if grep -Eq 'ARM_RESULT seed=(42|43) TRAIN_EXIT=[1-9]' "$QLOG" 2>/dev/null; then
+  if tail -n "+$((QLOG_START_LINES + 1))" "$QLOG" 2>/dev/null |
+      grep -Eq 'ARM_RESULT seed=(42|43) TRAIN_EXIT=[1-9]'; then
     die "existing queue reported a failure"
   fi
   if ! tmux has-session -t lmc-a53-pt-pair 2>/dev/null; then
