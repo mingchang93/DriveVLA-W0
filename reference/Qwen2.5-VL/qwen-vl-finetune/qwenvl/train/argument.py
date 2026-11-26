@@ -54,6 +54,12 @@ class DataArguments:
     cur_frame_idx: int = field(default=0)
     future_nums: int = field(default=8)
     data_root: Optional[str] = field(default=None)
+    # NuPlan only: expose every valid (scene, anchor) pair as one dataset item.
+    # The Trainer's seedable sampler then controls pair order with --data_seed.
+    nuplan_pair_sampling: bool = field(
+        default=False,
+        metadata={"help": "Expose each valid NuPlan (scene, anchor) pair as one dataset item."},
+    )
     
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):

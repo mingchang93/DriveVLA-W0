@@ -105,6 +105,18 @@ echo "  卡 $NPROC · mb $BS · ga $GA · 全局 batch $((BS*NPROC*GA)) · $STEP
 
 SEED=${SEED:-42}
 echo "  随机种子: SEED=$SEED（确定性已开：同 seed 跨机器逐位一致，所以换 seed 是拿到方差样本的唯一办法）" | tee -a "$OUT/train.log"
+DATA_ARGS=()
+PAIR_SAMPLING=${PAIR_SAMPLING:-0}
+if [ "$PAIR_SAMPLING" = "1" ]; then
+  DATA_SEED=${DATA_SEED:-42}
+  DATA_ARGS+=(--nuplan_pair_sampling True --data_seed "$DATA_SEED")
+  echo "  数据采样: pair-level, DATA_SEED=$DATA_SEED（一次数据集遍历内无重复 pair）" | tee -a "$OUT/train.log"
+elif [ -n "${DATA_SEED:-}" ]; then
+  DATA_ARGS+=(--data_seed "$DATA_SEED")
+  echo "  数据采样: scene-level, DATA_SEED=$DATA_SEED" | tee -a "$OUT/train.log"
+else
+  echo "  数据采样: scene-level, historical default" | tee -a "$OUT/train.log"
+fi
 torchrun --nproc_per_node="$NPROC" --master_port=${PORT:-23493} utils/train_qwen_vla.py \
   --model_name_or_path "$MODEL" \
   --sd_model_path /mnt/sfs_turbo/models/stable-diffusion-v1-5/unet \
@@ -114,6 +126,7 @@ torchrun --nproc_per_node="$NPROC" --master_port=${PORT:-23493} utils/train_qwen
   --hif8_interval "$HIF8_INTERVAL" \
   --data_path "$DATA" \
   --data_root "$CAM" \
+  "${DATA_ARGS[@]}" \
   --action_tokenizer_path configs/fast \
   --actions_format fast --action_dim 3 \
   --cur_frame_idx 3 --future_nums 8 --use_previous_actions True \

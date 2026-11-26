@@ -530,6 +530,18 @@ def train():
     
     # Setup data
     data_args = setup_vla_data_args(data_args, image_processor, model_type)
+    if data_args.dataset_type == "nuplan2va_ross":
+        if data_args.nuplan_pair_sampling and training_args.data_seed is None:
+            raise ValueError("--nuplan_pair_sampling requires an explicit --data_seed")
+        if data_args.nuplan_pair_sampling and training_args.group_by_length:
+            raise ValueError("--nuplan_pair_sampling does not support --group_by_length")
+        # Dataset-side randomness must not inherit the model seed. Without an
+        # explicit data seed, retain the historical nuPlan anchor seed of 42.
+        data_args.seed = int(training_args.data_seed if training_args.data_seed is not None else 42)
+        rank0_print(
+            "[DataSampling] nuplan_pair_sampling=%s data_seed=%d"
+            % (data_args.nuplan_pair_sampling, data_args.seed)
+        )
     
     if data_args.dataset_type == "navsim2va_ross":
         data_module = make_supervised_data_module_navsim2_vla_ross(tokenizer=tokenizer, data_args=data_args)

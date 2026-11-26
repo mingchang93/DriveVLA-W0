@@ -702,6 +702,8 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
     - Time windows:
         pre action: 1.5s history, 1s future
         cur action: 1.5s history, 4s future
+    - nuplan_pair_sampling adds every valid (scene, current-anchor) pair to
+      the dataset index, instead of exposing one scene and sampling its anchor.
     - Index sampling controlled by rng(seed)（默认，原实现）；置环境变量
       FRAME_SAMPLING_STATELESS=1 则改为 (seed, epoch, index) 的纯函数，
       与调用顺序和 num_workers 无关，用于需要续训逐位一致的长跑
@@ -787,9 +789,47 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
         self.return_masks = getattr(data_args, "return_masks", True)
 
         rank0_print("NuPlan2VA: frames_per_second=%d, action_hz=%d, gap_frames=%d" % (self.frames_per_second, self.action_hz, self.gap_frames))
+        self.pair_sampling = bool(getattr(data_args, "nuplan_pair_sampling", False))
+        self.num_pairs = 0
+        if self.pair_sampling:
+            if not hasattr(data_args, "seed"):
+                raise ValueError("NuPlan pair sampling requires data_args.seed")
+            anchor_lows = np.empty(len(self.data), dtype=np.int64)
+            anchor_counts = np.empty(len(self.data), dtype=np.int64)
+            for scene_idx, scene in enumerate(self.data):
+                low, high = self._anchor_bounds(len(scene["action"]))
+                anchor_lows[scene_idx] = low
+                anchor_counts[scene_idx] = high - low + 1
+            self.anchor_lows = anchor_lows
+            self.anchor_counts = anchor_counts
+            self.pair_offsets = np.cumsum(anchor_counts, dtype=np.int64)
+            self.num_pairs = int(self.pair_offsets[-1])
+            rank0_print(
+                "NuPlan2VA pair sampling: scenes=%d valid_pairs=%d data_seed=%d"
+                % (len(self.data), self.num_pairs, self.base_seed)
+            )
 
     def __len__(self):
-        return len(self.data)
+        return self.num_pairs if self.pair_sampling else len(self.data)
+
+    def _anchor_bounds(self, scene_len):
+        one_sec = int(round(self.frames_per_second * 1.0))
+        step = max(1, int(round(self.frames_per_second / max(1, self.action_hz))))
+        hist_pre = int(round(1.5 * self.action_hz))
+        fut_cur = int(round(4.0 * self.action_hz))
+        start_idx = one_sec + step * hist_pre
+        end_idx = (scene_len - 1) - (step * (fut_cur - 1))
+        low = max(0, start_idx)
+        return low, max(low, end_idx)
+
+    def _pair_to_scene_anchor(self, pair_idx):
+        if pair_idx < 0 or pair_idx >= self.num_pairs:
+            raise IndexError("pair index out of range")
+        scene_idx = int(np.searchsorted(self.pair_offsets, pair_idx, side="right"))
+        prev_offset = int(self.pair_offsets[scene_idx - 1]) if scene_idx > 0 else 0
+        local_anchor = int(pair_idx) - prev_offset
+        cur_idx = int(self.anchor_lows[scene_idx]) + local_anchor
+        return scene_idx, cur_idx
 
     @property
     def lengths(self):
@@ -986,7 +1026,7 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
         # try next sample
         for attempt_idx in range(num_base_retries):
             try:
-                next_index = min(i + 1, len(self.data) - 1)
+                next_index = min(i + 1, len(self) - 1)
                 return self._get_item(next_index)
             except Exception as e:
                 print(f"[Try other #{attempt_idx}] Failed to fetch sample {next_index}. Exception:", e)
@@ -994,36 +1034,22 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
         return self._get_item(i)
 
     def _get_item(self, i) -> Dict[str, torch.Tensor]:
-        scene = self.data[i]
-
-        # Determine scene length: prefer action length if available, else fallback
-        scene_len = len(scene["action"])
-
-        # Compute index constraints
         one_sec = int(round(self.frames_per_second * 1.0))
-        step = max(1, int(round(self.frames_per_second / max(1, self.action_hz))))
-        hist_pre = int(round(1.5 * self.action_hz))
-        fut_pre = int(round(1.0 * self.action_hz))
-        hist_cur = int(round(1.5 * self.action_hz))
-        fut_cur = int(round(4.0 * self.action_hz))
-
-        start_idx = one_sec + step * hist_pre
-        end_idx = (scene_len - 1) - (step * (fut_cur - 1))
-
-        low = max(0, start_idx)
-        high = max(low, end_idx)
-        if high < low:
-            # degenerate window; fallback to center
-            low = max(0, scene_len // 4)
-            high = max(low, scene_len // 2)
-        if self.stateless_frame_sampling:
-            # 与调用顺序、worker 数无关：同一个 (epoch, i) 永远抽到同一帧。
-            # 这是续训能逐位接上的关键 —— trainer 的 _load_rng_state 是在取出
-            # inputs 之后才执行的，所以第一个批次的内容不能依赖任何可恢复的 RNG 状态。
-            _fs = (int(self.base_seed) * 1000003 + int(self.epoch)) * 1000003 + int(i)
-            cur_idx = random.Random(_fs).randint(low, high)
+        if self.pair_sampling:
+            scene_idx, cur_idx = self._pair_to_scene_anchor(i)
         else:
-            cur_idx = self.rng.randint(low, high)   # 原实现
+            scene_idx = i
+            low, high = self._anchor_bounds(len(self.data[scene_idx]["action"]))
+            if self.stateless_frame_sampling:
+                # 与调用顺序、worker 数无关：同一个 (epoch, i) 永远抽到同一帧。
+                # 这是续训能逐位接上的关键 —— trainer 的 _load_rng_state 是在取出
+                # inputs 之后才执行的，所以第一个批次的内容不能依赖任何可恢复的 RNG 状态。
+                _fs = (int(self.base_seed) * 1000003 + int(self.epoch)) * 1000003 + int(i)
+                cur_idx = random.Random(_fs).randint(low, high)
+            else:
+                cur_idx = self.rng.randint(low, high)   # 原实现
+
+        scene = self.data[scene_idx]
         pre_idx = cur_idx - one_sec
 
         # Prepare containers
