@@ -58,7 +58,7 @@ done
 cd "$ROOT" || die "checkout missing"
 say "launch bf16 pair seed44 data_seed42"
 DATALOADER_PIN_MEMORY=False PAIR_SAMPLING=1 DATA_SEED=42 SEED=44 \
-  OUT="$OUT" STEPS=8000 SAVE_STRATEGY=no SAVE_STEPS=1000 \
+  OUT="$OUT" STEPS=8000 SAVE_STRATEGY=steps SAVE_STEPS=1000 \
   NPROC=8 BS=12 GA=1 GC=False PORT=23993 HCCL_RANGE=17900-17999 \
   bash tools/zyc/run_stage1_pretrain_seed.sh >> "$LOG" 2>&1
 rc=$?

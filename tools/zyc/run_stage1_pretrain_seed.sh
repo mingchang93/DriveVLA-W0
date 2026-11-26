@@ -101,9 +101,14 @@ mkdir -p "$OUT"
 echo "[$(date '+%F %T')] 阶段一启动于 $(hostname -s)" | tee "$OUT/train.log"
 echo "  数据: $DATA" | tee -a "$OUT/train.log"
 echo "  输出: $OUT" | tee -a "$OUT/train.log"
-echo "  卡 $NPROC · mb $BS · ga $GA · 全局 batch $((BS*NPROC*GA)) · $STEPS 步 · 重计算 $GC" | tee -a "$OUT/train.log"
-
 SEED=${SEED:-42}
+# The current a53 pair queue must retain intermediate model weights for seeds
+# 43 and 44. Override a caller's SAVE_STRATEGY=no for those arms only.
+MODEL_CKPT_SEEDS=${MODEL_CKPT_SEEDS:-43,44}
+if [[ ",$MODEL_CKPT_SEEDS," == *",$SEED,"* ]]; then
+  SAVE_STRATEGY=steps
+fi
+echo "  卡 $NPROC · mb $BS · ga $GA · 全局 batch $((BS*NPROC*GA)) · $STEPS 步 · 重计算 $GC · 模型检查点 $SAVE_STRATEGY/$SAVE_STEPS" | tee -a "$OUT/train.log"
 echo "  随机种子: SEED=$SEED（确定性已开：同 seed 跨机器逐位一致，所以换 seed 是拿到方差样本的唯一办法）" | tee -a "$OUT/train.log"
 DATA_ARGS=()
 PAIR_SAMPLING=${PAIR_SAMPLING:-0}
