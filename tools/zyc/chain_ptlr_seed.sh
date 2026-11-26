@@ -53,7 +53,8 @@ HIF8_DTS_STAT=${HIF8_DTS_STAT:-}
 HIF8_DTS_STAT_N=${HIF8_DTS_STAT_N:-}
 HIF8_DTS_STAT_ROLES=${HIF8_DTS_STAT_ROLES:-}
 
-T=/mnt/sfs_turbo/zyc/DriveVLA-W0/tools/zyc
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+T="$ROOT/tools/zyc"
 W=/mnt/sfs_turbo/zyc/drivevla-w0-zyc
 PT=$W/runs/pt_${TAG}
 SFT=$W/runs/sft_${TAG}

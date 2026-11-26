@@ -38,7 +38,7 @@
 #     「官方 17,376 段」是早前的错误记录，官方 Training.md 并无此数，实测 18,191。
 set -u
 
-ROOT=/mnt/sfs_turbo/zyc/DriveVLA-W0
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=${OUT:-/mnt/sfs_turbo/zyc/drivevla-w0-zyc/runs/pretrain_nuplan_2va_bf16}
 MODEL=${MODEL:-/mnt/sfs_turbo/models/Qwen3-VL-2B-Instruct}   # 骨干；也是补 processor 配置的来源
 NPROC=${NPROC:-8}
