@@ -33,7 +33,7 @@
 #   repo 是 True，Ascend 上没有 tf32，设 False（lmc 的脚本也是 False）。
 set -u
 
-ROOT=/mnt/sfs_turbo/zyc/DriveVLA-W0
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=${OUT:-/mnt/sfs_turbo/zyc/drivevla-w0-zyc/runs/sft_navsim_2va_bf16}
 DATA=/mnt/sfs_turbo/zjj/datasets/DriveVLA-W0/navsim_emu_vla_256_144_trainval_pre_1s.pkl
 CAM=/mnt/sfs_turbo/lmc/navsim_openscene/openscene-v1.1/sensor_blobs/trainval

@@ -18,7 +18,7 @@ if [ -f /mnt/sfs_turbo/zyc/drivevla-w0-zyc/.skip_eval ]; then
   exit 0
 fi
 CKPT=$1; TAG=$2; MODE=${3:-mini}; NP=${4:-8}
-D=/mnt/sfs_turbo/zyc/DriveVLA-W0
+D=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 W=/mnt/sfs_turbo/zyc/drivevla-w0-zyc
 OUT=$W/navsim_workspace/eval_${TAG}_${MODE}
 
