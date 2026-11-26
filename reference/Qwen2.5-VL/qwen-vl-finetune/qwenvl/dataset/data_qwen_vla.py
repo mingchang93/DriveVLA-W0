@@ -11,6 +11,7 @@ import time
 import math
 import itertools
 import ast
+import hashlib
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Sequence, List, Tuple
 from io import BytesIO
@@ -829,16 +830,24 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
             order_generator = torch.Generator().manual_seed(int(data_args.model_seed))
             pair_order = torch.randperm(self.num_pair_samples, generator=order_generator)
             self.pair_indices = pair_subset[pair_order].cpu().numpy()
+            self.pair_set_sha256 = hashlib.sha256(
+                np.sort(self.pair_indices).tobytes()
+            ).hexdigest()
+            self.pair_order_sha256 = hashlib.sha256(
+                self.pair_indices.tobytes()
+            ).hexdigest()
             self.fixed_pair_order = True
             rank0_print(
                 "NuPlan2VA pair sampling: scenes=%d valid_pairs=%d selected_pairs=%d "
-                "data_seed=%d model_seed=%d"
+                "data_seed=%d model_seed=%d set_sha256=%s order_sha256=%s"
                 % (
                     len(self.data),
                     self.num_pairs,
                     self.num_pair_samples,
                     self.base_seed,
                     int(data_args.model_seed),
+                    self.pair_set_sha256,
+                    self.pair_order_sha256,
                 )
             )
 
