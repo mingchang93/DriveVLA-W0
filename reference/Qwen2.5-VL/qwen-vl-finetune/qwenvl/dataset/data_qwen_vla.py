@@ -863,7 +863,12 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
             # Stage 2: model seed changes only the order of that fixed subset.
             order_generator = torch.Generator().manual_seed(int(data_args.model_seed))
             pair_order = torch.randperm(self.num_pair_samples, generator=order_generator)
-            self.pair_indices = pair_subset[pair_order].cpu().numpy()
+            pair_subset_np = (
+                pair_subset.cpu().numpy()
+                if isinstance(pair_subset, torch.Tensor)
+                else np.asarray(pair_subset)
+            )
+            self.pair_indices = pair_subset_np[pair_order.cpu().numpy()]
             self.pair_set_sha256 = hashlib.sha256(
                 np.sort(self.pair_indices).tobytes()
             ).hexdigest()
