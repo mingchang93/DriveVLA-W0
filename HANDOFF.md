@@ -2507,3 +2507,113 @@ transfer behavior, not tensor values or optimizer math.
 4. No i200 seed-43 runs for 132 or 168.
 5. The SFT-seed sweep with the pretrain held at `pt_ptlr5e5` exists only for 168 at interval 10
    (seeds 42/43/44). No such sweep for 132 or 196, and none for bf16 SFT.
+
+## 2026-11-27 — DTS-168 i10 pretrain seed sweep on scene-level sampling, with matching BF16 references
+
+Three complete chains (pretrain 8,000 -> SFT 4,000 -> full navtest eval) at seeds 42 / 43 / 44,
+all on **scene-level** sampling, launched 11-26 23:30 CST and finished 11-27 05:19-08:08 CST. Each
+seed carries its own pretrain checkpoint into its own SFT, which is the difference from the 11-26
+SFT sweep that held `pt_ptlr5e5` fixed for all three seeds.
+
+### Setup
+
+- Pretrain: 8 NPUs x mb 12 x ga 1 = gbs 96, 8,000 steps, peak lr 5e-5, recompute off, save every
+  1,000 steps. HiF8 is true DTS at `interval=10` over 168 Linear layers
+  (`HIF8=dts HIF8_IGNORE=lm_head,o_proj HIF8_INTERVAL=10`), and the log records
+  `nuplan_pair_sampling=False` / `数据采样: scene-level, historical default`.
+- SFT: 8 NPUs x bs 6 x ga 1 = gbs 48, 4,000 steps, lr 1e-5, `zero2.json`, init from that seed's
+  own pretrain output.
+- Eval: full navtest, 12,146 scenes, `eval_ckpt.sh <ckpt> <tag> full 8`; every run produced 36,438
+  JSONs and scored 12,146 valid scenes.
+- Hosts a51 / a52 / a54, container `zyc-w0` (UTC clock, so log timestamps read 8 h behind CST),
+  queue script `tools/zyc/queue_pretrain_eval_sft_dts168_i10_a54.sh`.
+
+### Results
+
+| Seed | Pretrain tail-20 loss | Pretrain runtime | SFT tail-20 loss | PDMS (12,146) |
+|---:|---:|---|---:|---:|
+| 42 | 1.241 | 20,817 s (5h47m) | 1.373 | **0.852851** |
+| 43 | 1.364 | 20,597 s (5h43m) | 1.593 | **0.722685** |
+| 44 | 1.391 | 20,721 s (5h45m) | 1.488 | **0.801014** |
+
+- Seed spread on this recipe is **0.1302 PDMS**, 15.3% of the best arm and ~76x the 0.00172 (0.20%)
+  spread of the 11-26 SFT sweep that held the pretrain fixed. The variance here is the pretrain
+  seed, not the SFT seed.
+- All three metrics order the seeds the same way: 42 best, 43 worst, 44 between. This is the
+  opposite of the single-stage `aligned_bf16` sweep (11-24), where loss and PDMS disagreed, so the
+  agreement here is n=3 evidence, not a rule.
+- 43's SFT degrades much further than its pretrain does (pretrain 1.364 vs 1.241 = +0.123; SFT
+  1.593 vs 1.373 = +0.220), i.e. the SFT stage amplifies the seed gap.
+
+### BF16 references on the same scene-level sampling
+
+Same recipe keys (scene-level, gbs 96, 8,000 steps, peak lr 5e-5), no quantization:
+
+| Arm | Run dir | Seed | Pretrain tail-20 loss |
+|---|---|---:|---:|
+| BF16 baseline | `runs/pt_ptlr5e5` | 42 | 1.225 |
+| BF16 | `runs/pt_bf16_s43` | 43 | 1.305 |
+| BF16 | `runs/pt_bf16_s44` | 44 | 1.389 |
+
+Each log prints `[Reproducibility] seed=<n> deterministic=True device=npu`, so all three are
+seed-matched to the HiF8 arms.
+
+Quantization cost (HiF8 - BF16, same seed, same sampling): **+0.016 (seed 42)**, **+0.059 (seed
+43)**, **+0.002 (seed 44)**. All three are below the seed-to-seed spread of either family (0.150
+across the three HiF8 arms, 0.164 across the three BF16 scene-level arms), so a single-seed quant
+comparison cannot resolve anything at 8,000 steps.
+
+Caveat: `pt_ptlr5e5` ran 11-14 and `pt_bf16_s43` 11-19, both before the 11-26 HiF8 arm, so a small
+code-version effect is folded into those deltas.
+
+### Not comparable: the a53 pair-level BF16 arms
+
+`pt_aligned_bf16_pair_s42` (8,000 steps, `TRAIN_EXIT=0`, tail 1.402) and `pt_aligned_bf16_pair_s43`
+(8,000 steps, `TRAIN_EXIT=0`, tail 1.234) print `nuplan_pair_sampling=True`, i.e. pair-level
+sampling with `DATA_SEED=42`. They cannot be paired against the scene-level HiF8 arms.
+
+Doing so anyway reads as HiF8 being 0.161 *lower* at seed 42. That is a sampling artefact, not a
+quantization effect: within the pair-level family seed 42 sits 0.168 above seed 43, the same
+magnitude. `pt_aligned_bf16_pair_s44` never started — its launcher failed 3 s in on
+`ImportError: libhccl.so` because the systemd unit invokes the launcher on the host instead of via
+`docker exec zyc-w0 bash`; the directory holds only the failed `train.log`.
+
+### Run and eval directories (for future reference)
+
+Relative to `/mnt/sfs_turbo/zyc/drivevla-w0-zyc`:
+
+| Seed | Pretrain run dir | SFT run dir | Eval dir |
+|---:|---|---|---|
+| 42 | `runs/pt_dts168_i10_20261126_s42` | `runs/sft_dts168_i10_20261126_s42` | `navsim_workspace/exp/eval_dts168_i10_20261126_s42_full` |
+| 43 | `runs/pt_dts168_i10_20261126_s43` | `runs/sft_dts168_i10_20261126_s43` | `navsim_workspace/exp/eval_dts168_i10_20261126_s43_full` |
+| 44 | `runs/pt_dts168_i10_20261126_s44` | `runs/sft_dts168_i10_20261126_s44` | `navsim_workspace/exp/eval_dts168_i10_20261126_s44_full` |
+
+Score CSVs, `average` row of `<eval dir>/<timestamp>/<timestamp>.csv`:
+
+- seed 42: `2026.11.27.00.03.30/2026.11.27.00.08.37.csv`
+- seed 43: `2026.11.26.23.18.15/2026.11.26.23.23.27.csv`
+- seed 44: `2026.11.26.23.40.59/2026.11.26.23.46.00.csv`
+
+Timestamps are container UTC. BF16 reference run dirs are listed in the table above. Pair-level a53
+arms live under `/mnt/sfs_turbo/lmc/runs/pt_aligned_bf16_pair_s4{2,3,4}` and have no eval.
+
+### What these numbers do and do not support
+
+- They do support a real pretrain seed effect of 0.13 PDMS at 168 layers / interval 10 on this
+  recipe, far outside the ~0.001 eval-repeat floor recorded on 11-24 and 11-26.
+- They do not support any HiF8-vs-BF16 claim from a single seed: the quant cost (0.002-0.059 in
+  loss) is smaller than the seed spread in either family.
+- They do not make the a53 pair-level arms comparable to anything here.
+
+### Open
+
+1. All three seeds now have a seed-matched scene-level BF16 partner (`pt_ptlr5e5` = 42,
+   `pt_bf16_s43` = 43, `pt_bf16_s44` = 44), so the seed-42 pair no longer has an open end.
+2. BF16 pair-level seed 44 is still not started, and a53 was occupied by another tenant's
+   35B smoke job when this was written.
+3. No seed sweep exists for 132 or 196 at interval 10 on this scene-level recipe.
+
+Sources: chain logs `/mnt/sfs_turbo/zyc/drivevla-w0-zyc/chain_dts168_i10_20261126_s4{2,3,4}.log`,
+train logs `runs/{pt,sft}_dts168_i10_20261126_s4{2,3,4}/train.log`, and the score CSVs above.
+Loss tails are the mean of the last 20 logged `{'loss': ...}` values; the reported PDMS is the
+`Final average score of valid results` line of each chain log.
