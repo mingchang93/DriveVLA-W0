@@ -557,9 +557,11 @@ def train():
             )
             data_args.nuplan_pair_sample_count = int(training_args.max_steps) * global_batch
         rank0_print(
-            "[DataSampling] nuplan_pair_sampling=%s data_seed=%d model_seed=%d samples=%s"
+            "[DataSampling] nuplan_pair_sampling=%s mode=%s data_seed=%d "
+            "model_seed=%d samples=%s"
             % (
                 data_args.nuplan_pair_sampling,
+                getattr(data_args, "nuplan_pair_sampling_mode", None),
                 data_args.seed,
                 data_args.model_seed,
                 getattr(data_args, "nuplan_pair_sample_count", None),

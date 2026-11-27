@@ -73,6 +73,7 @@ def build_dataset(args, tokenizer, image_processor, model_type, model_seed, samp
     data_args.seed = args.data_seed
     data_args.model_seed = model_seed
     data_args.nuplan_pair_sampling = True
+    data_args.nuplan_pair_sampling_mode = args.sampling_mode
     data_args.nuplan_pair_sample_count = sample_count
 
     dataset = LazySupervisedNuplan2VAROSSDataset(
@@ -80,14 +81,24 @@ def build_dataset(args, tokenizer, image_processor, model_type, model_seed, samp
         data_args=data_args,
     )
     summary = {
+        "sampling_mode": dataset.pair_sampling_mode,
         "data_seed": args.data_seed,
         "model_seed": model_seed,
         "dataset_len": len(dataset),
         "valid_pairs": dataset.num_pairs,
         "selected_pairs": dataset.num_pair_samples,
         "unique_selected_pairs": int(np.unique(dataset.pair_indices).size),
+        "va_pair_slots": dataset.num_va_pair_slots,
+        "unique_va_pairs": dataset.num_unique_va_pairs,
+        "duplicate_va_pairs": dataset.num_duplicate_va_pairs,
+        "duplicate_va_pair_slots": dataset.num_duplicate_va_pair_slots,
+        "max_va_pair_multiplicity": dataset.max_va_pair_multiplicity,
+        "max_disjoint_pair_windows": dataset.max_disjoint_pair_windows,
+        "pair_sampling_scanned_windows": dataset.pair_sampling_scanned_windows,
         "set_sha256": dataset.pair_set_sha256,
         "order_sha256": dataset.pair_order_sha256,
+        "va_pair_set_sha256": dataset.va_pair_set_sha256,
+        "va_pair_order_sha256": dataset.va_pair_order_sha256,
         "first_pair_ids": dataset.pair_indices[:5].tolist(),
         "last_pair_ids": dataset.pair_indices[-5:].tolist(),
     }
@@ -109,6 +120,11 @@ def main():
     )
     parser.add_argument("--data-seed", type=int, default=42)
     parser.add_argument("--model-seeds", type=int, nargs="+", default=[43, 44])
+    parser.add_argument(
+        "--sampling-mode",
+        choices=("anchor", "disjoint_2va"),
+        default="disjoint_2va",
+    )
     parser.add_argument("--max-steps", type=int, default=8000)
     parser.add_argument("--per-device-batch", type=int, default=12)
     parser.add_argument("--world-size", type=int, default=8)
@@ -144,8 +160,16 @@ def main():
     for summary in summaries[1:]:
         assert summary["set_sha256"] == base["set_sha256"]
         assert summary["order_sha256"] != base["order_sha256"]
+        assert summary["va_pair_set_sha256"] == base["va_pair_set_sha256"]
+        assert summary["va_pair_order_sha256"] != base["va_pair_order_sha256"]
         assert summary["unique_selected_pairs"] == sample_count
         assert summary["dataset_len"] == sample_count
+        if args.sampling_mode == "disjoint_2va":
+            assert summary["va_pair_slots"] == sample_count * 2
+            assert summary["unique_va_pairs"] == sample_count * 2
+            assert summary["duplicate_va_pairs"] == 0
+            assert summary["duplicate_va_pair_slots"] == 0
+            assert summary["max_va_pair_multiplicity"] == 1
     print("PAIR_SAMPLING_AUDIT_PASS", flush=True)
 
 

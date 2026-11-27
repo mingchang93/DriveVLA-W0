@@ -63,6 +63,14 @@ class DataArguments:
                     "then permute that fixed subset with --seed."
         },
     )
+    nuplan_pair_sampling_mode: str = field(
+        default="disjoint_2va",
+        metadata={
+            "help": "NuPlan pair sampling mode: 'disjoint_2va' selects 2VA "
+                    "windows whose individual VA pairs do not overlap; "
+                    "'anchor' preserves the historical anchor-only sampler."
+        },
+    )
     
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):

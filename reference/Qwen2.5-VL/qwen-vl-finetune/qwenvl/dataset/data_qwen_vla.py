@@ -703,8 +703,9 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
     - Time windows:
         pre action: 1.5s history, 1s future
         cur action: 1.5s history, 4s future
-    - nuplan_pair_sampling adds every valid (scene, current-anchor) pair to
-      the dataset index, instead of exposing one scene and sampling its anchor.
+    - nuplan_pair_sampling exposes a fixed current-anchor sample budget.
+      ``disjoint_2va`` additionally requires the two VA pairs in every sample
+      to be unused, preventing overlap with any other selected 2VA window.
     - Index sampling controlled by rng(seed)（默认，原实现）；置环境变量
       FRAME_SAMPLING_STATELESS=1 则改为 (seed, epoch, index) 的纯函数，
       与调用顺序和 num_workers 无关，用于需要续训逐位一致的长跑
@@ -791,10 +792,25 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
 
         rank0_print("NuPlan2VA: frames_per_second=%d, action_hz=%d, gap_frames=%d" % (self.frames_per_second, self.action_hz, self.gap_frames))
         self.pair_sampling = bool(getattr(data_args, "nuplan_pair_sampling", False))
+        self.pair_sampling_mode = str(
+            getattr(data_args, "nuplan_pair_sampling_mode", "disjoint_2va")
+        )
         self.num_pairs = 0
         self.num_pair_samples = 0
         self.fixed_pair_order = False
+        self.num_va_pair_slots = 0
+        self.num_unique_va_pairs = 0
+        self.num_duplicate_va_pairs = 0
+        self.num_duplicate_va_pair_slots = 0
+        self.max_va_pair_multiplicity = 0
+        self.max_disjoint_pair_windows = 0
+        self.pair_sampling_scanned_windows = 0
         if self.pair_sampling:
+            if self.pair_sampling_mode not in {"anchor", "disjoint_2va"}:
+                raise ValueError(
+                    "nuplan_pair_sampling_mode must be 'anchor' or 'disjoint_2va', "
+                    f"got {self.pair_sampling_mode!r}"
+                )
             if not hasattr(data_args, "seed"):
                 raise ValueError("NuPlan pair sampling requires data_args.seed")
             if not hasattr(data_args, "model_seed"):
@@ -812,19 +828,37 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
             self.pair_offsets = np.cumsum(anchor_counts, dtype=np.int64)
             self.num_pairs = int(self.pair_offsets[-1])
             self.num_pair_samples = int(data_args.nuplan_pair_sample_count)
+            one_sec = int(round(self.frames_per_second * 1.0))
+            max_scene_len = max(len(scene["action"]) for scene in self.data)
+            self.va_key_stride = int(max_scene_len) + one_sec + 1
             if self.num_pair_samples <= 0:
                 raise ValueError("nuplan_pair_sample_count must be positive")
-            if self.num_pair_samples > self.num_pairs:
-                raise ValueError(
-                    "requested %d unique NuPlan pairs, but only %d are valid"
-                    % (self.num_pair_samples, self.num_pairs)
-                )
 
-            # Stage 1: data_seed selects a fixed training-pair budget.
-            subset_generator = torch.Generator().manual_seed(self.base_seed)
-            pair_subset = torch.randperm(
-                self.num_pairs, generator=subset_generator
-            )[: self.num_pair_samples]
+            if self.pair_sampling_mode == "anchor":
+                if self.num_pair_samples > self.num_pairs:
+                    raise ValueError(
+                        "requested %d unique NuPlan anchors, but only %d are valid"
+                        % (self.num_pair_samples, self.num_pairs)
+                    )
+                # Historical mode: choose current anchors without replacement.
+                subset_generator = torch.Generator().manual_seed(self.base_seed)
+                pair_subset = torch.randperm(
+                    self.num_pairs, generator=subset_generator
+                )[: self.num_pair_samples]
+            else:
+                max_windows = self._max_disjoint_pair_windows()
+                self.max_disjoint_pair_windows = max_windows
+                if self.num_pair_samples > max_windows:
+                    raise ValueError(
+                        "requested %d disjoint NuPlan 2VA windows, but at most %d exist"
+                        % (self.num_pair_samples, max_windows)
+                    )
+                # New mode: each 2VA window contributes two individual VA pairs.
+                # Greedily select a matching so no VA pair is reused.
+                pair_subset = self._sample_disjoint_pair_windows(
+                    self.num_pair_samples,
+                    self.base_seed,
+                )
 
             # Stage 2: model seed changes only the order of that fixed subset.
             order_generator = torch.Generator().manual_seed(int(data_args.model_seed))
@@ -836,17 +870,55 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
             self.pair_order_sha256 = hashlib.sha256(
                 self.pair_indices.tobytes()
             ).hexdigest()
+
+            va_pair_keys = self.selected_va_pair_keys()
+            unique_va_pair_keys, va_pair_multiplicity = np.unique(
+                va_pair_keys,
+                return_counts=True,
+            )
+            self.num_va_pair_slots = int(va_pair_keys.size)
+            self.num_unique_va_pairs = int(unique_va_pair_keys.size)
+            self.num_duplicate_va_pairs = int(
+                np.count_nonzero(va_pair_multiplicity > 1)
+            )
+            self.num_duplicate_va_pair_slots = int(
+                va_pair_keys.size - unique_va_pair_keys.size
+            )
+            self.max_va_pair_multiplicity = int(va_pair_multiplicity.max())
+            self.va_pair_set_sha256 = hashlib.sha256(
+                unique_va_pair_keys.tobytes()
+            ).hexdigest()
+            self.va_pair_order_sha256 = hashlib.sha256(
+                va_pair_keys.tobytes()
+            ).hexdigest()
+            if self.pair_sampling_mode == "disjoint_2va" and self.num_duplicate_va_pairs:
+                raise RuntimeError(
+                    "disjoint_2va sampler produced %d repeated VA pairs"
+                    % self.num_duplicate_va_pairs
+                )
             self.fixed_pair_order = True
             rank0_print(
-                "NuPlan2VA pair sampling: scenes=%d valid_pairs=%d selected_pairs=%d "
-                "data_seed=%d model_seed=%d set_sha256=%s order_sha256=%s"
+                "NuPlan2VA pair sampling: mode=%s scenes=%d valid_pairs=%d "
+                "selected_windows=%d va_pair_slots=%d unique_va_pairs=%d "
+                "duplicate_va_pairs=%d duplicate_slots=%d max_multiplicity=%d "
+                "max_disjoint_windows=%d scanned_windows=%d data_seed=%d "
+                "model_seed=%d set_sha256=%s va_set_sha256=%s order_sha256=%s"
                 % (
+                    self.pair_sampling_mode,
                     len(self.data),
                     self.num_pairs,
                     self.num_pair_samples,
+                    self.num_va_pair_slots,
+                    self.num_unique_va_pairs,
+                    self.num_duplicate_va_pairs,
+                    self.num_duplicate_va_pair_slots,
+                    self.max_va_pair_multiplicity,
+                    self.max_disjoint_pair_windows,
+                    self.pair_sampling_scanned_windows,
                     self.base_seed,
                     int(data_args.model_seed),
                     self.pair_set_sha256,
+                    self.va_pair_set_sha256,
                     self.pair_order_sha256,
                 )
             )
@@ -864,6 +936,60 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
         low = max(0, start_idx)
         return low, max(low, end_idx)
 
+    def _max_disjoint_pair_windows(self):
+        """Maximum matching of 2VA windows in each anchor-offset path."""
+        one_sec = int(round(self.frames_per_second * 1.0))
+        max_windows = 0
+        for count in self.anchor_counts:
+            path_edges, long_paths = divmod(int(count), one_sec)
+            max_windows += long_paths * ((path_edges + 2) // 2)
+            max_windows += (one_sec - long_paths) * ((path_edges + 1) // 2)
+        return int(max_windows)
+
+    def _sample_disjoint_pair_windows(self, sample_count, seed):
+        """Sample a matching over individual VA pairs.
+
+        A candidate anchored at current frame ``a`` contains VA pairs
+        ``a - one_sec`` and ``a``. Two candidates conflict iff they reuse
+        either pair. Candidate order is seeded by data_seed; a window is
+        accepted only when both endpoints are unused.
+        """
+        one_sec = int(round(self.frames_per_second * 1.0))
+        generator = torch.Generator().manual_seed(int(seed))
+        candidate_order = torch.randperm(
+            self.num_pairs,
+            generator=generator,
+        ).cpu().numpy()
+
+        used_va_pairs = set()
+        selected = np.empty(sample_count, dtype=np.int64)
+        selected_count = 0
+        scanned = 0
+        for pair_idx_value in candidate_order:
+            scanned += 1
+            pair_idx = int(pair_idx_value)
+            scene_idx, cur_idx = self._pair_to_scene_anchor(pair_idx)
+            pre_idx = cur_idx - one_sec
+            scene_base = scene_idx * self.va_key_stride
+            pre_key = scene_base + pre_idx
+            cur_key = scene_base + cur_idx
+            if pre_key in used_va_pairs or cur_key in used_va_pairs:
+                continue
+            used_va_pairs.add(pre_key)
+            used_va_pairs.add(cur_key)
+            selected[selected_count] = pair_idx
+            selected_count += 1
+            if selected_count == sample_count:
+                break
+
+        self.pair_sampling_scanned_windows = scanned
+        if selected_count != sample_count:
+            raise ValueError(
+                "disjoint_2va matching exhausted after %d/%d windows"
+                % (selected_count, sample_count)
+            )
+        return selected
+
     def _pair_to_scene_anchor(self, pair_idx):
         if pair_idx < 0 or pair_idx >= self.num_pairs:
             raise IndexError("pair index out of range")
@@ -872,6 +998,25 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
         local_anchor = int(pair_idx) - prev_offset
         cur_idx = int(self.anchor_lows[scene_idx]) + local_anchor
         return scene_idx, cur_idx
+
+    def selected_va_pair_keys(self):
+        """Return encoded individual (scene, anchor) VA pairs for this pool."""
+        if not self.pair_sampling:
+            raise ValueError("VA-pair keys are only available with pair sampling")
+        pair_indices = np.asarray(self.pair_indices, dtype=np.int64)
+        scene_idx = np.searchsorted(self.pair_offsets, pair_indices, side="right")
+        prev_offsets = np.where(
+            scene_idx > 0,
+            self.pair_offsets[scene_idx - 1],
+            0,
+        )
+        cur_idx = self.anchor_lows[scene_idx] + (pair_indices - prev_offsets)
+        pre_idx = cur_idx - int(round(self.frames_per_second * 1.0))
+        scene_base = scene_idx.astype(np.int64) * self.va_key_stride
+        keys = np.empty(pair_indices.size * 2, dtype=np.int64)
+        keys[0::2] = scene_base + pre_idx
+        keys[1::2] = scene_base + cur_idx
+        return keys
 
     @property
     def lengths(self):
