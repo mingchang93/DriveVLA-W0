@@ -694,6 +694,30 @@ class LazySupervisedNavsim2VAROSSDataset(Dataset):
 
 
 # ----------------------------- NuPlan 2VA Dataset -----------------------------
+def nuplan_log_id(scene) -> str:
+    segment_id = scene.get("segment_id")
+    if segment_id:
+        return str(segment_id).rsplit("_seg_", 1)[0]
+    image = scene.get("image")
+    if image:
+        return str(image[0]).split("/", 1)[0]
+    raise ValueError("NuPlan scene has neither segment_id nor image path")
+
+
+def select_nuplan_validation_logs(data, fraction: float, seed: int) -> tuple[str, ...]:
+    if not 0.0 < float(fraction) < 1.0:
+        raise ValueError("nuplan validation log fraction must be in (0, 1)")
+    logs = sorted({nuplan_log_id(scene) for scene in data})
+    ranked = sorted(
+        logs,
+        key=lambda log_id: hashlib.sha256(
+            f"{int(seed)}:{log_id}".encode("utf-8")
+        ).digest(),
+    )
+    validation_count = max(1, int(math.ceil(len(ranked) * float(fraction))))
+    return tuple(sorted(ranked[:validation_count]))
+
+
 class LazySupervisedNuplan2VAROSSDataset(Dataset):
     """NuPlan VLA Dataset building a single sequence from pre(1s) and cur.
 
@@ -711,8 +735,18 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
       与调用顺序和 num_workers 无关，用于需要续训逐位一致的长跑
     """
 
-    def __init__(self, tokenizer: transformers.PreTrainedTokenizer, data_args):
+    def __init__(
+        self,
+        tokenizer: transformers.PreTrainedTokenizer,
+        data_args,
+        dataset_role: str = "train",
+        shared_data=None,
+        validation_logs: Optional[Sequence[str]] = None,
+    ):
         super(LazySupervisedNuplan2VAROSSDataset, self).__init__()
+        if dataset_role not in {"train", "validation"}:
+            raise ValueError("NuPlan dataset role must be 'train' or 'validation'")
+        self.dataset_role = dataset_role
 
         # Check VLA tokens
         if not (hasattr(tokenizer, 'boa_token') and hasattr(tokenizer, 'eoa_token')):
@@ -744,9 +778,73 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
         # Load data from pickle file
         data_path = getattr(data_args, "data_path", None)
         if data_path and data_path.endswith('.pkl'):
-            with open(data_path, 'rb') as f:
-                self.data = pickle.load(f)
-            rank0_print(f"Loaded {len(self.data)} samples from pickle file: {data_path}")
+            if shared_data is None:
+                with open(data_path, 'rb') as f:
+                    source_data = pickle.load(f)
+                source_label = f"file {data_path}"
+            else:
+                source_data = shared_data
+                source_label = "shared preload"
+            self.num_source_scenes = len(source_data)
+            self.nuplan_holdout_validation = bool(
+                getattr(data_args, "nuplan_holdout_validation", False)
+            )
+            self.nuplan_validation_log_fraction = float(
+                getattr(data_args, "nuplan_validation_log_fraction", 0.05)
+            )
+            self.nuplan_validation_seed = int(
+                getattr(data_args, "nuplan_validation_seed", 20261127)
+            )
+            self.nuplan_validation_pair_count = int(
+                getattr(data_args, "nuplan_validation_pair_count", 4096)
+            )
+            if validation_logs is None and self.nuplan_holdout_validation:
+                validation_logs = select_nuplan_validation_logs(
+                    source_data,
+                    self.nuplan_validation_log_fraction,
+                    self.nuplan_validation_seed,
+                )
+            self.validation_logs = tuple(validation_logs or ())
+            if dataset_role == "validation" and not self.nuplan_holdout_validation:
+                raise ValueError("validation role requires nuplan_holdout_validation=True")
+            if self.nuplan_holdout_validation:
+                validation_log_set = set(self.validation_logs)
+                if dataset_role == "validation":
+                    source_indices = [
+                        index
+                        for index, scene in enumerate(source_data)
+                        if nuplan_log_id(scene) in validation_log_set
+                    ]
+                else:
+                    source_indices = [
+                        index
+                        for index, scene in enumerate(source_data)
+                        if nuplan_log_id(scene) not in validation_log_set
+                    ]
+                self.source_scene_indices = np.asarray(
+                    source_indices,
+                    dtype=np.int64,
+                )
+                self.data = [source_data[index] for index in source_indices]
+                rank0_print(
+                    "NuPlan holdout: role=%s validation_seed=%d fraction=%.4f "
+                    "validation_logs=%d source_scenes=%d role_scenes=%d"
+                    % (
+                        dataset_role,
+                        self.nuplan_validation_seed,
+                        self.nuplan_validation_log_fraction,
+                        len(self.validation_logs),
+                        self.num_source_scenes,
+                        len(self.data),
+                    )
+                )
+            else:
+                self.data = source_data
+                self.source_scene_indices = np.arange(
+                    len(source_data),
+                    dtype=np.int64,
+                )
+            rank0_print(f"Loaded {len(self.data)} samples from {source_label}")
         else:
             raise ValueError("NuPlan dataset requires pickle file")
 
@@ -827,7 +925,14 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
             self.anchor_counts = anchor_counts
             self.pair_offsets = np.cumsum(anchor_counts, dtype=np.int64)
             self.num_pairs = int(self.pair_offsets[-1])
-            self.num_pair_samples = int(data_args.nuplan_pair_sample_count)
+            if self.dataset_role == "validation":
+                self.num_pair_samples = self.nuplan_validation_pair_count
+                self.pair_selection_seed = self.nuplan_validation_seed
+                self.pair_order_seed = self.nuplan_validation_seed
+            else:
+                self.num_pair_samples = int(data_args.nuplan_pair_sample_count)
+                self.pair_selection_seed = self.base_seed
+                self.pair_order_seed = int(data_args.model_seed)
             one_sec = int(round(self.frames_per_second * 1.0))
             max_scene_len = max(len(scene["action"]) for scene in self.data)
             self.va_key_stride = int(max_scene_len) + one_sec + 1
@@ -841,7 +946,9 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
                         % (self.num_pair_samples, self.num_pairs)
                     )
                 # Historical mode: choose current anchors without replacement.
-                subset_generator = torch.Generator().manual_seed(self.base_seed)
+                subset_generator = torch.Generator().manual_seed(
+                    self.pair_selection_seed
+                )
                 pair_subset = torch.randperm(
                     self.num_pairs, generator=subset_generator
                 )[: self.num_pair_samples]
@@ -857,11 +964,12 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
                 # Greedily select a matching so no VA pair is reused.
                 pair_subset = self._sample_disjoint_pair_windows(
                     self.num_pair_samples,
-                    self.base_seed,
+                    self.pair_selection_seed,
                 )
 
-            # Stage 2: model seed changes only the order of that fixed subset.
-            order_generator = torch.Generator().manual_seed(int(data_args.model_seed))
+            # Stage 2: model seed changes only training order. Validation order
+            # remains fixed across all model and training-data seeds.
+            order_generator = torch.Generator().manual_seed(self.pair_order_seed)
             pair_order = torch.randperm(self.num_pair_samples, generator=order_generator)
             pair_subset_np = (
                 pair_subset.cpu().numpy()
@@ -906,8 +1014,9 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
                 "NuPlan2VA pair sampling: mode=%s scenes=%d valid_pairs=%d "
                 "selected_windows=%d va_pair_slots=%d unique_va_pairs=%d "
                 "duplicate_va_pairs=%d duplicate_slots=%d max_multiplicity=%d "
-                "max_disjoint_windows=%d scanned_windows=%d data_seed=%d "
-                "model_seed=%d set_sha256=%s va_set_sha256=%s order_sha256=%s"
+                "max_disjoint_windows=%d scanned_windows=%d role=%s "
+                "pair_seed=%d order_seed=%d data_seed=%d model_seed=%d "
+                "set_sha256=%s va_set_sha256=%s order_sha256=%s"
                 % (
                     self.pair_sampling_mode,
                     len(self.data),
@@ -920,6 +1029,9 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
                     self.max_va_pair_multiplicity,
                     self.max_disjoint_pair_windows,
                     self.pair_sampling_scanned_windows,
+                    self.dataset_role,
+                    self.pair_selection_seed,
+                    self.pair_order_seed,
                     self.base_seed,
                     int(data_args.model_seed),
                     self.pair_set_sha256,
@@ -1017,7 +1129,8 @@ class LazySupervisedNuplan2VAROSSDataset(Dataset):
         )
         cur_idx = self.anchor_lows[scene_idx] + (pair_indices - prev_offsets)
         pre_idx = cur_idx - int(round(self.frames_per_second * 1.0))
-        scene_base = scene_idx.astype(np.int64) * self.va_key_stride
+        source_scene_idx = self.source_scene_indices[scene_idx]
+        scene_base = source_scene_idx.astype(np.int64) * self.va_key_stride
         keys = np.empty(pair_indices.size * 2, dtype=np.int64)
         keys[0::2] = scene_base + pre_idx
         keys[1::2] = scene_base + cur_idx
@@ -1473,6 +1586,45 @@ def make_supervised_data_module_navsim2_vla_ross(tokenizer: transformers.PreTrai
 
 def make_supervised_data_module_nuplan2_vla_ross(tokenizer: transformers.PreTrainedTokenizer, data_args) -> Dict:
     """Make NuPlan 2VA dataset and collator for supervised fine-tuning."""
-    train_dataset = LazySupervisedNuplan2VAROSSDataset(tokenizer=tokenizer, data_args=data_args)
+    holdout = bool(getattr(data_args, "nuplan_holdout_validation", False))
+    if holdout and not bool(getattr(data_args, "nuplan_pair_sampling", False)):
+        raise ValueError(
+            "nuplan_holdout_validation currently requires nuplan_pair_sampling"
+        )
+
+    shared_data = None
+    validation_logs = None
+    if holdout:
+        data_path = getattr(data_args, "data_path", None)
+        if not data_path or not data_path.endswith(".pkl"):
+            raise ValueError("NuPlan holdout validation requires a pickle data_path")
+        with open(data_path, "rb") as handle:
+            shared_data = pickle.load(handle)
+        validation_logs = select_nuplan_validation_logs(
+            shared_data,
+            float(getattr(data_args, "nuplan_validation_log_fraction", 0.05)),
+            int(getattr(data_args, "nuplan_validation_seed", 20261127)),
+        )
+
+    train_dataset = LazySupervisedNuplan2VAROSSDataset(
+        tokenizer=tokenizer,
+        data_args=data_args,
+        dataset_role="train",
+        shared_data=shared_data,
+        validation_logs=validation_logs,
+    )
+    eval_dataset = None
+    if holdout:
+        eval_dataset = LazySupervisedNuplan2VAROSSDataset(
+            tokenizer=tokenizer,
+            data_args=data_args,
+            dataset_role="validation",
+            shared_data=shared_data,
+            validation_logs=validation_logs,
+        )
     data_collator = DataCollatorForSupervisedVLADataset(tokenizer=tokenizer)
-    return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator)
+    return dict(
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        data_collator=data_collator,
+    )

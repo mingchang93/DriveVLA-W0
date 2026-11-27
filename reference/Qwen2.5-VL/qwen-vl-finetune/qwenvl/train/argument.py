@@ -71,6 +71,28 @@ class DataArguments:
                     "'anchor' preserves the historical anchor-only sampler."
         },
     )
+    nuplan_holdout_validation: bool = field(
+        default=False,
+        metadata={
+            "help": "Create a leakage-safe NuPlan validation dataset by holding "
+                    "out complete logs from the training split."
+        },
+    )
+    nuplan_validation_log_fraction: float = field(
+        default=0.05,
+        metadata={"help": "Fraction of NuPlan logs reserved for validation."},
+    )
+    nuplan_validation_seed: int = field(
+        default=20261127,
+        metadata={
+            "help": "Seed for the fixed log-level holdout and validation-pair "
+                    "selection. Independent of model and training-data seeds."
+        },
+    )
+    nuplan_validation_pair_count: int = field(
+        default=4096,
+        metadata={"help": "Number of 2VA windows in the validation dataset."},
+    )
     
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):

@@ -558,13 +558,15 @@ def train():
             data_args.nuplan_pair_sample_count = int(training_args.max_steps) * global_batch
         rank0_print(
             "[DataSampling] nuplan_pair_sampling=%s mode=%s data_seed=%d "
-            "model_seed=%d samples=%s"
+            "model_seed=%d samples=%s holdout_validation=%s val_pairs=%s"
             % (
                 data_args.nuplan_pair_sampling,
                 getattr(data_args, "nuplan_pair_sampling_mode", None),
                 data_args.seed,
                 data_args.model_seed,
                 getattr(data_args, "nuplan_pair_sample_count", None),
+                getattr(data_args, "nuplan_holdout_validation", False),
+                getattr(data_args, "nuplan_validation_pair_count", None),
             )
         )
     
@@ -687,6 +689,8 @@ def train():
         rank0_print(f"{len(trainer.get_train_dataloader())}")
         rank0_print(f"{training_args.gradient_accumulation_steps}")
         print("len(train_dataset) =", len(data_module["train_dataset"]))
+        if data_module.get("eval_dataset") is not None:
+            print("len(eval_dataset) =", len(data_module["eval_dataset"]))
         print("per_device_train_batch_size =", training_args.per_device_train_batch_size)
         print("TrainingArguments.world_size =", training_args.world_size)
         print("torch.distributed.get_world_size() =", torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1)

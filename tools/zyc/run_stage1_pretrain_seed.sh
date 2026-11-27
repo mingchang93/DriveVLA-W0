@@ -54,6 +54,19 @@ GC=${GC:-False}
 SAVE_STRATEGY=${SAVE_STRATEGY:-no}
 SAVE_STEPS=${SAVE_STEPS:-1000}
 STEPS=${STEPS:-8000}
+NUPLAN_HOLDOUT_VALIDATION=${NUPLAN_HOLDOUT_VALIDATION:-0}
+NUPLAN_VALIDATION_LOG_FRACTION=${NUPLAN_VALIDATION_LOG_FRACTION:-0.05}
+NUPLAN_VALIDATION_SEED=${NUPLAN_VALIDATION_SEED:-20261127}
+NUPLAN_VALIDATION_PAIRS=${NUPLAN_VALIDATION_PAIRS:-4096}
+EVAL_BS=${EVAL_BS:-6}
+EVAL_STEPS=${EVAL_STEPS:-500}
+if [ -z "${EVAL_STRATEGY:-}" ]; then
+  if [ "$NUPLAN_HOLDOUT_VALIDATION" = "1" ]; then
+    EVAL_STRATEGY=steps
+  else
+    EVAL_STRATEGY=no
+  fi
+fi
 HIF8=${HIF8:-}                      # 空=bf16 基线臂；cts=HiF8 current-tensor-scaling
 HIF8_INTERVAL=${HIF8_INTERVAL:-10}   # DTS 的 amax 刷新间隔，仅 --hif8 dts 生效。
 # 之前漏传这个参数，--hif8 dts 会用代码默认间隔而不是 10，等于跑了另一个配置。
@@ -110,6 +123,7 @@ if [[ ",$MODEL_CKPT_SEEDS," == *",$SEED,"* ]]; then
 fi
 echo "  卡 $NPROC · mb $BS · ga $GA · 全局 batch $((BS*NPROC*GA)) · $STEPS 步 · 重计算 $GC · 模型检查点 $SAVE_STRATEGY/$SAVE_STEPS" | tee -a "$OUT/train.log"
 echo "  随机种子: SEED=$SEED（确定性已开：同 seed 跨机器逐位一致，所以换 seed 是拿到方差样本的唯一办法）" | tee -a "$OUT/train.log"
+echo "  验证集: holdout=$NUPLAN_HOLDOUT_VALIDATION · log_fraction=$NUPLAN_VALIDATION_LOG_FRACTION · validation_seed=$NUPLAN_VALIDATION_SEED · pairs=$NUPLAN_VALIDATION_PAIRS · eval=$EVAL_STRATEGY/$EVAL_STEPS" | tee -a "$OUT/train.log"
 DATA_ARGS=()
 PAIR_SAMPLING=${PAIR_SAMPLING:-0}
 if [ "$PAIR_SAMPLING" = "1" ]; then
@@ -118,6 +132,10 @@ if [ "$PAIR_SAMPLING" = "1" ]; then
   DATA_ARGS+=(
     --nuplan_pair_sampling True
     --nuplan_pair_sampling_mode "$PAIR_SAMPLING_MODE"
+    --nuplan_holdout_validation "$NUPLAN_HOLDOUT_VALIDATION"
+    --nuplan_validation_log_fraction "$NUPLAN_VALIDATION_LOG_FRACTION"
+    --nuplan_validation_seed "$NUPLAN_VALIDATION_SEED"
+    --nuplan_validation_pair_count "$NUPLAN_VALIDATION_PAIRS"
     --data_seed "$DATA_SEED"
   )
   echo "  数据采样: pair-level mode=$PAIR_SAMPLING_MODE, DATA_SEED=$DATA_SEED 固定 pair 集合, SEED=$SEED 只改变其顺序" | tee -a "$OUT/train.log"
@@ -154,7 +172,8 @@ torchrun --nproc_per_node="$NPROC" --master_port=${PORT:-23493} utils/train_qwen
   --dataloader_num_workers 12 --dataloader_pin_memory "$PIN_MEMORY" --dataloader_shuffle True \
   --seed "$SEED" --deterministic True --remove_dropout True \
   --save_strategy "$SAVE_STRATEGY" --save_steps "$SAVE_STEPS" --save_total_limit 5 \
-  --eval_strategy no --logging_steps "$LOGSTEP" \
+  --eval_strategy "$EVAL_STRATEGY" --eval_steps "$EVAL_STEPS" \
+  --per_device_eval_batch_size "$EVAL_BS" --logging_steps "$LOGSTEP" \
   --report_to tensorboard 2>&1 | tee -a "$OUT/train.log"
 
 TRAIN_RC=${PIPESTATUS[0]}
