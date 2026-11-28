@@ -2574,9 +2574,12 @@ sampling with `DATA_SEED=42`. They cannot be paired against the scene-level HiF8
 
 Doing so anyway reads as HiF8 being 0.161 *lower* at seed 42. That is a sampling artefact, not a
 quantization effect: within the pair-level family seed 42 sits 0.168 above seed 43, the same
-magnitude. `pt_aligned_bf16_pair_s44` never started — its launcher failed 3 s in on
-`ImportError: libhccl.so` because the systemd unit invokes the launcher on the host instead of via
-`docker exec zyc-w0 bash`; the directory holds only the failed `train.log`.
+magnitude. `pt_aligned_bf16_pair_s44` never started on the first attempt — its launcher failed 3 s
+in on `ImportError: libhccl.so` because the systemd unit invokes the launcher on the host instead of
+via `docker exec zyc-w0 bash`. The arm was run the following day as
+`pt_bf16_pair_s44_f3d652f_20261128` (8,000 steps, `TRAIN_EXIT=0`, tail-20 1.2565, no holdout); see
+the 11-28 section for that result and for how the two code trees differ. Note that the s42 and s43
+pair arms carry no recorded commit, so their tree is not identified.
 
 ### Run and eval directories (for future reference)
 
@@ -2609,11 +2612,114 @@ arms live under `/mnt/sfs_turbo/lmc/runs/pt_aligned_bf16_pair_s4{2,3,4}` and hav
 
 1. All three seeds now have a seed-matched scene-level BF16 partner (`pt_ptlr5e5` = 42,
    `pt_bf16_s43` = 43, `pt_bf16_s44` = 44), so the seed-42 pair no longer has an open end.
-2. BF16 pair-level seed 44 is still not started, and a53 was occupied by another tenant's
-   35B smoke job when this was written.
+2. BF16 pair-level seed 44 was run on 11-27 as `pt_bf16_pair_s44_f3d652f_20261128`; the 11-28
+   section records it. The pair family still has no seed-matched holdout evaluation.
 3. No seed sweep exists for 132 or 196 at interval 10 on this scene-level recipe.
 
 Sources: chain logs `/mnt/sfs_turbo/zyc/drivevla-w0-zyc/chain_dts168_i10_20261126_s4{2,3,4}.log`,
 train logs `runs/{pt,sft}_dts168_i10_20261126_s4{2,3,4}/train.log`, and the score CSVs above.
 Loss tails are the mean of the last 20 logged `{'loss': ...}` values; the reported PDMS is the
 `Final average score of valid results` line of each chain log.
+
+## 2026-11-28 — data-sampling axis: pair sampling vs disjoint-2VA pairs with a log-level holdout
+
+Four 8,000-step BF16 pretrain arms on a51-a54, all reading the same 768,000-pair pool with
+`DATA_SEED=42` fixed and the model seed only permuting the order. Three run the disjoint-2VA
+sampler with a log-level holdout; the fourth is the pair-sampling seed-44 arm that was still
+missing from the 11-27 section, and it runs on the older tree.
+
+This axis is orthogonal to the 11-27 section: those arms vary quantization at fixed sampling, these
+vary sampling at fixed precision. Loss levels are not comparable across the two sections.
+
+### Setup
+
+- Data: `/mnt/sfs_turbo/zyc/official_pretrain_meta/meta/nuplan_processed_data_ndarray.pkl`,
+  768,000 pairs, `DATA_SEED=42` fixes the pair set, `SEED` permutes only the order.
+- 8 NPUs x mb 12 x ga 1 = gbs 96, 8,000 steps, recompute off, checkpoint every 1,000 steps with
+  4,000-8,000 retained on disk.
+- Holdout (a52-a54 only): log-level split, `log_fraction=0.05`, `validation_seed=20261127`,
+  4,096 pairs, `eval_steps=500`, so 16 evaluations with the last one at step 8,000.
+- Both families print `nuplan_pair_sampling=True`; the disjoint arms add `mode=disjoint_2va`.
+  The flag alone no longer identifies the sampler, so classify arms by the `[DataSampling]` line.
+- Run from lmc's workspace, in two checkouts of the same repo, both clean at launch:
+  `/mnt/sfs_turbo/lmc/DriveVLA-W0` at `2060607` (a52-a54) and
+  `/mnt/sfs_turbo/lmc/DriveVLA-W0-pair-f3d652f`, detached at `f3d652f` (a51). Run directories and
+  the dataset pickle are absolute paths, so both checkouts write to the same `runs/` and read the
+  same data under zyc's workspace.
+- Launched 11-27, log timestamps 17:00:07-17:00:11 start to 22:32:05-23:23:32 finish.
+
+### Results
+
+| Node | Seed | Code | Sampling | Runtime | Train tail-20 | Holdout, step 8,000 |
+|---|---:|---|---|---|---:|---:|
+| a51 | 44 | `f3d652f` | pair-level | 5:29:54 | 1.2565 | n/a (no holdout) |
+| a52 | 42 | `2060607` | disjoint 2VA + holdout | 6:10:22 | 1.2459 | 1.1824 |
+| a53 | 43 | `2060607` | disjoint 2VA + holdout | 6:17:09 | 1.2627 | **1.1660** |
+| a54 | 44 | `2060607` | disjoint 2VA + holdout | 6:21:32 | 1.2747 | 1.1733 |
+
+Tail-100 training loss, same order: 1.2556 / 1.2501 / 1.2605 / 1.2694.
+
+- Train-loss spread across the three disjoint seeds is **0.0288** (1.2459 to 1.2747); holdout spread
+  is **0.0164** (1.1660 to 1.1824).
+- The two orderings disagree: training loss ranks 42 < 43 < 44, holdout ranks 43 < 44 < 42. Seed 42
+  has the lowest training loss and the worst holdout, the same disagreement recorded for the 11-24
+  single-stage sweep. n=3, so this is a pattern to watch, not a rule.
+- The pair-sampling arm has no siblings on its own tree, so the pair family still has no measurable
+  seed variance here; 1.2565 falls inside the disjoint training range but comes from a different
+  sampler and is not a like-for-like number.
+
+### The interim table's "final train loss" is a whole-run mean
+
+The table circulating for these four runs lists 1.5559 / 1.5546 / 1.5630 / 1.5694 as "final train
+loss". Those values reproduce exactly as the **mean of all 8,000 logged losses**, which is dominated
+by the warm-up (the first step logs ~19). They are 0.29-0.31 above the actual end-of-run values in
+the table above and should not be quoted as final. Use the tail-20 or tail-100 columns.
+
+### Two code trees, so two sets of arms
+
+`2060607` is `f3d652f` plus `ae3a40f` (11-27 handoff), `ea79cb4` (disjoint 2VA pair matching
+sampler), `9c16104` (normalize the pair subset before model-seed permutation) and `2060607` (holdout
+validation). The a51 pair arm is at `f3d652f`, i.e. before any of the sampler or holdout changes,
+which is why it has no holdout curve. Both trees were clean when the arms ran, so the two commit ids
+are exact rather than nominal.
+
+Consequences: the a51 arm cannot be paired with a52-a54 on any metric, and the "leakage-safe" claim
+in the `2060607` commit message is the commit's own wording — the audit that would confirm it
+(`tools/zyc/audit_nuplan_holdout_validation.py`) has not been run as part of this record.
+
+### Run directories
+
+All under `/mnt/sfs_turbo/lmc/runs`, on the shared SFS and therefore visible from a51-a54. Written by
+whichever of the two checkouts launched the arm, so the pair arm's output is a sibling of the
+disjoint arms' rather than in a separate tree:
+
+| Node | Run dir | Checkpoints |
+|---|---|---|
+| a51 | `pt_bf16_pair_s44_f3d652f_20261128` | 4000-8000 |
+| a52 | `pt_bf16_holdout_20261128_s42` | 4000-8000 |
+| a53 | `pt_bf16_holdout_20261128_s43` | 4000-8000 |
+| a54 | `pt_bf16_holdout_20261128_s44` | 4000-8000 |
+
+There is no separate eval directory: the holdout loss is computed inline by the trainer and appears
+as `{'eval_loss': ...}` in `train.log`.
+
+### What these numbers do and do not support
+
+- They do support a small but consistent seed effect on both objectives at this recipe, and they show
+  the training and holdout orderings need not agree.
+- They do not support any comparison between the a51 pair arm and the a52-a54 disjoint arms, nor any
+  comparison against the 11-27 scene-level or HiF8 numbers.
+- They do not support a claim that the holdout is leakage-free; only the audit script can settle that.
+
+### Open
+
+1. The pair-sampling family needs seeds 42 and 43 on `f3d652f` (or on `2060607`) before its seed
+   spread can be quoted.
+2. The holdout has no PDMS counterpart, so generalization here means held-out log loss only.
+3. Run `tools/zyc/audit_nuplan_holdout_validation.py` to check that the held-out logs do not
+   contribute training pairs.
+
+Sources: `train.log` in each run directory above (headers record seed, sampling mode, holdout
+settings and data path; the `[DataSampling]` line records `data_seed`, `model_seed`, `samples` and
+`val_pairs`). Loss tails are the mean of the last 20 and last 100 logged `{'loss': ...}` values;
+holdout values are the last `eval_loss` of 16.
