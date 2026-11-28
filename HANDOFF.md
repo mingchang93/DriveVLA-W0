@@ -15,6 +15,21 @@
 >
 > 本文件下面的实验记录仍有价值，当历史看。
 
+> **2026-11-28 correction — every run tagged `DTS` before 2026-11-18 is static-scale, not interval-10.**
+>
+> The optimizer post-step hook advanced the DTS clock twice per training step, so the sample
+> condition was never reached and the cold-start scale stayed fixed for the entire run. Every
+> pre-11-18 `DTS` number in this file therefore measures a **static-scale HiF8 recipe**, and none
+> of them may be quoted as an interval-10 / delayed-scaling result. In particular the old
+> "+0.95 % DTS gain" (`aligned_hif8_196_dts`) is retracted: it is a static-scale result.
+>
+> Identification rule, checkable from the log alone: pre-11-18 `DTS` logs carry no `clock_src`
+> field and no positive refresh records; fixed runs log `clock_src: trainer`, `static: False`,
+> and positive refresh counts. The first true interval-10 results are the 2026-11-19 `r2` runs.
+>
+> The affected sections below keep their original tables and carry their own dated 2026-11-24
+> correction notes; this note is the authoritative summary for all of them.
+
 ---
 
 # HANDOFF
@@ -873,7 +888,7 @@ so the per-arm `run_pdm_score.log` and CSV are the record.
 3. Repeat at least one arm with a different seed before quoting any PDMS delta.
 4. Finish the camera backfill (shards 20-199) against 1.9 T of free space.
 
-## 2026-11-13 — 2B `aligned` family (incl. HiF8-DTS) and 7B family: full navtest PDMS + sub-metrics
+## 2026-11-13 — 2B `aligned` family (incl. HiF8 static-scale) and 7B family: full navtest PDMS + sub-metrics
 
 Exp 10-19. Still produced in **ZYC's checkout** (`/mnt/sfs_turbo/zyc/DriveVLA-W0`,
 branch `zyc-hif8` @ `63898d1` + the same uncommitted HiF8/determinism edits).
